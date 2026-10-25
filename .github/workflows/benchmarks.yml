@@ -39,7 +39,7 @@ jobs:
 
       - name: Publish benchmark results
         uses: benchmark-action/github-action-benchmark@v1
-        if: github.repository == 'najaeda/naja' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.repository == 'keplertech/naja' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           name: SNL Benchmarks
           tool: googlecpp

@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: naja 
 Upstream-Contact: Christophe Alexandre <christophe.alexandre@keplertech.io>
-Source: https://github.com/najaeda/naja
+Source: https://github.com/keplertech/naja
 
 Files: .github/workflows/* .github/tsan.supp .gitmodules
 Copyright: 2022 The Naja Authors.

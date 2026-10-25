@@ -8,7 +8,7 @@ message(STATUS "CMake version: ${CMAKE_VERSION}")
 
 project(naja
   VERSION 1.0.0
-  HOMEPAGE_URL https://github.com/najaeda/naja
+  HOMEPAGE_URL https://github.com/keplertech/naja
 )
 
 cmake_policy(SET CMP0048 NEW)

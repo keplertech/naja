@@ -10,7 +10,7 @@ ARG XPACK_RISCV_VERSION=14.2.0-3
 ARG CVA6_REPO=https://github.com/xtofalex/cva6.git
 ARG CVA6_COMMIT=bead12b083b4457a1ae87b8b9c8812a9d64bfc54
 
-LABEL org.opencontainers.image.source="https://github.com/najaeda/naja"
+LABEL org.opencontainers.image.source="https://github.com/keplertech/naja"
 LABEL org.opencontainers.image.description="Naja external SystemVerilog simulation environment"
 
 ENV DEBIAN_FRONTEND=noninteractive

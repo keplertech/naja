@@ -2,7 +2,7 @@ Objects identification
 ----------------------
 
 Each Design DB object has a unique identifier:
-`NLID <https://github.com/najaeda/naja/blob/main/src/nl/netlist/core/NLID.h>`_.
+`NLID <https://github.com/keplertech/naja/blob/main/src/nl/netlist/core/NLID.h>`_.
 
 ``NLID`` is a flat, model-level identifier. It identifies the database object
 itself, not one particular occurrence of that object in an elaborated hierarchy.

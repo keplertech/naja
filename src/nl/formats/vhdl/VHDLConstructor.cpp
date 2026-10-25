@@ -4,6 +4,7 @@
 #include "VHDLConstructor.h"
 #include "NajaPrivateProperty.h"
 #include "VHDLRTLConstructor.h"
+#include "VHDLSourceInfo.h"
 
 #include "NLException.h"
 #include "NLDB.h"
@@ -32,6 +33,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -105,7 +107,7 @@ class LocatedVHDLException final : public NLException {
 class VHDLSources final : public naja::NajaPrivateProperty {
  public:
   std::string source;
-  struct Input { size_t offset; size_t size; std::string path; };
+  using Input = VHDLSourceInput;
   std::vector<Input> inputs;
   std::string getName() const override { return "VHDLSources"; }
   std::string getString() const override { return getName(); }
@@ -172,13 +174,15 @@ SNLDesign* VHDLConstructor::constructSource(
 
 SNLDesign* VHDLConstructor::constructInputs(
     const std::vector<std::pair<std::string, std::string>>& inputs,
-    std::string_view top, bool batch) const {
+    std::string_view top, bool batch, const VHDLSourceMap* mappedSource) const {
   std::string source;
   std::vector<VHDLSources::Input> inputOrigins;
   for (const auto& [path, text] : inputs) {
     inputOrigins.push_back({source.size(), text.size(), path});
     source += text + "\n";
   }
+  const VHDLSourceMap inputMap(source, inputOrigins);
+  const auto& sourceMap = mappedSource ? *mappedSource : inputMap;
   const auto& path = inputs.front().first;
   const auto locate = [](const std::string& text, const auto& origins, size_t offset) {
     size_t start = 0;
@@ -275,8 +279,7 @@ SNLDesign* VHDLConstructor::constructInputs(
     }
     std::string compilation;
     std::vector<VHDLLibrarySource> libraries;
-    struct Origin {size_t offset; std::string path;};
-    std::vector<Origin> origins;
+    std::vector<VHDLSourceInput> origins;
     for (auto* candidate : library_->getDB()->getLibraries()) {
       auto* stored = dynamic_cast<VHDLSources*>(candidate->getProperty("VHDLSources"));
       if (candidate != library_ && (!stored || stored->source.empty())) continue;
@@ -285,7 +288,7 @@ SNLDesign* VHDLConstructor::constructInputs(
       libraries.push_back({candidate, base, text.size()});
       const auto& candidateInputs = candidate == library_ ? combinedInputs : stored->inputs;
       for (const auto& input : candidateInputs)
-        origins.push_back({base + input.offset, input.path});
+        origins.push_back({base + input.offset, input.size, input.path});
       compilation += text + "\n";
     }
     auto all = vhdl::Parser::parse(compilation, true);
@@ -312,7 +315,8 @@ SNLDesign* VHDLConstructor::constructInputs(
     }
     SNLDesign* design = nullptr;
     try {
-      design = constructVHDLRTL(library_, all.syntax, selected, compilation, libraries);
+      const VHDLSourceMap compilationMap(compilation, origins);
+      design = constructVHDLRTL(library_, all.syntax, selected, compilation, libraries, compilationMap);
     } catch (const VHDLRTLException& exception) {
       const auto offset = exception.span.start.offset;
       size_t start = 0;
@@ -481,6 +485,10 @@ SNLDesign* VHDLConstructor::constructInputs(
         childSource.push_back('\n');
         childSource.append(source.substr(architectureStart,
             childArchitecture->span.end.offset - architectureStart));
+        std::vector<size_t> childOffsets;
+        for (size_t i = entityStart; i < childEntity->span.end.offset; ++i) childOffsets.push_back(i);
+        childOffsets.push_back(childEntity->span.end.offset);
+        for (size_t i = architectureStart; i < childArchitecture->span.end.offset; ++i) childOffsets.push_back(i);
         struct Edit { std::size_t start; std::size_t length; std::string value; };
         std::vector<Edit> edits;
         const auto& values = analyzed.genericValues.at(bound->syntax);
@@ -503,15 +511,22 @@ SNLDesign* VHDLConstructor::constructInputs(
         }
         std::sort(edits.begin(), edits.end(),
             [](const Edit& left, const Edit& right) { return left.start > right.start; });
-        for (const auto& edit : edits)
+        for (const auto& edit : edits) {
+          const auto original = childOffsets.at(edit.start);
+          childOffsets.erase(childOffsets.begin() + edit.start, childOffsets.begin() + edit.start + edit.length);
+          childOffsets.insert(childOffsets.begin() + edit.start, edit.value.size(), original);
           childSource.replace(edit.start, edit.length, edit.value);
-        auto* model = construct(childSource);
+        }
+        const VHDLSourceMap childMap(childSource, sourceMap, std::move(childOffsets));
+        auto* model = constructInputs({{"", childSource}}, {}, false, &childMap);
         createdModels.push_back(model);
         model->setName(NLName(specialization));
         models.emplace(specialization, model);
       }
       auto* design = SNLDesign::create(library_, NLName(topEntity->name.spelling));
       topDesign = design;
+      sourceMap.annotate(design, topEntity->span, true);
+      sourceMap.annotate(design, topArchitecture->span);
       std::unordered_map<std::string, SNLNet*> nets;
       for (const auto& port : topEntity->ports) {
         const auto direction = port.mode == vhdl::PortMode::In
@@ -523,12 +538,15 @@ SNLDesign* VHDLConstructor::constructInputs(
             const auto right = static_cast<NLID::Bit>(range->right);
             auto* term = SNLBusTerm::create(design, direction, left, right, NLName(name.spelling));
             net = SNLBusNet::create(design, left, right, NLName(name.spelling));
+            sourceMap.annotate(term, name.span, true);
             term->setNet(net);
           } else {
             auto* term = SNLScalarTerm::create(design, direction, NLName(name.spelling));
             net = SNLScalarNet::create(design, NLName(name.spelling));
+            sourceMap.annotate(term, name.span, true);
             term->setNet(net);
           }
+          sourceMap.annotate(net, name.span, true);
           nets.emplace(std::string(nameKey(name)), net);
         }
       }
@@ -542,6 +560,7 @@ SNLDesign* VHDLConstructor::constructInputs(
           } else {
             net = SNLScalarNet::create(design, NLName(name.spelling));
           }
+          sourceMap.annotate(net, name.span, true);
           nets.emplace(std::string(nameKey(name)), net);
         }
       }
@@ -549,6 +568,7 @@ SNLDesign* VHDLConstructor::constructInputs(
         auto* instance = SNLInstance::create(design,
             models.at(bound.specialization),
             NLName(bound.syntax->label.spelling));
+        sourceMap.annotate(instance, bound.syntax->span, true);
         std::size_t index = 0;
         for (const auto& port : bound.entity->ports) {
           for (const auto& formal : port.names) {
@@ -798,6 +818,8 @@ SNLDesign* VHDLConstructor::constructInputs(
       SNLDesign::create(library_, NLName(entity.name.spelling)),
       [](SNLDesign* design) { design->destroy(); });
   auto* design = designGuard.get();
+  sourceMap.annotate(design, entity.span, true);
+  sourceMap.annotate(design, architecture.span);
   for (const auto& port : entity.ports) {
     const auto direction = port.mode == vhdl::PortMode::In
         ? SNLTerm::Direction::Input : SNLTerm::Direction::Output;
@@ -808,11 +830,15 @@ SNLDesign* VHDLConstructor::constructInputs(
         auto* term = SNLBusTerm::create(
           design, direction, left, right, NLName(name.spelling));
         auto* net = SNLBusNet::create(design, left, right, NLName(name.spelling));
+        sourceMap.annotate(term, name.span, true);
+        sourceMap.annotate(net, name.span, true);
         term->setNet(net);
         signals.emplace(std::string(nameKey(name)), Signal{net});
       } else {
         auto* term = SNLScalarTerm::create(design, direction, NLName(name.spelling));
         auto* net = SNLScalarNet::create(design, NLName(name.spelling));
+        sourceMap.annotate(term, name.span, true);
+        sourceMap.annotate(net, name.span, true);
         term->setNet(net);
         signals.emplace(std::string(nameKey(name)), Signal{net});
       }
@@ -822,7 +848,7 @@ SNLDesign* VHDLConstructor::constructInputs(
   for (const auto& signal : architecture.signals) {
     for (const auto& name : signal.names)
       signals.emplace(std::string(nameKey(name)),
-          Signal{SNLScalarNet::create(design, NLName(name.spelling))});
+          Signal{sourceMap.annotate(SNLScalarNet::create(design, NLName(name.spelling)), name.span, true)});
   }
 
   if (clocked) {
@@ -832,7 +858,7 @@ SNLDesign* VHDLConstructor::constructInputs(
       for (const auto& name : declaration.names) {
         if (retained.contains(std::string(nameKey(name))))
           signals.emplace(std::string(nameKey(name)),
-              Signal{SNLScalarNet::create(design, NLName(name.spelling))});
+              Signal{sourceMap.annotate(SNLScalarNet::create(design, NLName(name.spelling)), name.span, true)});
       }
     }
   }
@@ -844,39 +870,44 @@ SNLDesign* VHDLConstructor::constructInputs(
     }
     return it->second;
   }; // LCOV_EXCL_LINE: compiler exception cleanup for the validated lookup above.
+  const auto annotate = [&](auto objects, const vhdl::SourceSpan& span) {
+    if constexpr (std::is_pointer_v<decltype(objects)>) sourceMap.annotate(objects, span);
+    else for (auto* object : objects) sourceMap.annotate(object, span);
+    return objects;
+  };
   if (clocked) {
     auto& select = findSignal(selectName);
     // The frontend has frozen RHS values at each scheduled write, applying
     // immediate variable assignments without forwarding scheduled signal writes.
     for (const auto& write : schedule.writes) {
       if (!resetName.empty() && !enableName.empty()) {
-        SNLRTLPrimitives::createDFFSRE(design, select.net,
+        annotate(SNLRTLPrimitives::createDFFSRE(design, select.net,
             findSignal(write.source).net, findSignal(enableName).net,
-            findSignal(resetName).net, findSignal(write.target).net);
+            findSignal(resetName).net, findSignal(write.target).net), architecture.processes.front().span);
       } else if (!resetName.empty()) {
-        SNLRTLPrimitives::createDFFSR(design, select.net,
+        annotate(SNLRTLPrimitives::createDFFSR(design, select.net,
             findSignal(write.source).net, findSignal(resetName).net,
-            findSignal(write.target).net);
+            findSignal(write.target).net), architecture.processes.front().span);
       } else if (enableName.empty()) {
-        SNLRTLPrimitives::createDFF(design, select.net,
-            findSignal(write.source).net, findSignal(write.target).net);
+        annotate(SNLRTLPrimitives::createDFF(design, select.net,
+            findSignal(write.source).net, findSignal(write.target).net), architecture.processes.front().span);
       } else {
-        SNLRTLPrimitives::createDFFE(design, select.net,
+        annotate(SNLRTLPrimitives::createDFFE(design, select.net,
             findSignal(write.source).net, findSignal(enableName).net,
-            findSignal(write.target).net);
+            findSignal(write.target).net), architecture.processes.front().span);
       }
     }
   } else {
     auto& output = findSignal(nameKey(assignment.target));
     const auto createExpressionNet = [&](const vhdl::Expression& expression) -> SNLNet* {
       if (analyzed.getType(expression) == vhdl::ScalarType::Bit)
-        return SNLScalarNet::create(design);
+        return sourceMap.annotate(SNLScalarNet::create(design), expression.span);
       const auto* range = analyzed.getRange(expression);
       if (!range)
         unsupported("vector expression has no constrained range"); // LCOV_EXCL_LINE: analysis rejects unconstrained vectors before lowering.
-      return SNLBusNet::create(
+      return sourceMap.annotate(SNLBusNet::create(
         design, static_cast<NLID::Bit>(range->left),
-        static_cast<NLID::Bit>(range->right));
+        static_cast<NLID::Bit>(range->right)), expression.span);
     };
     const auto hardwareBits = [](SNLNet* net) {
       SNLRTLPrimitives::Bits bits;
@@ -894,6 +925,7 @@ SNLDesign* VHDLConstructor::constructInputs(
     std::function<SNLNet*(const vhdl::Expression&, SNLNet*)> lowerExpression;
     lowerExpression = [&](const vhdl::Expression& expression,
                           SNLNet* requestedOutput) -> SNLNet* {
+      if (requestedOutput) sourceMap.annotate(requestedOutput, expression.span);
       if (expression.kind == vhdl::Expression::Kind::Name) {
         const auto name = expression.canonical.empty()
             ? std::string_view(expression.text)
@@ -901,29 +933,32 @@ SNLDesign* VHDLConstructor::constructInputs(
         auto* input = findSignal(name).net;
         if (!requestedOutput)
           return input;
-        SNLRTLPrimitives::createAssign(design, input, requestedOutput);
+        annotate(SNLRTLPrimitives::createAssign(design, input, requestedOutput), expression.span);
         return requestedOutput;
       }
       if (expression.kind == vhdl::Expression::Kind::CharacterLiteral) {
-        auto* constant = requestedOutput
-            ? requestedOutput : SNLScalarNet::create(design);
+        auto* constant = sourceMap.annotate(SNLScalarNet::create(design), expression.span);
         constant->setType(expression.text == "'1'"
             ? SNLNet::Type::Assign1 : SNLNet::Type::Assign0);
+        if (requestedOutput) {
+          annotate(SNLRTLPrimitives::createAssign(design, constant, requestedOutput), expression.span);
+          return requestedOutput;
+        }
         return constant;
       }
       if (expression.kind == vhdl::Expression::Kind::Unary) {
         auto* input = lowerExpression(*expression.left, nullptr);
         auto* result = requestedOutput ? requestedOutput : createExpressionNet(expression);
-        SNLRTLPrimitives::createBitwiseGate(
-            design, SNLRTLPrimitives::GateKind::Not, {input}, result);
+        annotate(SNLRTLPrimitives::createBitwiseGate(
+            design, SNLRTLPrimitives::GateKind::Not, {input}, result), expression.span);
         return result;
       }
       if (expression.kind == vhdl::Expression::Kind::Binary) {
         auto* left = lowerExpression(*expression.left, nullptr);
         auto* right = lowerExpression(*expression.right, nullptr);
         auto* result = requestedOutput ? requestedOutput : createExpressionNet(expression);
-        SNLRTLPrimitives::createBitwiseGate(
-            design, logicGateKind(expression.text), {left, right}, result);
+        annotate(SNLRTLPrimitives::createBitwiseGate(
+            design, logicGateKind(expression.text), {left, right}, result), expression.span);
         return result;
       }
       if (expression.kind == vhdl::Expression::Kind::Conditional) {
@@ -933,8 +968,8 @@ SNLDesign* VHDLConstructor::constructInputs(
         auto* select = dynamic_cast<SNLBitNet*>(findSignal(selectName).net);
         if (!select)
           unsupported("conditional select must be scalar bit"); // LCOV_EXCL_LINE: expression validation requires a scalar bit select before lowering.
-        SNLRTLPrimitives::createMux(
-            design, select, hardwareBits(whenTrue), hardwareBits(whenFalse), result);
+        annotate(SNLRTLPrimitives::createMux(
+            design, select, hardwareBits(whenTrue), hardwareBits(whenFalse), result), expression.span);
         return result;
       }
       unsupported("unsupported scalar bit expression during lowering"); // LCOV_EXCL_LINE: validation rejects expression kinds not handled above.

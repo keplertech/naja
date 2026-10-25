@@ -1,5 +1,5 @@
 {
-    "homepage": "https://github.com/najaeda/naja",
+    "homepage": "https://github.com/keplertech/naja",
     "maintainers": [
         {
             "github": "xtofalex",
@@ -13,7 +13,7 @@
         }
     ],
     "repository": [
-        "github:najaeda/naja"
+        "github:keplertech/naja"
     ],
     "versions": [],
     "yanked_versions": {}

@@ -94,41 +94,41 @@ install needed:
    * - 1
      - Getting started — load Verilog, navigate hierarchy, visualize
      - .. image:: https://colab.research.google.com/assets/colab-badge.svg
-          :target: https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb
+          :target: https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb
           :alt: Open in Colab
    * - 2
      - Liberty primitives — load a synthesised design with standard cells
      - .. image:: https://colab.research.google.com/assets/colab-badge.svg
-          :target: https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/02_liberty_primitives_design.ipynb
+          :target: https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/02_liberty_primitives_design.ipynb
           :alt: Open in Colab
    * - 3
      - Editing a netlist — rename, disconnect, reconnect, delete
      - .. image:: https://colab.research.google.com/assets/colab-badge.svg
-          :target: https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/03_editing_a_netlist.ipynb
+          :target: https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/03_editing_a_netlist.ipynb
           :alt: Open in Colab
    * - 4
      - SystemVerilog elaboration — load and browse an elaborated SV design
      - .. image:: https://colab.research.google.com/assets/colab-badge.svg
-          :target: https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/04_systemverilog_elaborated_netlist.ipynb
+          :target: https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/04_systemverilog_elaborated_netlist.ipynb
           :alt: Open in Colab
    * - 5
      - ibex RISC-V core — explore a real-world SV core, collect module stats
      - .. image:: https://colab.research.google.com/assets/colab-badge.svg
-          :target: https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/05_ibex_riscv_core.ipynb
+          :target: https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/05_ibex_riscv_core.ipynb
           :alt: Open in Colab
    * - 6
      - Fanout analysis — compute fanout for every net, trace drivers, export
        to pandas
      - .. image:: https://colab.research.google.com/assets/colab-badge.svg
-          :target: https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/06_fanout_analysis.ipynb
+          :target: https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/06_fanout_analysis.ipynb
           :alt: Open in Colab
 
 Links
 -----
 
 - `API documentation <https://najaeda.readthedocs.io/en/latest/>`_
-- `GitHub repository <https://github.com/najaeda/naja>`_
-- `Issue tracker <https://github.com/najaeda/naja/issues>`_
+- `GitHub repository <https://github.com/keplertech/naja>`_
+- `Issue tracker <https://github.com/keplertech/naja/issues>`_
 - `Matrix chat <https://matrix.to/#/#naja:fossi-chat.org>`_
 - `contact@keplertech.io <mailto:contact@keplertech.io>`_
 
@@ -136,4 +136,4 @@ License
 -------
 
 Apache License 2.0.
-See the `LICENSE <https://github.com/najaeda/naja/blob/main/LICENSE>`_ file for details.
+See the `LICENSE <https://github.com/keplertech/naja/blob/main/LICENSE>`_ file for details.

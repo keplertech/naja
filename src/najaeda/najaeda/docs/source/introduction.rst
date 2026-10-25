@@ -32,7 +32,7 @@ more closely.  See :doc:`raw_api` when you need this lower level.
 Information about the **najaeda** PyPI package is available at https://pypi.org/project/najaeda .
 
 If you want more details about the underlying **naja** C++ library,
-please visit the **naja** GitHub repository at https://github.com/najaeda/naja .
+please visit the **naja** GitHub repository at https://github.com/keplertech/naja .
 
 Quick Start
 ===========
@@ -68,7 +68,7 @@ Bug Reports
 -----------
 
 If you encounter any bugs, please report them on the `najaeda` issue tracker:
-https://github.com/najaeda/naja/issues
+https://github.com/keplertech/naja/issues
 
 You’re also welcome to join the discussion on Matrix:
 
@@ -79,4 +79,4 @@ You’re also welcome to join the discussion on Matrix:
 License
 -------
 This project is licensed under the Apache License 2.0.
-See the `LICENSE <https://github.com/najaeda/naja/blob/main/LICENSE>`_ file for details.
+See the `LICENSE <https://github.com/keplertech/naja/blob/main/LICENSE>`_ file for details.

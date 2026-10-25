@@ -19,6 +19,7 @@
 #include "SNLInstParameter.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLPrimitives.h"
+#include "SNLRTLInfos.h"
 #include "SNLVRLDumper.h"
 #include "SNLScalarTerm.h"
 #include "SNLScalarNet.h"
@@ -51,6 +52,18 @@ class VHDLConstructorTest : public ::testing::Test {
 namespace {
 using naja::NL::test::evaluateRTL;
 using naja::NL::test::dffBits;
+
+SNLBitNet* assignSource(SNLBitNet* net) {
+  EXPECT_FALSE(net->isConstant());
+  for (auto* term : net->getInstTerms()) {
+    if (term->getDirection() == SNLTerm::Direction::Output &&
+        NLDB0::isAssign(term->getInstance()->getModel())) {
+      return term->getInstance()->getInstTerm(NLDB0::getAssignInput())->getNet();
+    }
+  }
+  ADD_FAILURE() << "expected an assign driver";
+  return net;
+}
 
 std::string lfsrSource(unsigned width) {
   return "library ieee; use ieee.std_logic_1164.all; "
@@ -143,6 +156,11 @@ TEST_F(VHDLConstructorTest, FourStateLogicLiteralsPreserveValuesAndPositions) {
     auto* output = design->getBusTerm(NLName("y"));
     for (size_t position = 0; position < expected.size(); ++position) {
       auto* bit = output->getBit(ascending ? 2+position : expected.size()+1-position);
+      auto* source = assignSource(bit->getNet());
+      EXPECT_EQ(source->isConstant0(), expected[position] == '0');
+      EXPECT_EQ(source->isConstant1(), expected[position] == '1');
+      EXPECT_EQ(source->isConstantX(), expected[position] == 'X');
+      EXPECT_EQ(source->isConstantZ(), expected[position] == 'Z');
       SNLEquipotential net(bit, SNLEquipotential::Mode::TraverseAssigns);
       EXPECT_EQ(net.isConst0(), expected[position] == '0');
       EXPECT_EQ(net.isConst1(), expected[position] == '1');
@@ -157,8 +175,64 @@ library ieee; use ieee.std_logic_1164.all;
 entity scalar_values is port(x,z : out std_logic); end;
 architecture rtl of scalar_values is begin x <= 'X'; z <= 'Z'; end;
 )");
-  EXPECT_TRUE(design->getScalarTerm(NLName("x"))->getNet()->isConstantX());
-  EXPECT_TRUE(design->getScalarTerm(NLName("z"))->getNet()->isConstantZ());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("x"))->getNet())->isConstantX());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("z"))->getNet())->isConstantZ());
+}
+
+TEST_F(VHDLConstructorTest, ConstantPortBitsHaveAssignDrivers) {
+  auto* design = VHDLConstructor(library_).construct(
+      std::string("library ieee; use ieee.std_logic_1164.all; ") +
+      "entity values is port(a : in std_logic; y : out std_logic_vector(5 downto 0)); end; "
+      "architecture rtl of values is begin y <= \"01XZ\" & a & '1'; end;");
+  auto* output = design->getBusTerm(NLName("y"));
+  EXPECT_EQ(design->getInstances().size(), 6);
+  EXPECT_TRUE(assignSource(output->getBit(5)->getNet())->isConstant0());
+  auto* one = assignSource(output->getBit(4)->getNet());
+  EXPECT_TRUE(one->isConstant1());
+  EXPECT_TRUE(assignSource(output->getBit(3)->getNet())->isConstantX());
+  EXPECT_TRUE(assignSource(output->getBit(2)->getNet())->isConstantZ());
+  EXPECT_EQ(assignSource(output->getBit(1)->getNet()),
+      design->getScalarTerm(NLName("a"))->getNet());
+  EXPECT_EQ(assignSource(output->getBit(0)->getNet()), one);
+  design->destroy();
+  // Scalar binary literals also exercise the simple constructor path.
+  for (const auto* value : {"'0'", "'1'"}) {
+    auto* design = VHDLConstructor(library_).construct(
+        std::string("entity scalar_value is port(y : out bit); end; ") +
+        "architecture rtl of scalar_value is begin y <= " + value + "; end;");
+    auto* source = assignSource(design->getScalarTerm(NLName("y"))->getNet());
+    EXPECT_EQ(source->isConstant1(), std::string(value) == "'1'");
+    EXPECT_EQ(source->isConstant0(), std::string(value) == "'0'");
+    design->destroy();
+  }
+}
+
+TEST_F(VHDLConstructorTest, HierarchicalConstantOutputsHaveAssignDrivers) {
+  auto* top = VHDLConstructor(library_).construct(R"(
+library ieee; use ieee.std_logic_1164.all;
+entity const_src is
+  port(clk : in std_ulogic; data : out std_ulogic_vector(3 downto 0)); end;
+architecture rtl of const_src is begin data <= (others => '1'); end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is port(clk : in std_ulogic; a : in std_ulogic_vector(3 downto 0);
+  q : out std_ulogic_vector(3 downto 0)); end;
+architecture rtl of top is signal c : std_ulogic_vector(3 downto 0);
+begin
+  src : entity work.const_src port map(clk, c);
+  q <= a xor c;
+end;
+)", "top");
+  auto* src = top->getInstance(NLName("src"));
+  ASSERT_NE(src, nullptr);
+  EXPECT_EQ(src->getModel()->getInstances().size(), 4);
+  for (auto* instance : src->getModel()->getInstances())
+    EXPECT_TRUE(NLDB0::isAssign(instance->getModel()));
+  for (auto* bit : src->getModel()->getBusTerm(NLName("data"))->getBits()) {
+    EXPECT_TRUE(assignSource(bit->getNet())->isConstant1());
+    SNLEquipotential traversed(src->getInstTerm(bit),
+        SNLEquipotential::Mode::TraverseAssigns);
+    EXPECT_TRUE(traversed.isConst1());
+  }
 }
 
 TEST_F(VHDLConstructorTest, FourStateAssignmentsPreserveMuxAndRegisterData) {
@@ -3161,7 +3235,7 @@ end;
       design->getBusTerm(NLName("d"))->getBitAtPosition(0)->getNet());
   EXPECT_EQ(child->getInstTerm(child->getModel()->getScalarTerm(NLName("q")))->getNet(),
       design->getBusTerm(NLName("q"))->getBitAtPosition(1)->getNet());
-  EXPECT_TRUE(design->getBusTerm(NLName("q"))->getBitAtPosition(0)->getNet()->isConstant0());
+  EXPECT_TRUE(assignSource(design->getBusTerm(NLName("q"))->getBitAtPosition(0)->getNet())->isConstant0());
 }
 
 TEST_F(VHDLConstructorTest, UnresolvedLogicRequiresVisibilityAndSingleDriver) {
@@ -3337,7 +3411,7 @@ end;
     auto* term = design->getBusTerm(NLName("y"));
     ASSERT_NE(term, nullptr);
     EXPECT_EQ(term->getWidth(), std::max(1u, expectedWidth));
-    for (auto* bit : term->getBits()) EXPECT_TRUE(bit->getNet()->isConstant1());
+    for (auto* bit : term->getBits()) EXPECT_TRUE(assignSource(bit->getNet())->isConstant1());
     design->destroy();
   }
 }
@@ -3559,7 +3633,7 @@ architecture rtl of arithmetic is begin
 end;
 )";
   auto* design = VHDLConstructor(library_).construct(source);
-  for (auto* bit : design->getBusTerm(NLName("y"))->getBits()) EXPECT_TRUE(bit->getNet()->isConstant1());
+  for (auto* bit : design->getBusTerm(NLName("y"))->getBits()) EXPECT_TRUE(assignSource(bit->getNet())->isConstant1());
 }
 
 TEST_F(VHDLConstructorTest, StaticBooleanConversionsPreserveShortCircuitEvaluation) {
@@ -3582,8 +3656,8 @@ TEST_F(VHDLConstructorTest, StaticBooleanConversionsPreserveShortCircuitEvaluati
         "; begin y <= '1' when boolean(chosen) and boolean(enabled) and boolean(selected) else '0'; end;";
     auto* design = VHDLConstructor(library).construct(source);
     auto* net = design->getScalarTerm(NLName("y"))->getNet();
-    EXPECT_EQ(net->isConstant1(), expected);
-    EXPECT_EQ(net->isConstant0(), !expected);
+    EXPECT_EQ(assignSource(net)->isConstant1(), expected);
+    EXPECT_EQ(assignSource(net)->isConstant0(), !expected);
     design->destroy();
   }
 }
@@ -3683,7 +3757,7 @@ entity recursive is port(y : out bit_vector(factorial(4)-1 downto 0)); end;
 architecture rtl of recursive is begin y <= (others => '1'); end;
 )");
   EXPECT_EQ(design->getBusTerm(NLName("y"))->getWidth(), 24u);
-  for (auto* bit : design->getBusTerm(NLName("y"))->getBits()) EXPECT_TRUE(bit->getNet()->isConstant1());
+  for (auto* bit : design->getBusTerm(NLName("y"))->getBits()) EXPECT_TRUE(assignSource(bit->getNet())->isConstant1());
 }
 
 TEST_F(VHDLConstructorTest, InterfaceDefaultsAndInvalidPortAttributeScope) {
@@ -3719,7 +3793,7 @@ architecture rtl of attributes is begin
         " and a'right = " + (ascending ? "6" : "4") +
         " and a'ascending = " + (ascending ? "true" : "false") + " else '0'; end;";
     auto* design = VHDLConstructor(library_).construct(source);
-    EXPECT_TRUE(design->getScalarTerm(NLName("valid"))->getNet()->isConstant1());
+    EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("valid"))->getNet())->isConstant1());
     for (unsigned pattern = 0; pattern < 8; ++pattern) {
       std::unordered_map<SNLBitNet*, bool> values;
       std::unordered_set<SNLBitNet*> visiting;
@@ -3750,7 +3824,7 @@ begin
     rows(2).data'ascending and counts'left = 5 and counts'right = 7 and counts'length = 3 else '0';
 end;
 )");
-  EXPECT_TRUE(design->getScalarTerm(NLName("valid"))->getNet()->isConstant1());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("valid"))->getNet())->isConstant1());
   for (unsigned pattern = 0; pattern < 8; ++pattern) {
     std::unordered_map<SNLBitNet*, bool> values;
     std::unordered_set<SNLBitNet*> visiting;
@@ -3796,7 +3870,7 @@ begin
     empty_t'ascending and entries_t'length = 3 and not entries_t'ascending else '0';
 end;
 )");
-  EXPECT_TRUE(design->getScalarTerm(NLName("y"))->getNet()->isConstant1());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("y"))->getNet())->isConstant1());
   design->destroy();
   for (const auto* value : {"entries'low", "entries'high", "entries'left", "entries'right"}) {
     const auto source = std::string(R"(
@@ -4651,7 +4725,7 @@ end;
 )");
   ASSERT_NE(design, nullptr);
   for (auto* bit : design->getBusTerm(NLName("y"))->getBits())
-    EXPECT_TRUE(bit->getNet()->isConstant1());
+    EXPECT_TRUE(assignSource(bit->getNet())->isConstant1());
 }
 
 TEST_F(VHDLConstructorTest, RejectsUnsupportedArchitectureFunctionScopes) {
@@ -4701,7 +4775,7 @@ architecture rtl of loop_exit is
 begin y <= '1' when count(3) = 61 and count(0) = 63 and early = 7 else '0'; end;
 )");
   ASSERT_NE(design, nullptr);
-  EXPECT_TRUE(design->getScalarTerm(NLName("y"))->getNet()->isConstant1());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("y"))->getNet())->isConstant1());
 }
 
 TEST_F(VHDLConstructorTest, RejectsInvalidFunctionExits) {
@@ -4817,7 +4891,7 @@ end;
 )";
   auto* design = VHDLConstructor(library_).construct(source);
   ASSERT_NE(design, nullptr);
-  EXPECT_TRUE(design->getScalarTerm(NLName("y"))->getNet()->isConstant1());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("y"))->getNet())->isConstant1());
   EXPECT_THROW(VHDLConstructor(library_).construct(R"(
 entity active_file is end; architecture rtl of active_file is
 file simulation_log : text;
@@ -4851,7 +4925,7 @@ begin
 end;
 )");
   ASSERT_NE(design, nullptr);
-  EXPECT_TRUE(design->getScalarTerm(NLName("y"))->getNet()->isConstant1());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("y"))->getNet())->isConstant1());
 }
 
 TEST_F(VHDLConstructorTest, SynthesisWarningsAreDeduplicatedOnlyOnConsole) {
@@ -5827,7 +5901,7 @@ begin
     add(a => chosen, b => 2) = 5 else '0';
 end;
 )");
-  EXPECT_TRUE(design->getScalarTerm(NLName("y"))->getNet()->isConstant1());
+  EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("y"))->getNet())->isConstant1());
 }
 
 TEST_F(VHDLConstructorTest, RTLPortModesAreRejectedBeforePublishing) {
@@ -5984,7 +6058,7 @@ end;
     EXPECT_EQ(evaluateRTL(design->getScalarTerm(NLName("y"))->getNet(), values, visiting), !input);
   }
   for (int i = 0; i < 3; ++i)
-    EXPECT_EQ(design->getBusTerm(NLName("flags"))->getBit(i)->getNet()->isConstant1(), i != 2);
+    EXPECT_EQ(assignSource(design->getBusTerm(NLName("flags"))->getBit(i)->getNet())->isConstant1(), i != 2);
 }
 
 TEST_F(VHDLConstructorTest, InvalidUnknownCheckOperandsAreRejected) {
@@ -6049,7 +6123,7 @@ architecture rtl of calculated is
   end;
 begin y <= "11" when steps(30) = 2 and steps(1) = 0 else "00"; end;
 )");
-  for (auto* bit : design->getBusTerm(NLName("y"))->getBits()) EXPECT_TRUE(bit->getNet()->isConstant1());
+  for (auto* bit : design->getBusTerm(NLName("y"))->getBits()) EXPECT_TRUE(assignSource(bit->getNet())->isConstant1());
   EXPECT_THROW(VHDLConstructor(library_).construct(R"(
 entity invalid is port(y : out bit); end;
 architecture rtl of invalid is function stalled return integer is
@@ -6232,7 +6306,7 @@ architecture rtl of literals is
   constant lower : count_t := minimum(16#2a#, 8#17#);
 begin y <= "101" when count = 20 and lower = 15 and 16#e# = 14 else "000"; end;
 )");
-  for (int i = 0; i < 3; ++i) EXPECT_EQ(design->getBusTerm(NLName("y"))->getBit(i)->getNet()->isConstant1(), i != 1);
+  for (int i = 0; i < 3; ++i) EXPECT_EQ(assignSource(design->getBusTerm(NLName("y"))->getBit(i)->getNet())->isConstant1(), i != 1);
   for (const auto* value : {"1e-1", "2#2#", "17#1#", "16#ff#e20", "10#999999999999999999999#"}) {
     SCOPED_TRACE(value);
     EXPECT_THROW(VHDLConstructor(library_).construct(std::string("entity invalid is port(y : out bit); end; ") +
@@ -7328,6 +7402,10 @@ entity )") + name + " is port(index : in unsigned(2 downto 0); data : in bit; " 
       "y <= base; y(to_integer(index)) <= data; end process; end;";
     auto* top = VHDLConstructor(library_).construct(source);
     ASSERT_NE(top, nullptr);
+    for (auto* instance : top->getInstances()) {
+      ASSERT_NE(nullptr, instance->getRTLInfos());
+      EXPECT_FALSE(instance->getRTLInfos()->getSourceOrigins().empty());
+    }
     SNLDesign* model = nullptr;
     for (auto* instance : top->getInstances()) if (NLDB0::isVectorUpdate(instance->getModel())) {
       EXPECT_EQ(model, nullptr);
@@ -7388,6 +7466,10 @@ entity )") + name + " is port(index : in unsigned(2 downto 0); data : in bit_vec
       " is begin y <= data(to_integer(index)); end;";
     auto* top = VHDLConstructor(library_).construct(source);
     ASSERT_NE(nullptr, top);
+    for (auto* instance : top->getInstances()) {
+      ASSERT_NE(nullptr, instance->getRTLInfos());
+      EXPECT_FALSE(instance->getRTLInfos()->getSourceOrigins().empty());
+    }
     size_t selects = 0;
     for (auto* instance : top->getInstances()) selects += NLDB0::isVectorSelect(instance->getModel());
     EXPECT_EQ(1u, selects);
@@ -7404,4 +7486,84 @@ entity )") + name + " is port(index : in unsigned(2 downto 0); data : in bit_vec
           evaluateRTL(top->getScalarTerm(NLName("y"))->getNet(), values, visiting));
     }
   }
+}
+
+TEST_F(VHDLConstructorTest, AnonymousSourceReferences) {
+  const std::string source = "-- source coordinates\r\n\r\n"
+      "entity leaf is\r\n  port(a : in bit; y : out bit);\r\nend;\r\n"
+      "architecture rtl of leaf is begin\r\n  y <= not a;\r\nend;\r\n";
+  auto* design = VHDLConstructor(library_).construct(source);
+  const auto& declaration = design->getRTLInfos()->getSourceDeclaration();
+  ASSERT_TRUE(declaration);
+  EXPECT_EQ(NLName("<source>"), declaration->range.file);
+  EXPECT_EQ(3, declaration->range.line);
+  EXPECT_EQ(5, declaration->range.endLine);
+  EXPECT_EQ(4, declaration->range.endColumn);
+  const auto& port = design->getTerm(NLName("a"))->getRTLInfos()->getSourceDeclaration();
+  ASSERT_TRUE(port);
+  EXPECT_EQ(4, port->range.line);
+  EXPECT_EQ(8, port->range.column);
+  EXPECT_EQ(8, port->range.endColumn);
+  for (auto* instance : design->getInstances()) {
+    EXPECT_FALSE(instance->getRTLInfos()->getSourceDeclaration());
+    ASSERT_EQ(1, instance->getRTLInfos()->getSourceOrigins().size());
+    const auto& origin = instance->getRTLInfos()->getSourceOrigins().front();
+    EXPECT_EQ(NLName("naja-vhdl"), origin.provider);
+    EXPECT_EQ(NLName("vhdl"), origin.language);
+    EXPECT_EQ(NLName("rtl"), origin.representation);
+    EXPECT_EQ(7, origin.range.line);
+    EXPECT_EQ(8, origin.range.column);
+    EXPECT_EQ(12, origin.range.endColumn);
+  }
+}
+
+TEST_F(VHDLConstructorTest, StructuralSpecializationSourceReferences) {
+  const std::string source =
+      "-- original coordinates survive extraction and generic rewriting\n"
+      "entity leaf is generic(n : positive := 123); port(a : in bit_vector(n-1 downto 0); y : out bit_vector(n-1 downto 0)); end;\n"
+      "architecture rtl of leaf is begin\n  y <= not a;\nend;\n"
+      "entity top is port(a : in bit_vector(1 downto 0); y : out bit_vector(1 downto 0)); end;\n"
+      "architecture rtl of top is begin\n  u: entity work.leaf generic map(2) port map(a, y);\nend;\n";
+  auto* design = VHDLConstructor(library_).construct(source, "top");
+  auto* instance = design->getInstance(NLName("u"));
+  ASSERT_NE(nullptr, instance);
+  ASSERT_TRUE(instance->getRTLInfos()->getSourceDeclaration());
+  EXPECT_EQ(8, instance->getRTLInfos()->getSourceDeclaration()->range.line);
+  auto* model = instance->getModel();
+  ASSERT_TRUE(model->getRTLInfos()->getSourceDeclaration());
+  EXPECT_EQ(2, model->getRTLInfos()->getSourceDeclaration()->range.line);
+  auto* term = model->getBusTerm(NLName("a"));
+  ASSERT_TRUE(term->getRTLInfos()->getSourceDeclaration());
+  const auto column = source.substr(source.find("entity leaf")).find("a : in") + 1;
+  EXPECT_EQ(column, term->getRTLInfos()->getSourceDeclaration()->range.column);
+  for (auto* bit : term->getBusBits()) {
+    ASSERT_TRUE(bit->getRTLInfos()->getSourceDeclaration());
+    EXPECT_EQ(column, bit->getRTLInfos()->getSourceDeclaration()->range.column);
+  }
+  for (auto* gate : model->getInstances()) {
+    ASSERT_FALSE(gate->getRTLInfos()->getSourceOrigins().empty());
+    EXPECT_EQ(4, gate->getRTLInfos()->getSourceOrigins().front().range.line);
+  }
+}
+
+TEST_F(VHDLConstructorTest, RTLMultilineSourceReferencesWithWideColumns) {
+  const std::string source = "-- byte coordinates: \xc3\xa9\n"
+      "entity top is generic(enabled : boolean := true); port(a, b : in bit; y : out bit); end;\n"
+      "architecture rtl of top is begin\n  y <= " + std::string(70000, ' ') + "a and\n    b;\nend;\n";
+  auto* design = VHDLConstructor(library_).construct(source);
+  size_t gates = 0;
+  for (auto* instance : design->getInstances()) {
+    if (NLDB0::getGateName(instance->getModel()) != "and") continue;
+    ++gates;
+    const auto* infos = instance->getRTLInfos();
+    ASSERT_NE(nullptr, infos);
+    ASSERT_EQ(1, infos->getSourceOrigins().size());
+    const auto& origin = infos->getSourceOrigins().front();
+    EXPECT_EQ(NLName("<source>"), origin.range.file);
+    EXPECT_EQ(4, origin.range.line);
+    EXPECT_EQ(70008, origin.range.column);
+    EXPECT_EQ(5, origin.range.endLine);
+    EXPECT_EQ(5, origin.range.endColumn);
+  }
+  EXPECT_EQ(1, gates);
 }

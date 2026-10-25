@@ -509,14 +509,14 @@ endmodule
         self.assertIn("Run CV32E40P extended example TB simulations", workflow)
         self.assertIn("cva6-pr-sim:", workflow)
         self.assertNotIn("cva6-full-sim:", workflow)
-        self.assertIn("ghcr.io/najaeda/naja/sv-sim:latest", workflow)
+        self.assertIn("ghcr.io/keplertech/naja/sv-sim:latest", workflow)
         job = workflow_config["jobs"]["cva6-pr-sim"]
         self.assertIn("pull_request", job["if"])
         self.assertIn("push", job["if"])
         self.assertIn("workflow_dispatch", job["if"])
         self.assertNotIn("container", job)
         self.assertEqual(
-            "ghcr.io/najaeda/naja/sv-sim:latest",
+            "ghcr.io/keplertech/naja/sv-sim:latest",
             job["env"]["SV_SIM_IMAGE"],
         )
         self.assertIn("Pull or build SV simulation image", workflow)

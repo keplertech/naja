@@ -53,9 +53,9 @@ input = "src/core/NajaVersion.h.in"
 regex = 'NAJA_VERSION\s*\{\s*"(?P<value>[^"]+)"\s*\}'
 
 [project.urls]
-Homepage = "https://github.com/najaeda/naja"
-Repository = "https://github.com/najaeda/naja"
-Issues = "https://github.com/najaeda/naja/issues"
+Homepage = "https://github.com/keplertech/naja"
+Repository = "https://github.com/keplertech/naja"
+Issues = "https://github.com/keplertech/naja/issues"
 
 [tool.cibuildwheel]
 build-verbosity = 1

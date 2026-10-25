@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+# SPDX-License-Identifier: Apache-2.0
+
+name: CodSpeed
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  simulation:
+    name: CPU simulation (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CC: gcc-13
+      CXX: g++-13
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -yq gcc-13 g++-13 libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev
+
+      - name: Configure CMake
+        run: >-
+          cmake -S . -B build-codspeed
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_BENCHMARKS=ON
+          -DNAJA_BENCHMARK_CODSPEED=ON
+          -DENABLE_SANITIZERS=OFF
+          -DENABLE_THREAD_SANITIZER=OFF
+          -DCODE_COVERAGE=OFF
+          -DLONG_TESTS=OFF
+
+      - name: Build benchmarks
+        run: cmake --build build-codspeed --target snl_bench --parallel 4
+
+      # Public-repository uploads are tokenless, including pull requests from forks.
+      # Keep the regression check advisory in CodSpeed during calibration.
+      - name: Measure CPU benchmarks
+        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
+        with:
+          mode: simulation
+          run: ./build-codspeed/bench/snl_bench --benchmark_filter='::BM_(CreateNetlist0|CreateInstances|TraversalInstances|LoadVerilogFile|HierarchyTraversal)(\[|$)'

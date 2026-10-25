@@ -363,7 +363,7 @@ jobs:
 
 
   test_upload_pypi:
-    if: github.repository == 'najaeda/naja' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'keplertech/naja' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
     #environment: pypi
@@ -388,7 +388,7 @@ jobs:
           skip-existing: true
 
   pypi-publish:
-    if: github.repository == 'najaeda/naja' && github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.repository == 'keplertech/naja' && github.event_name == 'push' && github.ref_type == 'tag'
     needs: [test_upload_pypi]
     name: Upload release to PyPI
     runs-on: ubuntu-latest

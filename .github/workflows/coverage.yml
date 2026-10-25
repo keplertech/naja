@@ -77,7 +77,7 @@ jobs:
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v7
-      if: github.repository == 'najaeda/naja'
+      if: github.repository == 'keplertech/naja'
       with:
         fail_ci_if_error: true
         files: ${{ github.workspace }}/build/coverage.info

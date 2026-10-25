@@ -152,7 +152,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3G
       NUM_JOBS: "2"
-      SV_SIM_IMAGE: ghcr.io/najaeda/naja/sv-sim:latest
+      SV_SIM_IMAGE: ghcr.io/keplertech/naja/sv-sim:latest
       SV_REGRESS_SEED_ROOT: /opt/sv-regress-seeds
 
     steps:

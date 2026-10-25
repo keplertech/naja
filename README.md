@@ -4,13 +4,13 @@
 
 [![PyPI](https://img.shields.io/pypi/v/najaeda)](https://pypi.org/project/najaeda)
 [![Open Chapter 1](https://colab.research.google.com/assets/colab-badge.svg)](
-https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb)
+https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb)
 [![Join Matrix Chat →](https://img.shields.io/badge/Matrix-Join%20Chat-success?logo=matrix)](https://matrix.to/#/#naja:fossi-chat.org)
-![Ubuntu Build](https://github.com/najaeda/naja/actions/workflows/ubuntu-build.yml/badge.svg)
-![MacOS Build](https://github.com/najaeda/naja/actions/workflows/macos-build.yml/badge.svg)
-[![codecov](https://codecov.io/gh/najaeda/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP)](https://codecov.io/gh/najaeda/naja)
+![Ubuntu Build](https://github.com/keplertech/naja/actions/workflows/ubuntu-build.yml/badge.svg)
+![MacOS Build](https://github.com/keplertech/naja/actions/workflows/macos-build.yml/badge.svg)
+[![codecov](https://codecov.io/gh/keplertech/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP)](https://codecov.io/gh/keplertech/naja)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![REUSE status](https://api.reuse.software/badge/github.com/najaeda/naja)](https://api.reuse.software/info/github.com/najaeda/naja)
+[![REUSE status](https://api.reuse.software/badge/github.com/keplertech/naja)](https://api.reuse.software/info/github.com/keplertech/naja)
 
 ## What is Naja?
 
@@ -102,7 +102,7 @@ flowchart LR
     classDef tool fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065,stroke-width:2px
     click slang "https://github.com/MikePopoloski/slang"
     click naja-verilog "https://github.com/keplertech/naja-verilog"
-    click naja "https://github.com/najaeda/naja"
+    click naja "https://github.com/keplertech/naja"
     click najaif "https://github.com/keplertech/naja-if"
     click najaeda "https://pypi.org/project/najaeda/"
     click kf "https://github.com/keplertech/kepler-formal"
@@ -156,12 +156,12 @@ Six hands-on notebooks — open any of them in Colab with no local install neede
 
 | # | Topic | Colab |
 | --- | --- | --- |
-| 1 | Getting started — load Verilog, navigate hierarchy, visualize | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb) |
-| 2 | Liberty primitives — load a synthesised design with standard cells | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/02_liberty_primitives_design.ipynb) |
-| 3 | Editing a netlist — rename, disconnect, reconnect, delete | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/03_editing_a_netlist.ipynb) |
-| 4 | SystemVerilog elaboration — load and browse an elaborated SV design | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/04_systemverilog_elaborated_netlist.ipynb) |
-| 5 | ibex RISC-V core — explore a real-world SV core, collect stats | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/05_ibex_riscv_core.ipynb) |
-| 6 | Fanout analysis — compute fanout for every net, trace drivers, export to pandas | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja/blob/main/tutorials/notebooks/06_fanout_analysis.ipynb) |
+| 1 | Getting started — load Verilog, navigate hierarchy, visualize | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb) |
+| 2 | Liberty primitives — load a synthesised design with standard cells | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/02_liberty_primitives_design.ipynb) |
+| 3 | Editing a netlist — rename, disconnect, reconnect, delete | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/03_editing_a_netlist.ipynb) |
+| 4 | SystemVerilog elaboration — load and browse an elaborated SV design | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/04_systemverilog_elaborated_netlist.ipynb) |
+| 5 | ibex RISC-V core — explore a real-world SV core, collect stats | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/05_ibex_riscv_core.ipynb) |
+| 6 | Fanout analysis — compute fanout for every net, trace drivers, export to pandas | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/06_fanout_analysis.ipynb) |
 
 ## `naja_edit` — Netlist CLI
 
@@ -188,7 +188,7 @@ Available optimizations (`-a`): `all` (DLE + constant propagation + primitives),
 The CLI keeps `-f verilog` and `-t verilog` as compatibility aliases that warn
 they will be deprecated soon; prefer `gate-level-verilog`.
 
-Python script examples: [src/apps/naja_edit/examples](https://github.com/najaeda/naja/blob/main/src/apps/naja_edit/examples)  
+Python script examples: [src/apps/naja_edit/examples](https://github.com/keplertech/naja/blob/main/src/apps/naja_edit/examples)\
 Regression suite: [naja-regress](https://github.com/najaeda/naja-regress)
 
 ## Building from Source
@@ -242,7 +242,7 @@ nix-shell -p cmake gnumake boost python3 capnproto bison flex pkg-config tbb_202
 #### Build, test, and install
 
 ```bash
-git clone --recurse-submodules https://github.com/najaeda/naja.git
+git clone --recurse-submodules https://github.com/keplertech/naja.git
 cd naja
 export NAJA_INSTALL="$PWD/install"
 cmake -S . -B build \
@@ -288,7 +288,7 @@ export PATH="$(brew --prefix flex)/bin:$(brew --prefix bison)/bin:$PATH"
 Build and test from the repository root:
 
 ```bash
-git clone https://github.com/najaeda/naja.git
+git clone https://github.com/keplertech/naja.git
 cd naja
 git submodule update --init thirdparty/naja-if thirdparty/naja-verilog
 bazel build //... --jobs=auto
@@ -333,13 +333,13 @@ Naja exposes two complementary APIs:
 - **DNL** (Dissolved Netlist) — fast, read-only flattened view for parallel analysis
 
 Extended documentation: [naja.readthedocs.io](https://naja.readthedocs.io/en/latest/)  
-C++ snippet: [NLUniverseSnippet.cpp](https://github.com/najaeda/naja/blob/main/src/app_snippet/src/NLUniverseSnippet.cpp)  
-App template (copy to start a new tool): [src/app_snippet](https://github.com/najaeda/naja/blob/main/src/app_snippet)
+C++ snippet: [NLUniverseSnippet.cpp](https://github.com/keplertech/naja/blob/main/src/app_snippet/src/NLUniverseSnippet.cpp)\
+App template (copy to start a new tool): [src/app_snippet](https://github.com/keplertech/naja/blob/main/src/app_snippet)
 
 ## Community
 
 - Chat: [Matrix #naja:fossi-chat.org](https://matrix.to/#/#naja:fossi-chat.org)
-- Bugs / features: [GitHub Issues](https://github.com/najaeda/naja/issues)
+- Bugs / features: [GitHub Issues](https://github.com/keplertech/naja/issues)
 - Contact: [contact@keplertech.io](mailto:contact@keplertech.io)
 
 :star: If you find Naja useful, starring the repo helps spread the word.

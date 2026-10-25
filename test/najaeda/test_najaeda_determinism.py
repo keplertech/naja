@@ -145,7 +145,12 @@ def dump_state(output):
     state = []
 
     def attributes(obj):
-        return [[a.getName(), a.getValue(), a.hasValue()] for a in obj.getAttributes()]
+        return {
+            "attributes": [[a.getName(), a.getValue(), a.hasValue()] for a in obj.getAttributes()],
+            "source_location": obj.getSourceLoc(),
+            "source_declaration": obj.getSourceDeclaration(),
+            "source_origins": obj.getSourceOrigins(),
+        }
 
     def visit(library):
         for design in library.getSNLDesigns():
@@ -434,6 +439,16 @@ module top(input logic [10:0] a, output wire [10:0] y);
   relay grouped(lanes);
   endpoint wider(wide);
 endmodule
+""")
+
+    def test_vhdl_constant_ports(self):
+        self.check_determinism("vhd", """
+library ieee; use ieee.std_logic_1164.all;
+entity source is port(a : in std_logic; y : out std_logic_vector(5 downto 0)); end;
+architecture rtl of source is begin y <= "01XZ" & a & '1'; end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is port(a : in std_logic; y : out std_logic_vector(5 downto 0)); end;
+architecture rtl of top is begin u : entity work.source port map(a, y); end;
 """)
 
     def test_vhdl_memory(self):
