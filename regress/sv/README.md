@@ -43,6 +43,11 @@ remain unchanged too.
   CV32E40P. CV32E40P's upstream testbench links its firmware against newlib; the
   GitHub workflow installs xPack GNU RISC-V Embedded GCC for that reason.
 
+Lint and simulation stages use the `naja_primitives.v` emitted beside the
+generated netlist, including configured firmware and cocotb simulations. This
+keeps the models matched to the Naja build and its primitive families. After
+updating Naja, rerun `load_dump` rather than reusing an older primitive file.
+
 GitHub CI installs the Python dependencies and uses Dockerized Verilator. The
 `External SV Regress` workflow runs lint for the small external designs and
 load/dump checks for the large BlackParrot and CVA6 designs, plus Borg's
@@ -144,7 +149,7 @@ memory-initializer defines are enabled at Naja loading.
 `cases/borg/borg_cocotb_sim.py` compiles exactly:
 
 1. `artifacts/borg_naja.v`;
-2. Naja's `test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v`;
+2. the `naja_primitives.v` model file emitted alongside that netlist;
 3. upstream `test/soc/tb.v`.
 
 It imports the upstream Python tests/helpers and the freshly RDL-generated
@@ -801,7 +806,7 @@ It runs 12 configurations: RTL, generated netlist with the existing primitive,
 and generated netlist with a temporary nonblocking latch candidate, each on
 both simulators with 0/1 ps read propagation. JSON results and build/run logs
 are saved in `build/ita-primitive-check/`. The candidate changes only an
-artifact copy of `najaeda_primitives.v`.
+artifact copy of the emitted `naja_primitives.v`.
 
 Exit success means all models agree within each simulator/delay combination
 and all 1 ps controls pass; **it does not mean zero-delay golden checks pass**.

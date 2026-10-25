@@ -29,6 +29,31 @@ import borg_cocotb_sim
 
 
 class SVRegressRunnerTest(unittest.TestCase):
+    def test_dumped_primitives_are_required_and_preserved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifacts = Path(tmpdir)
+            (artifacts / "najaeda_primitives.v").write_text("// stale models\n", encoding="utf-8")
+            with self.assertRaisesRegex(sv_regress.RegressError, "rerun load_dump"):
+                sv_regress.dumped_primitives(artifacts)
+            emitted = artifacts / "naja_primitives.v"
+            contents = "module naja_vector_update; endmodule\nmodule naja_vector_select; endmodule\n"
+            emitted.write_text(contents, encoding="utf-8")
+            self.assertEqual(emitted, sv_regress.dumped_primitives(artifacts))
+            self.assertEqual(contents, emitted.read_text(encoding="utf-8"))
+
+    def test_configured_simulations_use_dumped_primitives(self):
+        count = 0
+        for case in sv_regress.load_manifest(sv_regress.DEFAULT_MANIFEST):
+            for config in case.values():
+                if not isinstance(config, dict):
+                    continue
+                for command in config.get("commands", []):
+                    for index, argument in enumerate(command):
+                        if argument == "--primitives":
+                            count += 1
+                            self.assertEqual("{artifacts}/naja_primitives.v", command[index + 1])
+        self.assertGreater(count, 0)
+
     def test_manifest_naja_file_references_exist(self):
         def check(value):
             if isinstance(value, dict):
@@ -785,6 +810,7 @@ endmodule
                 artifacts_dir.mkdir(parents=True)
                 generated = artifacts_dir / "fake_naja.v"
                 generated.write_text("module fake_top; endmodule\n", encoding="utf-8")
+                (artifacts_dir / "naja_primitives.v").write_text("// dumped models\n", encoding="utf-8")
 
                 sv_regress.run_verilator(
                     case,
@@ -802,7 +828,7 @@ endmodule
         self.assertIn("-Wno-WIDTH", command)
         self.assertIn("--timing", command)
         self.assertIn("/work/artifacts/fake_naja.v", command)
-        self.assertIn("/work/artifacts/najaeda_primitives.v", command)
+        self.assertIn("/work/artifacts/naja_primitives.v", command)
         self.assertEqual(12, kwargs["timeout"])
         self.assertEqual(log_dir / "verilator-lint.log", kwargs["log_path"])
 
@@ -832,6 +858,7 @@ endmodule
                 artifacts_dir.mkdir(parents=True)
                 generated = artifacts_dir / "fake_naja.v"
                 generated.write_text("module fake_top; endmodule\n", encoding="utf-8")
+                (artifacts_dir / "naja_primitives.v").write_text("// dumped models\n", encoding="utf-8")
 
                 sv_regress.run_lint(
                     case,
@@ -851,7 +878,7 @@ endmodule
         self.assertIn("--lint-only", command)
         self.assertIn("-Wno-MULTIDRIVEN", command)
         self.assertIn(str(generated), command)
-        self.assertIn(str(artifacts_dir / "najaeda_primitives.v"), command)
+        self.assertIn(str(artifacts_dir / "naja_primitives.v"), command)
         self.assertEqual(12, kwargs["timeout"])
 
     def test_run_github_sim_builds_and_runs_binary(self):
@@ -888,6 +915,7 @@ endmodule
                 repo_dir.mkdir()
                 generated = artifacts_dir / "fake_naja.v"
                 generated.write_text("module fake_top; endmodule\n", encoding="utf-8")
+                (artifacts_dir / "naja_primitives.v").write_text("// dumped models\n", encoding="utf-8")
                 (case_dir / "tb_fake.sv").write_text("module tb_fake; endmodule\n", encoding="utf-8")
 
                 sv_regress.run_verilator_binary_stage(
@@ -952,6 +980,7 @@ endmodule
                 repo_dir.mkdir()
                 generated = artifacts_dir / "fake_naja.v"
                 generated.write_text("module fake_top; endmodule\n", encoding="utf-8")
+                (artifacts_dir / "naja_primitives.v").write_text("// dumped models\n", encoding="utf-8")
                 (case_dir / "tb_fake.sv").write_text("module tb_fake; endmodule\n", encoding="utf-8")
 
                 result = sv_regress.run_helloworld_sim(

@@ -25,7 +25,7 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parent
-    primitives = ROOT / 'test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v'
+    primitives = out / 'naja_primitives.v'
     from najaeda import netlist
 
     try:

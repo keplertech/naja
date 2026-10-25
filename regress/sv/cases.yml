@@ -44,7 +44,7 @@ cases:
           - --generated
           - "{artifacts}/borg_naja.v"
           - --primitives
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
       pass_regex: BORG_COCOTB_SIM_PASS
 
   - name: black_parrot
@@ -188,7 +188,7 @@ cases:
           - "--generated"
           - "{artifacts}/cva6_testharness_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
       pass_regex: "CVA6_HELLOWORLD_SIM_PASS"
     cva6_extended_sim:
       timeout_seconds: 21600
@@ -215,7 +215,7 @@ cases:
           - "--generated"
           - "{artifacts}/cva6_testharness_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "hello_world"
           - "--program"
@@ -248,7 +248,7 @@ cases:
           - "--generated"
           - "{artifacts}/cva6_testharness_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "corev_return0"
           - "--program"
@@ -295,7 +295,7 @@ cases:
           - "--generated"
           - "{artifacts}/cva6_testharness_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "hello_world"
           - "--program"
@@ -438,7 +438,7 @@ cases:
           - "--generated"
           - "{artifacts}/ibex_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
       pass_regex: "IBEX_HELLOWORLD_SIM_PASS"
     ibex_dit_sim:
       timeout_seconds: 7200
@@ -472,7 +472,7 @@ cases:
           - "--generated"
           - "{artifacts}/ibex_secure_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "dit_test"
           - "--secure-ibex"
@@ -511,7 +511,7 @@ cases:
           - "--generated"
           - "{artifacts}/ibex_secure_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "dummy_instr_test"
           - "--secure-ibex"
@@ -552,7 +552,7 @@ cases:
           - "--generated"
           - "{artifacts}/ibex_pmp_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "pmp_smoke_test"
           - "--max-cycles"
@@ -590,7 +590,7 @@ cases:
           - "--generated"
           - "{artifacts}/ibex_secure_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "dit_test"
           - "--secure-ibex"
@@ -629,7 +629,7 @@ cases:
           - "--generated"
           - "{artifacts}/ibex_secure_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "dummy_instr_test"
           - "--secure-ibex"
@@ -713,7 +713,7 @@ cases:
           - "--generated"
           - "{artifacts}/cv32e40p_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
       pass_regex: "CV32E40P_HELLOWORLD_SIM_PASS"
     interrupt_sim:
       timeout_seconds: 7200
@@ -736,7 +736,7 @@ cases:
           - "--generated"
           - "{artifacts}/cv32e40p_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "interrupt"
           - "--max-cycles"
@@ -774,7 +774,7 @@ cases:
           - "--generated"
           - "{artifacts}/cv32e40p_pulp_naja.v"
           - "--primitives"
-          - "{naja}/test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v"
+          - "{artifacts}/naja_primitives.v"
           - "--program"
           - "hwlp"
           - "--max-cycles"

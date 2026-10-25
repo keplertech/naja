@@ -252,7 +252,7 @@ def main():
             generated = out / "generated.f"
             files = [package / "ita/dependencies/common_cells/src/cf_math_pkg.sv",
                      package / "ita/main/src/ita_package.sv", mem_model, netlist,
-                     pulp.ROOT / "test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v",
+                     out / "dump/naja_primitives.v",
                      *clocks, tb]
             generated.write_text("\n".join(map(str, files)) + "\n")
             lists["generated"] = generated

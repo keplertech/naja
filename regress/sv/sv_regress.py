@@ -37,6 +37,7 @@ REPO_ROOT = REGRESS_SV_ROOT.parents[1]
 DEFAULT_MANIFEST = REGRESS_SV_ROOT / "cases.yml"
 DEFAULT_WORK_DIR = REPO_ROOT / "build" / "sv-regress"
 DEFAULT_NAJAEDA_PATH = REPO_ROOT / "build" / "test" / "najaeda"
+# Legacy benchmark fixture; runtime stages use the dumper-produced models.
 PRIMITIVES_PATH = REPO_ROOT / "test" / "nl" / "formats" / "systemverilog" / \
     "benchmarks" / "najaeda_primitives.v"
 DEFAULT_STAGES = ["lint", "github_sim"]
@@ -406,6 +407,7 @@ GENERATOR = r'''
 import argparse
 import json
 import logging
+from pathlib import Path
 from najaeda import netlist
 from najaeda import naja
 from common.logic_cone_signature import build_signatures
@@ -443,7 +445,11 @@ if args.logic_cones_config:
 dump_config = netlist.GateLevelVerilogDumpConfig()
 dump_config.dumpRTLInfosAsAttributes = args.rtl_infos_as_attributes
 dump_config.dumpAssignsAsInstances = args.assigns_as_instances
+primitives = Path(args.output).with_name("naja_primitives.v")
+primitives.unlink(missing_ok=True)
 top.dump_gate_level_verilog(args.output, config=dump_config)
+if not primitives.exists():
+    primitives.write_text("// No DB0 primitive models are needed by this netlist.\n", encoding="utf-8")
 with open(args.flist, encoding="utf-8") as source_list:
     source_count = sum(
         1 for line in source_list
@@ -756,6 +762,13 @@ def materialize_flist(
     return materialized
 
 
+def dumped_primitives(artifacts_dir: Path) -> Path:
+    path = artifacts_dir / "naja_primitives.v"
+    if not path.is_file():
+        raise RegressError(f"Missing dumped primitive models: {path}; rerun load_dump")
+    return path
+
+
 def run_verilator(
     case: dict[str, Any],
     *,
@@ -786,8 +799,7 @@ def run_lint(
         valid = ", ".join(sorted(VALID_LINT_RUNNERS))
         raise RegressError(f"Unknown lint runner '{lint_runner}'. Valid runners: {valid}")
 
-    primitives_path = artifacts_dir / PRIMITIVES_PATH.name
-    shutil.copy2(PRIMITIVES_PATH, primitives_path)
+    primitives_path = dumped_primitives(artifacts_dir)
 
     verilator = case["verilator"]
     image = verilator.get("image", "verilator/verilator:v5.046")
@@ -903,8 +915,7 @@ def run_verilator_binary_stage(
     log_dir: Path,
 ) -> dict[str, Any]:
     config = configured_stage(case, stage)
-    primitives_path = artifacts_dir / PRIMITIVES_PATH.name
-    shutil.copy2(PRIMITIVES_PATH, primitives_path)
+    primitives_path = dumped_primitives(artifacts_dir)
     sources = copy_stage_sources(
         config,
         repo_dir=repo_dir,
