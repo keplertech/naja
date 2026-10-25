@@ -157,3 +157,15 @@ This example demonstrates how to perform Dead Logic Elimination (DLE) on a netli
         for leaf in to_delete:
             leaf.delete()
         return to_delete
+
+Performance monitoring
+----------------------
+
+The repository's ``bench/python/test_workflows.py`` benchmarks leaf traversal,
+cross-hierarchy connectivity, statistics, and the instance visitor on synthetic
+hierarchies using ``pytest-codspeed``. Fixtures and correctness checks stay
+outside the measured callables, and statistics starts with a fresh cache on
+every call. Run these benchmarks against the native module built from the same
+checkout, rather than an installed wheel. The `benchmark guide
+<https://github.com/najaeda/naja/blob/main/bench/README.md>`_ describes package
+staging, local execution, and the C++ frontend and serialization benchmarks.

@@ -9,6 +9,7 @@ https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/not
 ![Ubuntu Build](https://github.com/keplertech/naja/actions/workflows/ubuntu-build.yml/badge.svg)
 ![MacOS Build](https://github.com/keplertech/naja/actions/workflows/macos-build.yml/badge.svg)
 [![codecov](https://codecov.io/gh/keplertech/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP)](https://codecov.io/gh/keplertech/naja)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/keplertech/naja)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![REUSE status](https://api.reuse.software/badge/github.com/keplertech/naja)](https://api.reuse.software/info/github.com/keplertech/naja)
 

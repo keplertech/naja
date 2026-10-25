@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+# SPDX-License-Identifier: Apache-2.0
+
+pytest==8.4.2
+pytest-codspeed==5.0.3

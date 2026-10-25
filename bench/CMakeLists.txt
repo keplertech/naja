@@ -37,6 +37,8 @@ target_include_directories(snl_bench PRIVATE
 
 target_link_libraries(snl_bench PRIVATE
   benchmark::benchmark
+  naja_dnl
+  naja_opt
   naja_snl_verilog
   naja_nl_dump
   naja_nl
@@ -44,4 +46,10 @@ target_link_libraries(snl_bench PRIVATE
 
 target_compile_definitions(snl_bench PRIVATE
   SNL_VRL_BENCHMARKS_PATH="${CMAKE_SOURCE_DIR}/test/nl/formats/verilog/benchmarks"
+)
+
+add_executable(snl_format_bench SNLFormatBench.cpp)
+target_link_libraries(snl_format_bench PRIVATE
+  benchmark::benchmark naja_snl_systemverilog naja_snl_vhdl
+  naja_snl_liberty naja_snl_verilog naja_nl_dump naja_nl
 )

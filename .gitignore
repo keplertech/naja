@@ -41,6 +41,7 @@ sv_constructor_perf.log
 /internal/
 /bazel-*
 .cache
+.codspeed/
 
 # scratch clone used by ci/check_submodule_bazel_sync.py's ancestor check
 .dependency-sync-scratch

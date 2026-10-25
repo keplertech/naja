@@ -21,7 +21,7 @@ jobs:
   simulation:
     name: CPU simulation (advisory)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CC: gcc-13
       CXX: g++-13
@@ -34,24 +34,46 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -yq gcc-13 g++-13 libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Install Python benchmark dependencies
+        run: python -m pip install -r bench/python/requirements.txt
+
       - name: Configure CMake
-        run: >-
-          cmake -S . -B build-codspeed
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DBUILD_BENCHMARKS=ON
-          -DNAJA_BENCHMARK_CODSPEED=ON
-          -DENABLE_SANITIZERS=OFF
-          -DENABLE_THREAD_SANITIZER=OFF
-          -DCODE_COVERAGE=OFF
-          -DLONG_TESTS=OFF
+        run: |
+          cmake -S . -B build-codspeed \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_BENCHMARKS=ON \
+            -DNAJA_BENCHMARK_CODSPEED=ON \
+            -DENABLE_SANITIZERS=OFF \
+            -DENABLE_THREAD_SANITIZER=OFF \
+            -DCODE_COVERAGE=OFF \
+            -DLONG_TESTS=OFF \
+            -DPython_EXECUTABLE="$(command -v python)" \
+            -DPython3_EXECUTABLE="$(command -v python)"
 
       - name: Build benchmarks
-        run: cmake --build build-codspeed --target snl_bench --parallel 4
+        run: cmake --build build-codspeed --target snl_bench snl_format_bench naja --parallel 4
+
+      - name: Stage Python package from this build
+        run: >-
+          cmake -DSRC="$GITHUB_WORKSPACE/src/najaeda/najaeda"
+          -DDST="$GITHUB_WORKSPACE/build-codspeed/python/najaeda"
+          -DNAJA_SO="$GITHUB_WORKSPACE/build-codspeed/src/nl/python/naja_wrapping/naja.so"
+          -P test/najaeda/setup_test_env.cmake
 
       # Public-repository uploads are tokenless, including pull requests from forks.
       # Keep the regression check advisory in CodSpeed during calibration.
       - name: Measure CPU benchmarks
         uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
+        env:
+          PYTHONPATH: ${{ github.workspace }}/build-codspeed/python
         with:
           mode: simulation
-          run: ./build-codspeed/bench/snl_bench --benchmark_filter='::BM_(CreateNetlist0|CreateInstances|TraversalInstances|LoadVerilogFile|HierarchyTraversal)(\[|$)'
+          run: |
+            set -e
+            ./build-codspeed/bench/snl_bench --benchmark_filter='::BM_(CreateNetlist0|CreateInstances|TraversalInstances|LoadVerilogFile|HierarchyTraversal|DNLConstruction|DNLIndependentNets|Equipotential|AssignChain|ConstantPropagation|DeadLogicElimination|DesignClone|InstanceLookupByName|InstanceLookupByID|TerminalReconnect)(\[|$)'
+            ./build-codspeed/bench/snl_format_bench
+            python -m pytest bench/python/test_workflows.py --codspeed --codspeed-mode=simulation

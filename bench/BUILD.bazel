@@ -17,10 +17,27 @@ cc_binary(
         'SNL_VRL_BENCHMARKS_PATH=\\"test/nl/formats/verilog/benchmarks\\"',
     ],
     deps = [
+        "//src/dnl:naja_dnl",
         "//src/nl/formats/verilog:naja_snl_verilog",
         "//src/nl/netlist:naja_nl",
         "//src/nl/netlist/serialization/capnp:naja_nl_dump",
+        "//src/optimization:naja_opt",
         "//test/nl/netlists:snl_netlists",
+        "@google_benchmark//:benchmark",
+        "@onetbb//:tbb",
+    ],
+)
+
+cc_binary(
+    name = "snl_format_bench",
+    srcs = ["SNLFormatBench.cpp"],
+    deps = [
+        "//src/nl/formats/liberty:naja_snl_liberty",
+        "//src/nl/formats/systemverilog:naja_snl_systemverilog",
+        "//src/nl/formats/verilog:naja_snl_verilog",
+        "//src/nl/formats/vhdl:naja_snl_vhdl",
+        "//src/nl/netlist:naja_nl",
+        "//src/nl/netlist/serialization/capnp:naja_nl_dump",
         "@google_benchmark//:benchmark",
     ],
 )
