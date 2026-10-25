@@ -61,6 +61,44 @@ SNLBitNet* bitAtHardwarePosition(SNLNet* net, size_t position) {
 
 }  // namespace
 
+SNLInstance* SNLRTLPrimitives::createVectorSelect(
+  SNLDesign* design, const Bits& data, const Bits& offset, bool isSigned, SNLNet* output) {
+  const auto validBits = [design](const Bits& bits) {
+    return !bits.empty() && std::all_of(bits.begin(), bits.end(),
+        [design](auto* bit) { return validNet(design, bit, 1); });
+  };
+  if (!output || !validBits(data) || !validBits(offset) ||
+      !validNet(design, output, output->getWidth()))
+    throw NLException("SNLRTLPrimitives::createVectorSelect: invalid nets or widths");
+  auto* model = NLDB0::getOrCreateVectorSelect(
+      {data.size(), size_t(output->getWidth()), offset.size(), isSigned});
+  auto* instance = SNLInstance::create(design, model);
+  connectBits(instance, NLDB0::getVectorSelectData(model), data);
+  connectBits(instance, NLDB0::getVectorSelectOffset(model), offset);
+  instance->setTermNet(NLDB0::getVectorSelectOutput(model), output);
+  return instance;
+}
+
+SNLInstance* SNLRTLPrimitives::createVectorUpdate(
+  SNLDesign* design, const Bits& base, const Bits& data, const Bits& offset,
+  bool isSigned, SNLBitNet* enable, SNLNet* output) {
+  const auto validBits = [design](const Bits& bits) {
+    return !bits.empty() && std::all_of(bits.begin(), bits.end(),
+        [design](auto* bit) { return validNet(design, bit, 1); });
+  };
+  if (!validBits(base) || !validBits(data) || !validBits(offset) ||
+      !validNet(design, enable, 1) || !validNet(design, output, base.size()))
+    throw NLException("SNLRTLPrimitives::createVectorUpdate: invalid nets or widths");
+  auto* model = NLDB0::getOrCreateVectorUpdate({base.size(), data.size(), offset.size(), isSigned});
+  auto* instance = SNLInstance::create(design, model);
+  connectBits(instance, NLDB0::getVectorUpdateBase(model), base);
+  connectBits(instance, NLDB0::getVectorUpdateData(model), data);
+  connectBits(instance, NLDB0::getVectorUpdateOffset(model), offset);
+  instance->setTermNet(NLDB0::getVectorUpdateEnable(model), enable);
+  instance->setTermNet(NLDB0::getVectorUpdateOutput(model), output);
+  return instance;
+}
+
 SNLInstance* SNLRTLPrimitives::createROM(
   SNLDesign* design, const Bits& data, const Bits& address, SNLNet* output) {
   const auto width = output ? static_cast<size_t>(output->getWidth()) : 0;

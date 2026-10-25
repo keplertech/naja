@@ -251,3 +251,60 @@ TEST_F(SNLRTLPrimitivesTest, AssignRejectsInvalidNetsBeforeCreatingInstances) {
     EXPECT_EQ(instances[position]->getInstTerm(NLDB0::getAssignOutput())->getNet(), output->getBit(3 - position));
   }
 }
+
+TEST_F(SNLRTLPrimitivesTest, VectorUpdateFactoryPreservesBitOrderAndValidatesInputs) {
+  auto* base = SNLBusNet::create(design_, 7, 0);
+  auto* data = SNLBusNet::create(design_, 2, 0);
+  auto* offset = SNLBusNet::create(design_, 39, 0);
+  auto* enable = SNLScalarNet::create(design_);
+  auto* output = SNLBusNet::create(design_, 0, 7);
+  SNLRTLPrimitives::Bits b, d, a;
+  for (unsigned bit = 0; bit < 8; ++bit) b.push_back(base->getBit(bit));
+  for (unsigned bit = 0; bit < 3; ++bit) d.push_back(data->getBit(bit));
+  for (unsigned bit = 0; bit < 40; ++bit) a.push_back(offset->getBit(bit));
+  auto* instance = SNLRTLPrimitives::createVectorUpdate(design_, b, d, a, true, enable, output);
+  auto* model = instance->getModel();
+  EXPECT_EQ((NLDB0::VectorUpdateSignature{8, 3, 40, true}), NLDB0::getVectorUpdateSignature(instance));
+  for (unsigned bit = 0; bit < 8; ++bit) {
+    EXPECT_EQ(b[bit], instance->getInstTerm(NLDB0::getVectorUpdateBase(model)->getBit(bit))->getNet());
+    EXPECT_EQ(output->getBit(7-bit),
+        instance->getInstTerm(NLDB0::getVectorUpdateOutput(model)->getBit(bit))->getNet());
+  }
+  const auto count = design_->getInstances().size();
+  EXPECT_THROW(SNLRTLPrimitives::createVectorUpdate(design_, {}, d, a, true, enable, output), NLException);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorUpdate(design_, b, {}, a, true, enable, output), NLException);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorUpdate(design_, b, d, {}, true, enable, output), NLException);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorUpdate(design_, b, d, a, true, nullptr, output), NLException);
+  auto foreign = b;
+  auto* other = SNLDesign::create(library_, NLName("other"));
+  foreign[0] = SNLScalarNet::create(other);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorUpdate(design_, foreign, d, a, true, enable, output), NLException);
+  EXPECT_EQ(count, design_->getInstances().size());
+  SNLInstParameter::create(instance, model->getParameter(NLName("SIGNED")), "0");
+  EXPECT_THROW(NLDB0::getVectorUpdateSignature(instance), NLException);
+}
+
+TEST_F(SNLRTLPrimitivesTest, VectorSelectFactoryPreservesBitOrderAndValidatesInputs) {
+  auto* data = SNLBusNet::create(design_, 7, 0);
+  auto* offset = SNLBusNet::create(design_, 79, 0);
+  auto* output = SNLBusNet::create(design_, 0, 2);
+  SNLRTLPrimitives::Bits d, a;
+  for (unsigned bit = 0; bit < 8; ++bit) d.push_back(data->getBit(bit));
+  for (unsigned bit = 0; bit < 80; ++bit) a.push_back(offset->getBit(bit));
+  auto* instance = SNLRTLPrimitives::createVectorSelect(design_, d, a, true, output);
+  auto* model = instance->getModel();
+  EXPECT_EQ((NLDB0::VectorSelectSignature{8, 3, 80, true}), NLDB0::getVectorSelectSignature(instance));
+  for (unsigned bit = 0; bit < 3; ++bit)
+    EXPECT_EQ(output->getBit(2-bit),
+        instance->getInstTerm(NLDB0::getVectorSelectOutput(model)->getBit(bit))->getNet());
+  const auto count = design_->getInstances().size();
+  EXPECT_THROW(SNLRTLPrimitives::createVectorSelect(design_, {}, a, true, output), NLException);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorSelect(design_, d, {}, true, output), NLException);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorSelect(design_, d, a, true, nullptr), NLException);
+  auto* other = SNLDesign::create(library_, NLName("other_select"));
+  d[0] = SNLScalarNet::create(other);
+  EXPECT_THROW(SNLRTLPrimitives::createVectorSelect(design_, d, a, true, output), NLException);
+  EXPECT_EQ(count, design_->getInstances().size());
+  SNLInstParameter::create(instance, model->getParameter(NLName("SIGNED")), "0");
+  EXPECT_THROW(NLDB0::getVectorSelectSignature(instance), NLException);
+}

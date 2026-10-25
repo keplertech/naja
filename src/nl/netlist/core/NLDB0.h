@@ -37,7 +37,7 @@ class NLDB0 {
   friend class NLUniverse;
   public:
     // Snapshot compatibility version for canonical primitive library identities.
-    static constexpr unsigned LibraryIDVersion = 1;
+    static constexpr unsigned LibraryIDVersion = 3;
 
     enum class MemoryResetMode {
       None,
@@ -179,6 +179,41 @@ class NLDB0 {
       }
     };
 
+    struct VectorUpdateSignature {
+      size_t width{0};
+      size_t updateWidth{0};
+      size_t abits{0};
+      bool isSigned{false};
+      bool operator==(const VectorUpdateSignature&) const = default;
+    };
+    /// Combinational clipped bit-vector update; no frontend or state ownership.
+    static SNLDesign* getOrCreateVectorUpdate(const VectorUpdateSignature& signature);
+    static bool isVectorUpdate(const SNLDesign* design);
+    static VectorUpdateSignature getVectorUpdateSignature(const SNLDesign* design);
+    static VectorUpdateSignature getVectorUpdateSignature(const SNLInstance* instance);
+    static SNLBusTerm* getVectorUpdateBase(const SNLDesign* design);
+    static SNLBusTerm* getVectorUpdateData(const SNLDesign* design);
+    static SNLBusTerm* getVectorUpdateOffset(const SNLDesign* design);
+    static SNLScalarTerm* getVectorUpdateEnable(const SNLDesign* design);
+    static SNLBusTerm* getVectorUpdateOutput(const SNLDesign* design);
+    static SNLTruthTable getVectorUpdateTruthTable(const SNLDesign* design, size_t flatTermID);
+
+    struct VectorSelectSignature {
+      size_t width{0};
+      size_t selectWidth{0};
+      size_t abits{0};
+      bool isSigned{false};
+      bool operator==(const VectorSelectSignature&) const = default;
+    };
+    static SNLDesign* getOrCreateVectorSelect(const VectorSelectSignature& signature);
+    static bool isVectorSelect(const SNLDesign* design);
+    static VectorSelectSignature getVectorSelectSignature(const SNLDesign* design);
+    static VectorSelectSignature getVectorSelectSignature(const SNLInstance* instance);
+    static SNLBusTerm* getVectorSelectData(const SNLDesign* design);
+    static SNLBusTerm* getVectorSelectOffset(const SNLDesign* design);
+    static SNLBusTerm* getVectorSelectOutput(const SNLDesign* design);
+    static SNLTruthTable getVectorSelectTruthTable(const SNLDesign* design, size_t flatTermID);
+
     class GateType {
       public:
         enum GateTypeEnum {
@@ -258,7 +293,7 @@ class NLDB0 {
     /// DB0 (NLID::DBID 0) primitive IDs are canonical: \p libraryID selects the
     /// primitive family and \p designID encodes the single size parameter
     /// (gate fan-in/out, mux/dff/divmod/multiply/add/subtract width).
-    /// Multi-parameter families (memory, table select, shift) are rebuilt from
+    /// Multi-parameter families (memory, table select, shift, vector update) are rebuilt from
     /// \p parameters, which must carry the full model signature independently
     /// of instance overrides. Returns nullptr if the
     /// reference does not designate a known DB0 primitive family.

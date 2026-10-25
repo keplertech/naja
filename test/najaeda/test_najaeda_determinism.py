@@ -317,6 +317,60 @@ class NajaEDADeterminismTest(unittest.TestCase):
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 
+    def test_systemverilog_indexed_vector_updates(self):
+        self.check_determinism("sv", """
+module top(input logic [3:0] index, input logic [3:0] data,
+           input logic [15:0] base, output logic [15:0] y);
+  always_comb begin
+    y = base;
+    y[index] = data[0];
+    y[index +: 4] = data;
+    y[index +: 2] = y[index +: 2] ^ data[1:0];
+  end
+endmodule
+""")
+
+    def test_systemverilog_shared_inversions(self):
+        self.check_determinism("sv", """
+module top(input logic [3:0] a, output logic [3:0] y, z);
+  for (genvar k = 0; k < 4; k++) begin
+    always_comb begin
+      casez (a)
+        4'b00??: y[k] = a[k];
+        4'b?010: y[k] = ~a[k];
+        default: y[k] = 1'b0;
+      endcase
+    end
+  end
+  assign z = (~a & 4'ha) | (~a & 4'h5);
+endmodule
+""")
+
+    def test_systemverilog_wide_index_reads(self):
+        self.check_determinism("sv", """
+module top(input logic [31:0] index,
+           input logic [63:0] data,
+           input logic signed [5:0] signed_index,
+           output logic [7:0] selected,
+           output logic signed_bit);
+  for (genvar k = 0; k < 8; k++) begin
+    assign selected[k] = data[index * 8 + k];
+  end
+  assign signed_bit = data[signed_index];
+endmodule
+""")
+
+    def test_systemverilog_indexed_vector_selects(self):
+        self.check_determinism("sv", """
+module top(input logic signed [79:0] index,
+           input logic [15:0] data, input logic [0:15] ascending_data,
+           output logic [3:0] up, down, ascending_slice);
+  assign up = data[index +: 4];
+  assign down = data[index -: 4];
+  assign ascending_slice = ascending_data[index +: 4];
+endmodule
+""")
+
     def test_systemverilog_selected_sequential_arithmetic(self):
         self.check_determinism("sv", """
 module top(input logic clk, rst, enable,
@@ -401,6 +455,16 @@ begin
     end if;
   end process;
   q <= storage(to_integer(unsigned(addr)));
+end;
+""")
+
+    def test_vhdl_indexed_vector_update(self):
+        self.check_determinism("vhd", """
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity top is port(index : in unsigned(2 downto 0); data : in bit;
+                   base : in bit_vector(7 downto 0); y : out bit_vector(7 downto 0)); end;
+architecture rtl of top is begin
+  process(all) begin y <= base; y(to_integer(index)) <= data; end process;
 end;
 """)
 

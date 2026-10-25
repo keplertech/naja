@@ -80,6 +80,14 @@ std::vector<PrimitiveCase> primitiveCases(bool wide = true) {
         cases.push_back({"shift" + std::to_string(width) + "c" + std::to_string(countWidth) + "m" + std::to_string(mode),
             [=] { return NLDB0::getOrCreateShift({width, countWidth, mode != 0, mode == 2}); }});
     }
+    for (bool isSigned : {false, true}) for (size_t addressSize : {2u, 80u})
+      cases.push_back({"vector_update" + std::to_string(width) + "a" +
+          std::to_string(addressSize) + "s" + std::to_string(isSigned),
+          [=] { return NLDB0::getOrCreateVectorUpdate({width, 3, addressSize, isSigned}); }});
+    for (bool isSigned : {false, true}) for (size_t addressSize : {2u, 80u})
+      cases.push_back({"vector_select" + std::to_string(width) + "a" +
+          std::to_string(addressSize) + "s" + std::to_string(isSigned),
+          [=] { return NLDB0::getOrCreateVectorSelect({width, 3, addressSize, isSigned}); }});
     cases.push_back({"table" + std::to_string(width),
         [=] { return NLDB0::getOrCreateTableSelect({width, 3, 2}); }});
     for (auto reset : {NLDB0::MemoryResetMode::None, NLDB0::MemoryResetMode::AsyncLow,
@@ -139,6 +147,26 @@ std::string state(SNLDesign* top) {
       out << truth.toString() << ' ' << truth.isGeneric() << ' '
           << truth.isAnd() << truth.isNand() << truth.isOr() << truth.isNor()
           << truth.isXor() << truth.isXnor() << truth.isMux() << '\n';
+    }
+    if (NLDB0::isVectorUpdate(model)) {
+      for (auto* bit : NLDB0::getVectorUpdateOutput(model)->getBusBits()) {
+        const auto table = Modeling::getTruthTable(model, bit->getOrderID());
+        const auto& metadata = table.getVectorUpdateMetadata();
+        out << "vector_update " << metadata.width << ' ' << metadata.updateWidth << ' '
+            << metadata.addressSize << ' ' << metadata.outputBit << ' ' << metadata.isSigned << '\n';
+        for (auto dependency : table.getDependencies()) out << dependency << ' ';
+        out << '\n';
+      }
+    }
+    if (NLDB0::isVectorSelect(model)) {
+      for (auto* bit : NLDB0::getVectorSelectOutput(model)->getBusBits()) {
+        const auto table = Modeling::getTruthTable(model, bit->getOrderID());
+        const auto& metadata = table.getVectorSelectMetadata();
+        out << "vector_select " << metadata.width << ' ' << metadata.selectWidth << ' '
+            << metadata.addressSize << ' ' << metadata.outputBit << ' ' << metadata.isSigned << '\n';
+        for (auto dependency : table.getDependencies()) out << dependency << ' ';
+        out << '\n';
+      }
     }
     if (NLDB0::isFA(model)) {
       out << NLDB0::getFASumTruthTable().toString() << '\n'

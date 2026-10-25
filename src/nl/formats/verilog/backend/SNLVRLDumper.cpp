@@ -1901,6 +1901,32 @@ bool SNLVRLDumper::dumpInstance(
     o << ";\n";
     return true;
   }
+  if (NLDB0::isVectorUpdate(instance->getModel())) {
+    const auto signature = NLDB0::getVectorUpdateSignature(instance);
+    emitNajaPrimitiveModels_ = true;
+    const auto instanceName = instance->isUnnamed() ? createInstanceName(instance, naming)
+        : instance->getName().getString();
+    dumpAttributes(instance, o, AttributeDumpSite::Instance);
+    o << "naja_vector_update #(.WIDTH(" << signature.width << "), .UPDATE_WIDTH("
+      << signature.updateWidth << "), .ABITS(" << signature.abits << "), .SIGNED("
+      << signature.isSigned << ")) " << dumpName(instanceName);
+    dumpInstanceInterface(instance, o, naming);
+    o << ";\n";
+    return true;
+  }
+  if (NLDB0::isVectorSelect(instance->getModel())) {
+    const auto signature = NLDB0::getVectorSelectSignature(instance);
+    emitNajaPrimitiveModels_ = true;
+    const auto instanceName = instance->isUnnamed() ? createInstanceName(instance, naming)
+        : instance->getName().getString();
+    dumpAttributes(instance, o, AttributeDumpSite::Instance);
+    o << "naja_vector_select #(.WIDTH(" << signature.width << "), .SELECT_WIDTH("
+      << signature.selectWidth << "), .ABITS(" << signature.abits << "), .SIGNED("
+      << signature.isSigned << ")) " << dumpName(instanceName);
+    dumpInstanceInterface(instance, o, naming);
+    o << ";\n";
+    return true;
+  }
   if (NLDB0::isTableSelect(instance->getModel())) {
     emitNajaTableSelectModel_ = true;
     emitNajaPrimitiveModels_ = true;
@@ -2457,6 +2483,72 @@ endmodule //naja_shift
 )";
 }
 
+void SNLVRLDumper::dumpNajaVectorSelectModel(std::ostream& o) {
+  o << R"(module naja_vector_select #(
+  parameter WIDTH = 1,
+  parameter SELECT_WIDTH = 1,
+  parameter ABITS = 1,
+  parameter SIGNED = 0
+) (
+  input [WIDTH-1:0] DATA,
+  input [ABITS-1:0] OFFSET,
+  output reg [SELECT_WIDTH-1:0] Y
+);
+  localparam CHECK_WIDTH = ABITS >= 32 ? ABITS+1 : 33;
+  localparam TOTAL_WIDTH = WIDTH + 2*SELECT_WIDTH;
+  localparam INDEX_WIDTH = $clog2(TOTAL_WIDTH);
+  localparam signed [CHECK_WIDTH-1:0] UPPER = WIDTH;
+  localparam signed [CHECK_WIDTH-1:0] LOWER = -SELECT_WIDTH;
+  localparam signed [CHECK_WIDTH-1:0] PAD = SELECT_WIDTH;
+  wire [TOTAL_WIDTH-1:0] padded = {{SELECT_WIDTH{1'bx}}, DATA, {SELECT_WIDTH{1'bx}}};
+  reg signed [CHECK_WIDTH-1:0] checked_offset, position;
+  always @* begin
+    checked_offset = SIGNED ? {{(CHECK_WIDTH-ABITS){OFFSET[ABITS-1]}}, OFFSET}
+                            : {{(CHECK_WIDTH-ABITS){1'b0}}, OFFSET};
+    position = checked_offset + PAD;
+    Y = {SELECT_WIDTH{1'bx}};
+    if (((^OFFSET) !== 1'bx) && checked_offset < UPPER && checked_offset > LOWER)
+      Y = padded[position[INDEX_WIDTH-1:0] +: SELECT_WIDTH];
+  end
+endmodule //naja_vector_select
+)";
+}
+
+void SNLVRLDumper::dumpNajaVectorUpdateModel(std::ostream& o) {
+  o << R"(module naja_vector_update #(
+  parameter WIDTH = 1,
+  parameter UPDATE_WIDTH = 1,
+  parameter ABITS = 1,
+  parameter SIGNED = 0
+) (
+  input [WIDTH-1:0] BASE,
+  input [UPDATE_WIDTH-1:0] DATA,
+  input [ABITS-1:0] OFFSET,
+  input EN,
+  output reg [WIDTH-1:0] Y
+);
+  localparam CHECK_WIDTH = ABITS >= 32 ? ABITS+1 : 33;
+  localparam TOTAL_WIDTH = WIDTH + 2*UPDATE_WIDTH;
+  localparam INDEX_WIDTH = $clog2(TOTAL_WIDTH);
+  localparam signed [CHECK_WIDTH-1:0] UPPER = WIDTH;
+  localparam signed [CHECK_WIDTH-1:0] LOWER = -UPDATE_WIDTH;
+  localparam signed [CHECK_WIDTH-1:0] PAD = UPDATE_WIDTH;
+  reg signed [CHECK_WIDTH-1:0] checked_offset, position;
+  reg [TOTAL_WIDTH-1:0] updated;
+  always @* begin
+    checked_offset = SIGNED ? {{(CHECK_WIDTH-ABITS){OFFSET[ABITS-1]}}, OFFSET}
+                            : {{(CHECK_WIDTH-ABITS){1'b0}}, OFFSET};
+    updated = {{UPDATE_WIDTH{1'b0}}, BASE, {UPDATE_WIDTH{1'b0}}};
+    position = checked_offset + PAD;
+    // Padding allows native partial writes without truncating signed offsets.
+    if (EN && ((^OFFSET) !== 1'bx) && checked_offset < UPPER && checked_offset > LOWER)
+      updated[position[INDEX_WIDTH-1:0] +: UPDATE_WIDTH] = DATA;
+    Y = updated[UPDATE_WIDTH +: WIDTH];
+  end
+endmodule //naja_vector_update
+)";
+}
+
 void SNLVRLDumper::dumpNajaTableSelectModel(std::ostream& o) {
   o << "module naja_table_select #(\n";
   o << "  parameter WIDTH = 1,\n";
@@ -2467,23 +2559,21 @@ void SNLVRLDumper::dumpNajaTableSelectModel(std::ostream& o) {
   o << "  input [ABITS-1:0] ADDR,\n";
   o << "  output [WIDTH-1:0] Y\n";
   o << ");\n";
-  o << "  function [WIDTH-1:0] select_data;\n";
-  o << "    input [WIDTH*DEPTH-1:0] data;\n";
-  o << "    input [ABITS-1:0] addr;\n";
-  o << "    integer i;\n";
-  o << "    begin\n";
-  // Packed element selection returns X for an unknown or out-of-range index.
-  // Only a definite address match may replace that value, preserving X/Z data.
-  o << "      select_data = {WIDTH{1'bx}};\n";
-  o << "      for (i = 0; i < DEPTH; i = i + 1) begin\n";
-  o << "        if (addr == i[ABITS-1:0]) begin\n";
-  o << "          select_data = data[i*WIDTH +: WIDTH];\n";
-  o << "        end\n";
-  o << "      end\n";
+  o << "  localparam CHECK_WIDTH = ABITS > 32 ? ABITS : 32;\n";
+  o << "  localparam INDEX_WIDTH = DEPTH > 1 ? $clog2(DEPTH) : 1;\n";
+  o << "  localparam [CHECK_WIDTH-1:0] LIMIT = DEPTH;\n";
+  o << "  wire [CHECK_WIDTH-1:0] checked_addr = {{(CHECK_WIDTH-ABITS){1'b0}}, ADDR};\n";
+  // Each output depends on its own data column. A single packed select makes
+  // event-driven scheduling infer false dependencies between unrelated bits.
+  o << "  for (genvar bit_index = 0; bit_index < WIDTH; bit_index = bit_index + 1) begin: columns\n";
+  o << "    wire [DEPTH-1:0] data;\n";
+  o << "    for (genvar row = 0; row < DEPTH; row = row + 1) begin: rows\n";
+  o << "      assign data[row] = DATA[row*WIDTH+bit_index];\n";
   o << "    end\n";
-  o << "  endfunction\n";
-  o << "\n";
-  o << "  assign Y = select_data(DATA, ADDR);\n";
+  // The full address must pass the bounds check before narrowing its index.
+  // An unknown condition merges the selected bit with X, still producing X.
+  o << "    assign Y[bit_index] = checked_addr < LIMIT ? data[checked_addr[INDEX_WIDTH-1:0]] : 1'bx;\n";
+  o << "  end\n";
   o << "endmodule //naja_table_select\n";
 }
 
@@ -2953,6 +3043,9 @@ void SNLVRLDumper::dumpNajaPrimitiveFile(const std::filesystem::path& path) {
   dumpNajaMultiplyModel(outFile);
   outFile << '\n';
   dumpNajaShiftModel(outFile);
+  outFile << '\n';
+  dumpNajaVectorUpdateModel(outFile);
+  dumpNajaVectorSelectModel(outFile);
   outFile << '\n';
   dumpNajaTableSelectModel(outFile);
   outFile << '\n';

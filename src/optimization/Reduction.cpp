@@ -65,7 +65,11 @@ SNLTruthTable ReductionOptimization::reduceTruthTable(
   if (truthTable.size() > 0 &&
       !NLBitDependencies::isSimple(truthTable.getDependencies())) {
     const auto localDeps = SNLTruthTable::fullDependencies(truthTable.size());
-    if (truthTable.isGeneric()) {
+    if (truthTable.getGenericType() == SNLTruthTable::GenericType::VECTOR_SELECT) {
+      reducedBase = SNLTruthTable::VectorSelect(truthTable.getVectorSelectMetadata(), localDeps);
+    } else if (truthTable.getGenericType() == SNLTruthTable::GenericType::VECTOR_UPDATE) {
+      reducedBase = SNLTruthTable::VectorUpdate(truthTable.getVectorUpdateMetadata(), localDeps);
+    } else if (truthTable.isGeneric()) {
       reducedBase = SNLTruthTable(
           truthTable.size(), truthTable.getGenericType(), localDeps);
     } else if (truthTable.size() <= 6) {

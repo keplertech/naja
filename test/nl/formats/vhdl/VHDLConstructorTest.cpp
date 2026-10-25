@@ -7315,3 +7315,93 @@ architecture rtl of invalid_condition is begin process(all) begin if )" + condit
     EXPECT_TRUE(library_->getSNLDesigns().empty());
   }
 }
+
+TEST_F(VHDLConstructorTest, VectorUpdateUsesSharedFrontendIndependentPrimitive) {
+  for (const bool ascending : {false, true}) {
+    const auto range = ascending ? "0 to 7" : "7 downto 0";
+    const auto name = ascending ? "update_ascending" : "update_descending";
+    const auto source = std::string(R"(library ieee;
+use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity )") + name + " is port(index : in unsigned(2 downto 0); data : in bit; " +
+      "base : in bit_vector(" + range + "); y : out bit_vector(" + range + ")); end; " +
+      "architecture rtl of " + name + " is begin process(all) begin " +
+      "y <= base; y(to_integer(index)) <= data; end process; end;";
+    auto* top = VHDLConstructor(library_).construct(source);
+    ASSERT_NE(top, nullptr);
+    SNLDesign* model = nullptr;
+    for (auto* instance : top->getInstances()) if (NLDB0::isVectorUpdate(instance->getModel())) {
+      EXPECT_EQ(model, nullptr);
+      model = instance->getModel();
+    }
+    ASSERT_NE(model, nullptr);
+    EXPECT_EQ(NLDB0::getOrCreateVectorUpdate({8, 1, 34, true}), model);
+    // Compare against a separately elaborated SV write with the same layout.
+    const auto svName = std::string(name) + "_sv";
+    const auto path = std::filesystem::temp_directory_path() / (svName + ".sv");
+    std::ofstream file(path);
+    file << "// SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>\n"
+         << "// SPDX-" "License-Identifier: Apache-2.0\nmodule " << svName
+         << "(input logic [2:0] index, input logic data, input logic ["
+         << (ascending ? "0:7" : "7:0") << "] base, output logic ["
+         << (ascending ? "0:7" : "7:0")
+         << "] y); always_comb begin y=base; y[index]=data; end endmodule\n";
+    file.close();
+    SNLSVConstructor(library_).construct(path);
+    auto* sv = library_->getSNLDesign(NLName(svName));
+    ASSERT_NE(sv, nullptr);
+    size_t updates = 0;
+    for (auto* instance : sv->getInstances()) if (NLDB0::isVectorUpdate(instance->getModel())) {
+      ++updates;
+      EXPECT_EQ(model->getLibrary(), instance->getModel()->getLibrary());
+    }
+    EXPECT_EQ(1u, updates);
+    for (unsigned pattern = 0; pattern < 4096; ++pattern) {
+      const unsigned index = pattern & 7, data = (pattern >> 3) & 1, base = pattern >> 4;
+      const unsigned position = ascending ? 7 - index : index;
+      const unsigned expected = (base & ~(1u << position)) | (data << position);
+      for (auto* design : {top, sv}) {
+        std::unordered_map<SNLBitNet*, bool> values;
+        auto* address = design->getBusTerm(NLName("index"));
+        for (unsigned bit = 0; bit < 3; ++bit) values[address->getBit(bit)->getNet()] = (index >> bit) & 1;
+        values[design->getScalarTerm(NLName("data"))->getNet()] = data;
+        auto* input = design->getBusTerm(NLName("base"));
+        auto* output = design->getBusTerm(NLName("y"));
+        for (unsigned bit = 0; bit < 8; ++bit)
+          values[input->getBitAtPosition(7-bit)->getNet()] = (base >> bit) & 1;
+        std::unordered_set<SNLBitNet*> visiting;
+        for (unsigned bit = 0; bit < 8; ++bit)
+          EXPECT_EQ(bool((expected >> bit) & 1),
+              evaluateRTL(output->getBitAtPosition(7-bit)->getNet(), values, visiting));
+      }
+    }
+  }
+}
+
+TEST_F(VHDLConstructorTest, VectorSelectUsesSharedFrontendIndependentPrimitive) {
+  for (const bool ascending : {false, true}) {
+    const auto range = ascending ? "0 to 7" : "7 downto 0";
+    const auto name = ascending ? "select_ascending" : "select_descending";
+    const auto source = std::string(R"(library ieee;
+use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity )") + name + " is port(index : in unsigned(2 downto 0); data : in bit_vector(" + range +
+      "); y : out bit); end; architecture rtl of " + name +
+      " is begin y <= data(to_integer(index)); end;";
+    auto* top = VHDLConstructor(library_).construct(source);
+    ASSERT_NE(nullptr, top);
+    size_t selects = 0;
+    for (auto* instance : top->getInstances()) selects += NLDB0::isVectorSelect(instance->getModel());
+    EXPECT_EQ(1u, selects);
+    for (unsigned pattern = 0; pattern < 2048; ++pattern) {
+      const unsigned index = pattern & 7, data = pattern >> 3;
+      const unsigned position = ascending ? 7-index : index;
+      std::unordered_map<SNLBitNet*, bool> values;
+      for (unsigned bit = 0; bit < 3; ++bit)
+        values[top->getBusTerm(NLName("index"))->getBit(bit)->getNet()] = (index >> bit) & 1;
+      for (unsigned bit = 0; bit < 8; ++bit)
+        values[top->getBusTerm(NLName("data"))->getBitAtPosition(7-bit)->getNet()] = (data >> bit) & 1;
+      std::unordered_set<SNLBitNet*> visiting;
+      EXPECT_EQ(bool((data >> position) & 1),
+          evaluateRTL(top->getScalarTerm(NLName("y"))->getNet(), values, visiting));
+    }
+  }
+}

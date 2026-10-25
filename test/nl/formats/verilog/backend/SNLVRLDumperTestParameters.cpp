@@ -817,9 +817,87 @@ TEST_F(SNLVRLDumperTestParameters, testTableSelectModelDump) {
 
   const auto model = readTextFile(outPath / "naja_primitives.v");
   EXPECT_NE(std::string::npos, model.find("module naja_table_select"));
-  EXPECT_NE(std::string::npos, model.find("select_data = {WIDTH{1'bx}};"));
-  EXPECT_EQ(std::string::npos, model.find("select_data = {WIDTH{1'b0}};"));
-  EXPECT_NE(std::string::npos, model.find("select_data = data[i*WIDTH +: WIDTH];"));
+  EXPECT_NE(std::string::npos, model.find("assign data[row] = DATA[row*WIDTH+bit_index];"));
+  EXPECT_NE(std::string::npos, model.find(
+    "assign Y[bit_index] = checked_addr < LIMIT ? data[checked_addr[INDEX_WIDTH-1:0]] : 1'bx;"));
+}
+
+TEST_F(SNLVRLDumperTestParameters, tableSelectPreservesIndependentColumnDependencies) {
+  const auto directory = std::filesystem::path(SNL_VRL_DUMPER_TEST_PATH) / "table_select_columns";
+  std::filesystem::create_directories(directory);
+  std::vector<SNLScalarNet*> inputs;
+  for (const auto* name : {"s", "a", "b", "c"}) {
+    auto* net = SNLScalarNet::create(top_, NLName(name));
+    SNLScalarTerm::create(top_, SNLTerm::Direction::Input, NLName(name))->setNet(net);
+    inputs.push_back(net);
+  }
+  auto* y = SNLBusNet::create(top_, 1, 0, NLName("y"));
+  SNLBusTerm::create(top_, SNLTerm::Direction::Output, 1, 0, NLName("y"))->setNet(y);
+  auto* model = NLDB0::getOrCreateTableSelect({2, 2, 1});
+  auto* instance = SNLInstance::create(top_, model, NLName("select"));
+  for (const auto& [name, value] : std::vector<std::pair<std::string, std::string>>{
+      {"WIDTH", "2"}, {"DEPTH", "2"}, {"ABITS", "1"}})
+    SNLInstParameter::create(instance, model->getParameter(NLName(name)), value);
+  // Column zero depends only on primary inputs; column one may read column
+  // zero. The graph is acyclic even though Y feeds one position of DATA.
+  const std::vector<SNLBitNet*> data{inputs[1], y->getBit(0), inputs[3], inputs[2]};
+  for (size_t bit = 0; bit < data.size(); ++bit)
+    instance->getInstTerm(NLDB0::getTableSelectData(model)->getBit(bit))->setNet(data[bit]);
+  instance->setTermNet(NLDB0::getTableSelectAddress(model), inputs[0]);
+  instance->setTermNet(NLDB0::getTableSelectOutput(model), y);
+  SNLVRLDumper dumper;
+  dumper.setSingleFile(true);
+  dumper.dumpDesign(top_, directory);
+  const auto quote = [](const std::filesystem::path& p) { return "\"" + p.string() + "\""; };
+  const auto modelPath = directory / "naja_primitives.v";
+  if (!std::system("command -v verilator >/dev/null 2>&1")) {
+    const auto log = directory / "lint.log";
+    const auto lint = "verilator --lint-only --sv --top-module top " + quote(directory / "top.v") +
+      " " + quote(modelPath) + " > " + quote(log) + " 2>&1";
+    EXPECT_EQ(0, std::system(lint.c_str())) << readTextFile(log);
+    // A genuine bit-level loop must still be diagnosed.
+    const auto loop = directory / "loop.v";
+    std::ofstream file(loop);
+    file << "module loop(input s, output y);\n"
+         << "naja_table_select #(.WIDTH(1),.DEPTH(2),.ABITS(1)) u(.DATA({~y,~y}),.ADDR(s),.Y(y));\n"
+         << "endmodule\n";
+    file.close();
+    const auto loopLint = "verilator --lint-only --sv --top-module loop " + quote(loop) + " " +
+      quote(modelPath) + " > " + quote(log) + " 2>&1";
+    EXPECT_NE(0, std::system(loopLint.c_str()));
+    EXPECT_NE(std::string::npos, readTextFile(log).find("%Warning-UNOPTFLAT:"));
+  }
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1"))
+    GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+  const auto tbPath = directory / "tb.v";
+  std::ofstream tb(tbPath);
+  tb << R"(module tb;
+reg [3:0] values; wire [1:0] y; reg [1:0] expected; integer i,k;
+top dut(values[0],values[1],values[2],values[3],y);
+initial begin
+  for (i=0;i<256;i=i+1) begin
+    for (k=0;k<4;k=k+1) begin
+      case((i >> (2*k)) & 3)
+        0: values[k]=0; 1: values[k]=1; 2: values[k]=1'bx; 3: values[k]=1'bz;
+      endcase
+    end
+    expected='x;
+    if (values[0] === 1'b0) begin expected[0]=values[1]; expected[1]=values[1]; end
+    if (values[0] === 1'b1) begin expected[0]=values[3]; expected[1]=values[2]; end
+    #1;
+    if (y !== expected) $fatal(1,"column dependency mismatch inputs=%b actual=%b expected=%b",values,y,expected);
+  end
+  $finish;
+end
+endmodule
+)";
+  tb.close();
+  const auto simulation = directory / "sim.vvp";
+  const auto command = "iverilog -g2012 -s tb -o " + quote(simulation) + " " + quote(tbPath) +
+    " " + quote(directory / "top.v") + " " + quote(modelPath);
+  ASSERT_EQ(0, std::system(command.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(simulation)).c_str()));
 }
 
 TEST_F(SNLVRLDumperTestParameters, testRTLInfoCompactAttributesDumpExtraInfos) {

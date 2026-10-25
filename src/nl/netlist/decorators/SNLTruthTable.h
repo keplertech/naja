@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -36,7 +37,9 @@ class SNLTruthTable {
     ADD_SUB,
     MULTIPLY,
     SHIFT,
-    ROM
+    ROM,
+    VECTOR_UPDATE,
+    VECTOR_SELECT
   };
 
   enum class DivModResult {
@@ -76,6 +79,34 @@ class SNLTruthTable {
     bool operator<(const RomMetadata& o) const {
       return std::tie(addressSize, depth, column) <
              std::tie(o.addressSize, o.depth, o.column);
+    }
+  };
+
+  // Dependencies: BASE[outputBit], DATA MSB first, OFFSET MSB first, EN.
+  struct VectorUpdateMetadata {
+    uint32_t width{0};
+    uint32_t updateWidth{0};
+    uint32_t addressSize{0};
+    uint32_t outputBit{0};
+    bool isSigned{false};
+    bool operator==(const VectorUpdateMetadata&) const = default;
+    bool operator<(const VectorUpdateMetadata& o) const {
+      return std::tie(width, updateWidth, addressSize, outputBit, isSigned) <
+             std::tie(o.width, o.updateWidth, o.addressSize, o.outputBit, o.isSigned);
+    }
+  };
+
+  // Dependencies: DATA MSB first, OFFSET MSB first.
+  struct VectorSelectMetadata {
+    uint32_t width{0};
+    uint32_t selectWidth{0};
+    uint32_t addressSize{0};
+    uint32_t outputBit{0};
+    bool isSigned{false};
+    bool operator==(const VectorSelectMetadata&) const = default;
+    bool operator<(const VectorSelectMetadata& o) const {
+      return std::tie(width, selectWidth, addressSize, outputBit, isSigned) <
+             std::tie(o.width, o.selectWidth, o.addressSize, o.outputBit, o.isSigned);
     }
   };
 
@@ -133,7 +164,9 @@ class SNLTruthTable {
       divModResult_(o.divModResult_),
       divModOutputBit_(o.divModOutputBit_),
       word_(o.word_),
-      rom_(o.rom_)
+      rom_(o.rom_),
+      vectorUpdate_(o.vectorUpdate_),
+      vectorSelect_(o.vectorSelect_)
   {}
 
   // explicit copy‐assignment to match
@@ -152,6 +185,8 @@ class SNLTruthTable {
       divModOutputBit_ = o.divModOutputBit_;
       word_ = o.word_;
       rom_ = o.rom_;
+      vectorUpdate_ = o.vectorUpdate_;
+      vectorSelect_ = o.vectorSelect_;
     }
     return *this;
   }
@@ -306,6 +341,105 @@ class SNLTruthTable {
     return table;
   }
 
+  static SNLTruthTable VectorUpdate(
+      const VectorUpdateMetadata& metadata,
+      const std::vector<uint64_t>& dependencies) {
+    const uint64_t size = uint64_t(metadata.updateWidth) + metadata.addressSize + 2;
+    if (size > std::numeric_limits<uint32_t>::max() ||
+        NLBitDependencies::countBitsForVector(dependencies) != size) {
+      throw NLException("Invalid VECTOR_UPDATE dependency count");
+    }
+    SNLTruthTable table;
+    table.genericType_ = GenericType::VECTOR_UPDATE;
+    table.vectorUpdate_ = metadata;
+    table.size_ = size;
+    table.dependencies_ = dependencies;
+    table.validateGenericMetadata();
+    return table;
+  }
+
+  const VectorUpdateMetadata& getVectorUpdateMetadata() const {
+    if (genericType_ != GenericType::VECTOR_UPDATE)
+      throw NLException("Truth table is not a VECTOR_UPDATE generic");
+    return vectorUpdate_;
+  }
+
+  static SNLTruthTable VectorSelect(
+      const VectorSelectMetadata& metadata,
+      const std::vector<uint64_t>& dependencies) {
+    const uint64_t size = uint64_t(metadata.width) + metadata.addressSize;
+    if (size > std::numeric_limits<uint32_t>::max() ||
+        NLBitDependencies::countBitsForVector(dependencies) != size) {
+      throw NLException("Invalid VECTOR_SELECT dependency count");
+    }
+    SNLTruthTable table;
+    table.genericType_ = GenericType::VECTOR_SELECT;
+    table.vectorSelect_ = metadata;
+    table.size_ = size;
+    table.dependencies_ = dependencies;
+    table.validateGenericMetadata();
+    return table;
+  }
+
+  const VectorSelectMetadata& getVectorSelectMetadata() const {
+    if (genericType_ != GenericType::VECTOR_SELECT)
+      throw NLException("Truth table is not a VECTOR_SELECT generic");
+    return vectorSelect_;
+  }
+
+  // nullopt denotes an out-of-range bit, whose four-state value is X.
+  std::optional<bool> evaluateVectorSelect(const std::vector<bool>& inputs) const {
+    const auto& m = getVectorSelectMetadata();
+    if (inputs.size() != size_) throw NLException("VECTOR_SELECT input count mismatch");
+    for (uint32_t k = 0; k < m.width; ++k) {
+      const int64_t offset = int64_t(k) - m.outputBit;
+      if (!m.isSigned && offset < 0) continue;
+      if (m.addressSize < 64) {
+        if (m.isSigned) {
+          const int64_t limit = int64_t{1} << (m.addressSize - 1);
+          if (offset < -limit || offset >= limit) continue;
+        } else if (uint64_t(offset) >= (uint64_t{1} << m.addressSize)) continue;
+      }
+      bool matches = true;
+      for (uint32_t bit = 0; bit < m.addressSize; ++bit) {
+        const bool expected = bit < 64 ? ((uint64_t(offset) >> bit) & 1) : offset < 0;
+        if (inputs[m.width + m.addressSize - 1 - bit] != expected) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) return inputs[m.width - 1 - k];
+    }
+    return std::nullopt;
+  }
+
+  // Evaluate binary inputs without truncating arbitrarily wide addresses.
+  bool evaluateVectorUpdate(const std::vector<bool>& inputs) const {
+    const auto& m = getVectorUpdateMetadata();
+    if (inputs.size() != size_) throw NLException("VECTOR_UPDATE input count mismatch");
+    if (!inputs.back()) return inputs.front();
+    for (uint32_t k = 0; k < m.updateWidth; ++k) {
+      const int64_t offset = int64_t(m.outputBit) - k;
+      if (!m.isSigned && offset < 0) continue;
+      if (m.addressSize < 64) {
+        if (m.isSigned) {
+          const int64_t limit = int64_t{1} << (m.addressSize - 1);
+          if (offset < -limit || offset >= limit) continue;
+        } else if (uint64_t(offset) >= (uint64_t{1} << m.addressSize)) continue;
+      }
+      bool matches = true;
+      for (uint32_t bit = 0; bit < m.addressSize; ++bit) {
+        const bool expected = bit < 64 ? ((uint64_t(offset) >> bit) & 1) : offset < 0;
+        if (inputs[1 + m.updateWidth + m.addressSize - 1 - bit] != expected) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) return inputs[1 + m.updateWidth - 1 - k];
+    }
+    return inputs.front();
+  }
+
   bool operator==(const SNLTruthTable& o) const {
     return size_ == o.size_ && bits_ == o.bits_ && dependencies_ == o.dependencies_ &&
            genericType_ == o.genericType_ &&
@@ -315,7 +449,7 @@ class SNLTruthTable {
            divModSigned_ == o.divModSigned_ &&
            divModResult_ == o.divModResult_ &&
            divModOutputBit_ == o.divModOutputBit_ &&
-           word_ == o.word_ && rom_ == o.rom_;
+           word_ == o.word_ && rom_ == o.rom_ && vectorUpdate_ == o.vectorUpdate_ && vectorSelect_ == o.vectorSelect_;
   }
 
   bool operator<(const SNLTruthTable& o) const {
@@ -339,6 +473,10 @@ class SNLTruthTable {
       return word_ < o.word_;
     if (rom_ != o.rom_)
       return rom_ < o.rom_;
+    if (vectorSelect_ != o.vectorSelect_)
+      return vectorSelect_ < o.vectorSelect_;
+    if (vectorUpdate_ != o.vectorUpdate_)
+      return vectorUpdate_ < o.vectorUpdate_;
     if (bits_ != o.bits_)
       return bits_ < o.bits_;
     return dependencies_ < o.dependencies_;
@@ -570,12 +708,26 @@ class SNLTruthTable {
               invert ? GenericType::XOR : GenericType::XNOR,
               deps);
         }
+        case GenericType::VECTOR_SELECT:
+          throw NLException("VECTOR_SELECT constant reduction is unsupported");
         case GenericType::TABLE_SELECT:
           throw NLException(
               "getReducedWithConstants() does not support TABLE_SELECT");
         case GenericType::DIVMOD:
           throw NLException(
               "getReducedWithConstants() does not support DIVMOD");
+        case GenericType::VECTOR_UPDATE: {
+          if (idxConsts.size() != size_)
+            throw NLException("Partial VECTOR_UPDATE reduction is unsupported");
+          std::vector<bool> inputs(size_);
+          std::vector<bool> seen(size_);
+          for (const auto& [index, value] : idxConsts) {
+            if (seen[index]) throw NLException("Duplicate VECTOR_UPDATE constant input");
+            seen[index] = true;
+            inputs[index] = value;
+          }
+          return evaluateVectorUpdate(inputs) ? Logic1() : Logic0();
+        }
         case GenericType::ROM:
           throw NLException(
               "getReducedWithConstants() does not support ROM");
@@ -784,6 +936,26 @@ class SNLTruthTable {
   }
 
   void validateGenericMetadata() const {
+    if (genericType_ == GenericType::VECTOR_SELECT) {
+      if (!vectorSelect_.width || !vectorSelect_.selectWidth || !vectorSelect_.addressSize ||
+          vectorSelect_.outputBit >= vectorSelect_.selectWidth ||
+          uint64_t(vectorSelect_.width) + vectorSelect_.addressSize != size_) {
+        throw NLException("Invalid VECTOR_SELECT truth table metadata");
+      }
+      return;
+    }
+    if (vectorSelect_ != VectorSelectMetadata{})
+      throw NLException("Unexpected VECTOR_SELECT metadata on truth table");
+    if (genericType_ == GenericType::VECTOR_UPDATE) {
+      if (!vectorUpdate_.width || !vectorUpdate_.updateWidth || !vectorUpdate_.addressSize ||
+          vectorUpdate_.outputBit >= vectorUpdate_.width ||
+          uint64_t(vectorUpdate_.updateWidth) + vectorUpdate_.addressSize + 2 != size_) {
+        throw NLException("Invalid VECTOR_UPDATE truth table metadata");
+      }
+      return;
+    }
+    if (vectorUpdate_ != VectorUpdateMetadata{})
+      throw NLException("Unexpected VECTOR_UPDATE metadata on truth table");
     if (genericType_ == GenericType::TABLE_SELECT) {
       if (tableSelectAddressSize_ == 0 || tableSelectDepth_ == 0 ||
           size_ != static_cast<size_t>(tableSelectAddressSize_) +
@@ -857,6 +1029,8 @@ class SNLTruthTable {
   uint32_t divModOutputBit_{0};
   WordMetadata word_{};
   RomMetadata rom_{};
+  VectorUpdateMetadata vectorUpdate_{};
+  VectorSelectMetadata vectorSelect_{};
 };
 
 }  // namespace naja::NL

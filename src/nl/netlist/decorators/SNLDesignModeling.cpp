@@ -2449,7 +2449,7 @@ size_t SNLDesignModeling::getTruthTableCount(const SNLDesign* design) {
       return 0;
     }
     if (readOnlyMemory ||
-        NLDB0::isMux2(design) || NLDB0::isTableSelect(design) ||
+        NLDB0::isVectorSelect(design) || NLDB0::isVectorUpdate(design) || NLDB0::isMux2(design) || NLDB0::isTableSelect(design) ||
         NLDB0::isDivMod(design) || NLDB0::isShift(design) ||
         NLDB0::isMultiply(design) || NLDB0::isAddSub(design)) {
       size_t tableCount = 0;
@@ -2517,7 +2517,7 @@ SNLTruthTable SNLDesignModeling::getTruthTable(const SNLDesign* design) {
   if (NLDB0::isDB0Primitive(design)) {
     if (isDB0SequentialPrimitive(design) || NLDB0::isMemory(design) ||
         NLDB0::isShift(design) || NLDB0::isMultiply(design) || NLDB0::isAddSub(design) ||
-        NLDB0::isDivMod(design)) {
+        NLDB0::isDivMod(design) || NLDB0::isVectorSelect(design) || NLDB0::isVectorUpdate(design)) {
       return SNLTruthTable();
     }
     if (NLDB0::isTableSelect(design)) {
@@ -2676,6 +2676,10 @@ SNLTruthTable SNLDesignModeling::getTruthTable(const SNLDesign* design,
         throw NLException(reason.str());
       }
       return NLDB0::getPrimitiveTruthTable(design);
+    } else if (NLDB0::isVectorSelect(design)) {
+      return NLDB0::getVectorSelectTruthTable(design, flatTermID);
+    } else if (NLDB0::isVectorUpdate(design)) {
+      return NLDB0::getVectorUpdateTruthTable(design, flatTermID);
     } else if (NLDB0::isTableSelect(design)) {
       if (!isOutputTerm) {
         std::ostringstream reason;

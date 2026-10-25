@@ -260,6 +260,8 @@ class SNLVRLDumper {
     void dumpNajaAddSubModels(std::ostream& o);
     void dumpNajaMultiplyModel(std::ostream& o);
     void dumpNajaShiftModel(std::ostream& o);
+    void dumpNajaVectorUpdateModel(std::ostream& o);
+    void dumpNajaVectorSelectModel(std::ostream& o);
     void dumpNajaTableSelectModel(std::ostream& o);
     void dumpNajaDFFModel(std::ostream& o);
     void dumpNajaDLatchModel(std::ostream& o);

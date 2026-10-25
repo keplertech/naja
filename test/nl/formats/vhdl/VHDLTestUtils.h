@@ -79,6 +79,22 @@ inline bool evaluateRTL(SNLBitNet* net, std::unordered_map<SNLBitNet*, bool>& va
   bool value;
   if (NLDB0::isAssign(model)) {
     value = read(NLDB0::getAssignInput());
+  } else if (NLDB0::isVectorSelect(model)) {
+    std::vector<bool> inputs;
+    for (auto* port : {NLDB0::getVectorSelectData(model), NLDB0::getVectorSelectOffset(model)})
+      for (auto* bit : port->getBits()) inputs.push_back(read(bit));
+    const auto result = NLDB0::getVectorSelectTruthTable(model,
+        output->getOrderID()).evaluateVectorSelect(inputs);
+    if (!result) throw std::runtime_error("Out-of-range vector select in binary evaluator");
+    value = *result;
+  } else if (NLDB0::isVectorUpdate(model)) {
+    const auto outputBit = output->getBit();
+    std::vector<bool> inputs{read(NLDB0::getVectorUpdateBase(model)->getBit(outputBit))};
+    for (auto* port : {NLDB0::getVectorUpdateData(model), NLDB0::getVectorUpdateOffset(model)})
+      for (auto* bit : port->getBits()) inputs.push_back(read(bit));
+    inputs.push_back(read(NLDB0::getVectorUpdateEnable(model)));
+    value = NLDB0::getVectorUpdateTruthTable(model,
+        output->getOrderID()).evaluateVectorUpdate(inputs);
   } else if (NLDB0::isFA(model)) {
     const auto a = read(NLDB0::getFAInputA());
     const auto b = read(NLDB0::getFAInputB());

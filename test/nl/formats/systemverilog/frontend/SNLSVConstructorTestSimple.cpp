@@ -6831,6 +6831,24 @@ static bool evaluateFunctionResultBit(
     if (NLDB0::isAssign(model)) {
       return read(NLDB0::getAssignInput());
     }
+    if (NLDB0::isVectorSelect(model)) {
+      std::vector<bool> inputs;
+      for (auto* port : {NLDB0::getVectorSelectData(model), NLDB0::getVectorSelectOffset(model)})
+        for (auto* bit : port->getBits()) inputs.push_back(read(bit));
+      const auto result = NLDB0::getVectorSelectTruthTable(model,
+          driver->getBitTerm()->getOrderID()).evaluateVectorSelect(inputs);
+      if (!result) ADD_FAILURE() << "Out-of-range vector select in binary evaluator";
+      return result.value_or(false);
+    }
+    if (NLDB0::isVectorUpdate(model)) {
+      const auto outputBit = driver->getBitTerm()->getBit();
+      std::vector<bool> inputs{read(NLDB0::getVectorUpdateBase(model)->getBit(outputBit))};
+      for (auto* port : {NLDB0::getVectorUpdateData(model), NLDB0::getVectorUpdateOffset(model)})
+        for (auto* bit : port->getBits()) inputs.push_back(read(bit));
+      inputs.push_back(read(NLDB0::getVectorUpdateEnable(model)));
+      return NLDB0::getVectorUpdateTruthTable(model,
+          driver->getBitTerm()->getOrderID()).evaluateVectorUpdate(inputs);
+    }
     if (NLDB0::isMux2(model)) {
       auto* term = read(NLDB0::getMux2Select(model))
         ? NLDB0::getMux2InputB(model) : NLDB0::getMux2InputA(model);
@@ -6856,7 +6874,42 @@ static bool evaluateFunctionResultBit(
       return name == "nand" || name == "nor" || name == "xnor" || name == "not"
         ? !result : result;
     }
-    if (NLDB0::isAddSub(model) || NLDB0::isMultiply(model) || NLDB0::isShift(model)) {
+    if (NLDB0::isAddSub(model) || NLDB0::isMultiply(model)) {
+      const bool multiply = NLDB0::isMultiply(model);
+      const auto readWord = [&](SNLBusTerm* bus) {
+        std::vector<bool> value(bus->getWidth(), false);
+        for (auto* bit : bus->getBusBits())
+          value[bit->getBit()] = read(bit);
+        return value;
+      };
+      const auto a = readWord(multiply ? NLDB0::getMultiplyInputA(model) : NLDB0::getAddSubInputA(model));
+      const auto b = readWord(multiply ? NLDB0::getMultiplyInputB(model) : NLDB0::getAddSubInputB(model));
+      std::vector<bool> result(a.size(), false);
+      if (multiply) {
+        for (size_t shift = 0; shift < b.size(); ++shift) {
+          if (!b[shift]) continue;
+          bool carry = false;
+          for (size_t bit = shift; bit < result.size(); ++bit) {
+            const unsigned sum = unsigned(result[bit]) + unsigned(a[bit-shift]) + unsigned(carry);
+            result[bit] = sum & 1u;
+            carry = sum > 1;
+          }
+        }
+      } else {
+        const bool subtract = NLDB0::isSubtract(model);
+        bool carry = subtract;
+        for (size_t bit = 0; bit < result.size(); ++bit) {
+          const unsigned sum = unsigned(a[bit]) + unsigned(bool(b[bit]) != subtract) + unsigned(carry);
+          result[bit] = sum & 1u;
+          carry = sum > 1;
+        }
+      }
+      auto* outputs = multiply ? NLDB0::getMultiplyOutput(model) : NLDB0::getAddSubOutput(model);
+      for (auto* bit : outputs->getBusBits())
+        (*memo)[instance->getInstTerm(bit)->getNet()] = bool(result[bit->getBit()]);
+      return result[driver->getBitTerm()->getBit()];
+    }
+    if (NLDB0::isShift(model)) {
       const auto readBus = [&](SNLBusTerm* bus) {
         uint64_t value = 0;
         for (auto* bit : bus->getBusBits()) {
@@ -6866,29 +6919,20 @@ static bool evaluateFunctionResultBit(
         return value;
       };
       uint64_t value = 0;
-      if (NLDB0::isAddSub(model)) {
-        const auto a = readBus(NLDB0::getAddSubInputA(model));
-        const auto b = readBus(NLDB0::getAddSubInputB(model));
-        value = NLDB0::isSubtract(model) ? a - b : a + b;
-      } else if (NLDB0::isMultiply(model)) {
-        value = readBus(NLDB0::getMultiplyInputA(model)) *
-                readBus(NLDB0::getMultiplyInputB(model));
-      } else {
-        const auto signature = NLDB0::getShiftSignature(instance);
-        const auto data = readBus(NLDB0::getShiftData(model));
-        const auto count = readBus(NLDB0::getShiftCount(model));
-        bool oversized = count >= signature.width;
-        for (auto* bit : NLDB0::getShiftCount(model)->getBusBits())
-          if (bit->getBit() >= 64 && read(bit)) oversized = true;
-        const bool negative = signature.arithmetic &&
-            read(NLDB0::getShiftData(model)->getBit(signature.width - 1));
-        if (oversized) value = negative ? ~uint64_t{0} : 0;
-        else if (!signature.right) value = data << count;
-        else {
-          const auto extended = negative && signature.width < 64
-            ? data | (~uint64_t{0} << signature.width) : data;
-          value = signature.arithmetic ? uint64_t(int64_t(extended) >> count) : data >> count;
-        }
+      const auto signature = NLDB0::getShiftSignature(instance);
+      const auto data = readBus(NLDB0::getShiftData(model));
+      const auto count = readBus(NLDB0::getShiftCount(model));
+      bool oversized = count >= signature.width;
+      for (auto* bit : NLDB0::getShiftCount(model)->getBusBits())
+        if (bit->getBit() >= 64 && read(bit)) oversized = true;
+      const bool negative = signature.arithmetic &&
+          read(NLDB0::getShiftData(model)->getBit(signature.width - 1));
+      if (oversized) value = negative ? ~uint64_t{0} : 0;
+      else if (!signature.right) value = data << count;
+      else {
+        const auto extended = negative && signature.width < 64
+          ? data | (~uint64_t{0} << signature.width) : data;
+        value = signature.arithmetic ? uint64_t(int64_t(extended) >> count) : data >> count;
       }
       return (value >> driver->getBitTerm()->getBit()) & 1u;
     }
@@ -12485,7 +12529,9 @@ endmodule
 )",
     2);
   ASSERT_TRUE(outOfRangeBits.has_value());
-  EXPECT_EQ("00", *outOfRangeBits);
+  // Invalid reads stay with the table-select model, which returns X, rather
+  // than the equality-decode fallback's former constant-zero result.
+  EXPECT_EQ("??", *outOfRangeBits);
 
   const auto nonConstantIndexBits = detail::testSVConstructorResolveExpressionBitsFromAssignRhs(
     R"(module detail_test(
@@ -14275,7 +14321,7 @@ endmodule
   EXPECT_EQ(std::string::npos, dumpedText.find(".B(y)"));
 }
 
-TEST_F(SNLSVConstructorTestSimple, parseAlwaysCombDynamicPackedReadWriteUsesWideMuxPrimitive) {
+TEST_F(SNLSVConstructorTestSimple, parseAlwaysCombDynamicPackedReadWriteUsesCompactPrimitives) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "always_comb_dynamic_packed_read_write_wide_mux_supported";
@@ -14308,8 +14354,11 @@ endmodule
 
   auto top = library_->getSNLDesign(NLName("always_comb_dynamic_packed_read_write_wide_mux_supported"));
   ASSERT_NE(top, nullptr);
-  EXPECT_EQ(2u, countMux2Instances(top));
-  EXPECT_EQ(2u, countMux2Instances(top, 8));
+  EXPECT_EQ(0u, countMux2Instances(top));
+  size_t updates = 0;
+  for (auto* instance : top->getInstances()) updates += NLDB0::isVectorUpdate(instance->getModel());
+  EXPECT_EQ(1u, updates);
+  EXPECT_EQ(0u, countMux2Instances(top, 8));
   EXPECT_EQ(0u, countMux2Instances(top, 1));
   EXPECT_EQ(1u, countTableSelectInstances(
     top,
@@ -14318,7 +14367,7 @@ endmodule
   auto dumpedVerilog =
     dumpTopAndGetVerilogPath(top, "always_comb_dynamic_packed_read_write_wide_mux_supported");
   const auto dumpedText = readTextFile(dumpedVerilog);
-  EXPECT_NE(std::string::npos, dumpedText.find("naja_mux2 #("));
+  EXPECT_NE(std::string::npos, dumpedText.find("naja_vector_update #("));
   EXPECT_NE(std::string::npos, dumpedText.find(".WIDTH(8)"));
   EXPECT_NE(std::string::npos, dumpedText.find("naja_table_select "));
 }
@@ -21084,6 +21133,80 @@ endmodule
   EXPECT_NE(top->getNet(NLName("y")), nullptr);
 }
 
+TEST_F(SNLSVConstructorTestSimple, repeatedTemporaryInversionsAreShared) {
+  const auto name = "shared_inversions";
+  const auto path = writeSVTestFile(name, R"(module shared_inversions(
+  input logic [3:0] a, output logic [3:0] y, z
+);
+  for (genvar k = 0; k < 4; k++) begin
+    always_comb begin
+      casez (a)
+        4'b00??: y[k] = a[k];
+        4'b?010: y[k] = ~a[k];
+        default: y[k] = 1'b0;
+      endcase
+    end
+  end
+  assign z = (~a & 4'ha) | (~a & 4'h5);
+endmodule
+)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName(name));
+  ASSERT_NE(nullptr, top);
+  std::set<SNLNet*> invertedInputs;
+  for (auto* instance : top->getInstances()) {
+    auto* model = instance->getModel();
+    if (!NLDB0::isGate(model) || NLDB0::getGateName(model) != "not") continue;
+    auto* input = instance->getInstTerm(NLDB0::getGateSingleTerm(model))->getNet();
+    EXPECT_TRUE(invertedInputs.insert(input).second) << input->getString();
+  }
+  EXPECT_EQ(4u, invertedInputs.size());
+  for (unsigned a = 0; a < 16; ++a) {
+    const unsigned expected = (a & 12u) == 0 ? a :
+      (a & 7u) == 2 ? (~a & 15u) : 0;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (unsigned k = 0; k < 4; ++k) {
+      EXPECT_EQ(bool((expected >> k) & 1u), evaluateFunctionResultBit(
+        top, top->getBusTerm(NLName("y"))->getBit(k)->getNet(), a, 0, &memo));
+      EXPECT_EQ(bool(((~a) >> k) & 1u), evaluateFunctionResultBit(
+        top, top->getBusTerm(NLName("z"))->getBit(k)->getNet(), a, 0, &memo));
+    }
+  }
+
+  const auto dumped = dumpTopAndGetVerilogPath(top, "shared_inversions_dump");
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1")) {
+    GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+  }
+  const auto tbPath = dumped.parent_path() / "tb.sv";
+  std::ofstream tb(tbPath);
+  tb << R"(module tb;
+reg [3:0] a; wire [3:0] y, z; reg [3:0] expected; integer i, k;
+shared_inversions dut(a,y,z);
+initial begin
+  for (i=0; i<256; i=i+1) begin
+    for (k=0; k<4; k=k+1) begin
+      case ((i >> (2*k)) & 3)
+        0: a[k]=0; 1: a[k]=1; 2: a[k]=1'bx; 3: a[k]=1'bz;
+      endcase
+    end
+    expected=(~a & 4'ha) | (~a & 4'h5);
+    #1;
+    if (z !== expected) $fatal(1,"shared inversion mismatch: a=%b z=%b",a,z);
+  end
+  $finish;
+end
+endmodule
+)";
+  tb.close();
+  const auto quote = [](const std::filesystem::path& p) { return "\"" + p.string() + "\""; };
+  const auto executable = dumped.parent_path() / "simulation.vvp";
+  const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+    " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+  ASSERT_EQ(0, std::system(command.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+}
+
 TEST_F(SNLSVConstructorTestSimple, parseAlwaysCombCasezSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
@@ -24678,11 +24801,11 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseAlwaysCombLHSIndexedRangeSelectDynamicBaseOutOfRangeUnsupported) {
+  parseAlwaysCombLHSIndexedRangeSelectPartialOverlapSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath =
-    outPath / "always_comb_lhs_indexed_range_select_dynamic_base_out_of_range_unsupported";
+    outPath / "always_comb_lhs_indexed_range_select_partial_overlap_supported";
   if (std::filesystem::exists(outPath)) {
     std::filesystem::remove_all(outPath);
   }
@@ -24690,11 +24813,11 @@ TEST_F(
 
   const auto svPath =
     outPath /
-    "always_comb_lhs_indexed_range_select_dynamic_base_out_of_range_unsupported.sv";
+    "always_comb_lhs_indexed_range_select_partial_overlap_supported.sv";
   std::ofstream svFile(svPath);
   ASSERT_TRUE(svFile.good());
   svFile
-    << R"(module always_comb_lhs_indexed_range_select_dynamic_base_out_of_range_unsupported(
+    << R"(module always_comb_lhs_indexed_range_select_partial_overlap_supported(
   input  logic [3:0] idx_i,
   output logic [3:0] data_o
 );
@@ -24706,10 +24829,12 @@ endmodule
 )";
   svFile.close();
 
-  expectUnsupportedConstruct(
-    constructor,
-    svPath,
-    {"dynamic indexed range-select out of range in always_comb assignment"});
+  constructor.construct(svPath);
+  auto* top = library_->getSNLDesign(NLName("always_comb_lhs_indexed_range_select_partial_overlap_supported"));
+  ASSERT_NE(top, nullptr);
+  size_t updates = 0;
+  for (auto* instance : top->getInstances()) updates += NLDB0::isVectorUpdate(instance->getModel());
+  EXPECT_EQ(1u, updates);
 }
 
 TEST_F(
@@ -35804,6 +35929,127 @@ endmodule
   EXPECT_NE(std::string::npos, primitivesText.find("module naja_table_select"));
 }
 
+TEST_F(SNLSVConstructorTestSimple, wideIndexReadsUseCompactTableSelect) {
+  const auto path = writeSVTestFile("wide_index_reads", R"(
+module wide_index_reads(input logic [31:0] index,
+                        input logic [63:0] data,
+                        output logic [7:0] selected);
+  for (genvar k = 0; k < 8; k++) begin
+    assign selected[k] = data[index * 8 + k];
+  end
+endmodule
+)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("wide_index_reads"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_EQ(8u, countTableSelectInstances(
+    top, NLDB0::TableSelectSignature {1, 64, 32}));
+  // Eight selectors must not expand into hundreds of per-entry comparisons.
+  EXPECT_LT(top->getInstances().size(), 64u);
+}
+
+TEST_F(SNLSVConstructorTestSimple, wideAndSignedIndexFourStateSimulation) {
+  const auto path = writeSVTestFile("wide_signed_index_reads", R"(
+module wide_signed_index_reads(input logic [63:0] data,
+                               input logic [39:0] wide_index,
+                               input logic signed [5:0] signed_index,
+                               input logic signed [1:0] small_index,
+                               output logic wide_bit, signed_bit, unsigned_bit,
+                               output logic small_signed_bit,
+                               output logic [3:0] ascending_word);
+  wire [0:15][3:0] words = data;
+  assign wide_bit = data[wide_index];
+  assign signed_bit = data[signed_index];
+  assign unsigned_bit = data[$unsigned(signed_index)];
+  assign small_signed_bit = data[small_index];
+  assign ascending_word = words[wide_index];
+endmodule
+)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("wide_signed_index_reads"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_EQ(1u, countTableSelectInstances(
+    top, NLDB0::TableSelectSignature {1, 64, 40}));
+  EXPECT_EQ(2u, countTableSelectInstances(
+    top, NLDB0::TableSelectSignature {1, 64, 7}));
+  EXPECT_EQ(1u, countTableSelectInstances(
+    top, NLDB0::TableSelectSignature {1, 64, 6}));
+  EXPECT_EQ(1u, countTableSelectInstances(
+    top, NLDB0::TableSelectSignature {4, 16, 40}));
+  const auto dumped = dumpTopAndGetVerilogPath(top, "wide_signed_index_reads_dump");
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1")) {
+    GTEST_SKIP() << "Icarus Verilog is required for the four-state comparison";
+  }
+  const auto tbPath = dumped.parent_path() / "tb.sv";
+  std::ofstream tb(tbPath);
+  tb << R"(module tb;
+  reg [63:0] data;
+  reg [39:0] wide_index;
+  reg signed [5:0] signed_index;
+  wire signed [1:0] small_index = signed_index[1:0];
+  wire wide_bit, signed_bit, unsigned_bit;
+  wire small_signed_bit;
+  wire [3:0] ascending_word;
+  wire [0:15][3:0] words = data;
+  // Icarus truncates packed indices above 32 bits; check their bounds explicitly.
+  wire expected_wide = wide_index < 64 ? data[wide_index] : 1'bx;
+  wire [3:0] expected_word = wide_index < 16 ? words[wide_index] : 4'bxxxx;
+  wide_signed_index_reads dut(.*);
+  task check;
+    begin
+      #1;
+      if (wide_bit !== expected_wide ||
+          signed_bit !== data[signed_index] ||
+          unsigned_bit !== data[$unsigned(signed_index)] ||
+          small_signed_bit !== data[small_index] ||
+          ascending_word !== expected_word)
+        $fatal(1, "index mismatch wide=%h signed=%d", wide_index, signed_index);
+    end
+  endtask
+  integer pattern, index;
+  initial begin
+    for (pattern = 0; pattern < 5; pattern = pattern + 1) begin
+      case (pattern)
+        0: data = '0;
+        1: data = '1;
+        2: data = 64'h93a5_0f6c_d281_7be4;
+        3: data = 'x;
+        4: data = 'z;
+      endcase
+      for (index = 0; index < 70; index = index + 1) begin
+        wide_index = index; signed_index = index; check;
+      end
+      // High address bits must not alias a valid low address.
+      wide_index = 40'h8000000003; signed_index = -1; check;
+      wide_index = '1; signed_index = -32; check;
+      wide_index = 'x; signed_index = 'x; check;
+      wide_index = 'z; signed_index = 'z; check;
+      wide_index = 40'b0x; signed_index = 6'b0x; check;
+    end
+    $finish;
+  end
+endmodule
+)";
+  tb.close();
+  const auto quote = [](const std::filesystem::path& p) {
+    std::string result = "'";
+    for (char c: p.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+    return result + "'";
+  };
+  const auto executable = dumped.parent_path() / "simulation.vvp";
+  const auto compile = "iverilog -g2012 -s tb -o " + quote(executable) +
+    " " + quote(tbPath) + " " + quote(dumped) +
+    " " + quote(dumped.parent_path() / "naja_primitives.v");
+  ASSERT_EQ(0, std::system(compile.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+  if (std::system("command -v verilator >/dev/null 2>&1") == 0) {
+    const auto lint = "verilator --lint-only --sv --top-module wide_signed_index_reads " +
+      quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+    EXPECT_EQ(0, std::system(lint.c_str()));
+  }
+}
+
 class SNLSVTableSelectTest: public SNLSVConstructorTestSimple,
   public ::testing::WithParamInterface<std::tuple<size_t, size_t, bool>> {};
 
@@ -40486,6 +40732,194 @@ TEST_F(SNLSVConstructorTestSimple, dynamicPackedFieldAssignmentOwnership) {
           }
         }
       }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, VectorUpdatesPreserveFourStateWritesAndClipping) {
+  const std::vector<std::tuple<std::string, std::string, std::string>> cases{
+    {"bit", "[15:0]", "y[index] = data[0];"},
+    {"up", "[15:0]", "y[index +: 4] = data;"},
+    {"down", "[15:0]", "y[index -: 4] = data;"},
+    {"oversized_up", "[15:0]", "y[index +: 20] = data;"},
+    {"ascending_bit", "[0:15]", "y[index] = data[0];"},
+    {"ascending_up", "[0:15]", "y[index +: 4] = data;"},
+    {"ascending_down", "[0:15]", "y[index -: 4] = data;"},
+    {"element", "[3:0][3:0]", "y[index] = data;"},
+    {"priority", "[15:0]", "y[index +: 4] = data; y[index +: 2] = ~data[1:0];"}
+  };
+  for (const auto& [kind, range, write] : cases) {
+    SCOPED_TRACE(kind);
+    const auto name = "vector_update_" + kind;
+    const auto source = "module " + name +
+      "(input logic signed [7:0] index, input logic [3:0] data, input logic [15:0] base, output logic " +
+      range + " y); always_comb begin y=base; " + write + " end endmodule\n";
+    SNLSVConstructor(library_).construct(writeSVTestFile(name, source));
+    auto* top = library_->getSNLDesign(NLName(name));
+    ASSERT_NE(top, nullptr);
+    size_t updates = 0;
+    for (auto* instance : top->getInstances()) updates += NLDB0::isVectorUpdate(instance->getModel());
+    EXPECT_EQ(kind == "priority" ? 2u : 1u, updates);
+    EXPECT_LT(top->getInstances().size(), 10u);
+    const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+    if (std::system("command -v iverilog >/dev/null 2>&1") ||
+        std::system("command -v vvp >/dev/null 2>&1")) {
+      GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+    }
+    auto reference = source;
+    reference.replace(reference.find(name), name.size(), "reference_update");
+    const auto tbPath = dumped.parent_path() / "tb.sv";
+    std::ofstream tb(tbPath);
+    tb << reference << "module tb;\n"
+       << "reg signed [7:0] index; reg [3:0] data; reg [15:0] base;\n"
+       << "wire [15:0] actual, expected;\n"
+       << name << " dut(.index(index),.data(data),.base(base),.y(actual));\n"
+       << "reference_update ref_model(.index(index),.data(data),.base(base),.y(expected));\n"
+       << R"(reg [39:0] offset; reg enable;
+wire [15:0] direct, unsigned_direct; reg [15:0] direct_expected, unsigned_expected;
+naja_vector_update #(.WIDTH(16),.UPDATE_WIDTH(4),.ABITS(40),.SIGNED(1))
+  direct_update(.BASE(base),.DATA(data),.OFFSET(offset),.EN(enable),.Y(direct));
+naja_vector_update #(.WIDTH(16),.UPDATE_WIDTH(4),.ABITS(40),.SIGNED(0))
+  unsigned_update(.BASE(base),.DATA(data),.OFFSET(offset),.EN(enable),.Y(unsigned_direct));
+task check;
+  begin
+    direct_expected=base;
+    unsigned_expected=base;
+    if (enable && offset<16) unsigned_expected[offset+:4]=data;
+    if (enable && $signed(offset)>-4 && $signed(offset)<16)
+      direct_expected[$signed(offset)+:4]=data;
+    #1;
+    if (actual !== expected) $fatal(1,"SV write mismatch index=%d actual=%h expected=%h",index,actual,expected);
+    if (direct !== direct_expected) $fatal(1,"primitive mismatch offset=%h",offset);
+    if (unsigned_direct !== unsigned_expected) $fatal(1,"unsigned primitive mismatch offset=%h",offset);
+  end
+endtask
+integer pattern, i, control;
+initial begin
+  for (pattern=0; pattern<5; pattern=pattern+1) begin
+    case (pattern)
+      0: begin base='0; data=4'h9; end
+      1: begin base='1; data=4'h2; end
+      2: begin base=16'h3a95; data=4'hc; end
+      3: begin base='z; data=4'b10xz; end
+      4: begin base='x; data=4'bz01x; end
+    endcase
+    for (control=0; control<4; control=control+1) begin
+      case(control) 0:enable=0; 1:enable=1; 2:enable=1'bx; 3:enable=1'bz; endcase
+      for (i=-8; i<24; i=i+1) begin index=i; offset=i; check; end
+      index='x; offset='x; check;
+      index='z; offset='z; check;
+      index=8'b0000000x; offset=40'b000x; check;
+      index=0; offset=40'h8000000001; check;
+      index=1; offset=40'h7f00000001; check;
+    end
+  end
+  $finish;
+end
+endmodule
+)";
+    tb.close();
+    const auto quote = [](const std::filesystem::path& path) {
+      std::string result = "'";
+      for (char c : path.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+      return result + "'";
+    };
+    const auto simulation = dumped.parent_path() / "sim.vvp";
+    const auto compile = "iverilog -g2012 -s tb -o " + quote(simulation) + " " + quote(tbPath) +
+        " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+    ASSERT_EQ(0, std::system(compile.c_str()));
+    ASSERT_EQ(0, std::system(("vvp " + quote(simulation)).c_str()));
+    if (std::system("command -v verilator >/dev/null 2>&1") == 0) {
+      const auto lint = "verilator --lint-only --sv -Wno-ASCRANGE --top-module " + name + " " + quote(dumped) +
+          " " + quote(dumped.parent_path() / "naja_primitives.v");
+      EXPECT_EQ(0, std::system(lint.c_str()));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, VectorSelectsPreserveFourStateReadsAndClipping) {
+  const std::vector<std::tuple<std::string, std::string, std::string, unsigned>> cases{
+    {"up", "[15:0]", "index +: 4", 4},
+    {"down", "[15:0]", "index -: 4", 4},
+    {"oversized", "[15:0]", "index +: 20", 20},
+    {"ascending_up", "[0:15]", "index +: 4", 4},
+    {"ascending_down", "[0:15]", "index -: 4", 4},
+    {"nonzero_bound", "[23:8]", "index +: 4", 4},
+    {"negative_bound", "[-3:-18]", "index -: 4", 4},
+    {"elements", "[3:0][3:0]", "index +: 2", 8},
+    {"unsigned_up", "[15:0]", "index +: 4", 4}
+  };
+  for (const auto& [kind, range, select, width] : cases) {
+    SCOPED_TRACE(kind);
+    const auto name = "vector_select_" + kind;
+    const bool isSigned = kind != "unsigned_up";
+    const auto source = "module " + name + "(input logic " + (isSigned ? "signed " : "") +
+      "[79:0] index, input logic " + range + " data, output logic [" +
+      std::to_string(width-1) + ":0] y); assign y = data[" + select + "]; endmodule\n";
+    const auto path = writeSVTestFile(name, source);
+    SNLSVConstructor(library_).construct(path);
+    auto* top = library_->getSNLDesign(NLName(name));
+    ASSERT_NE(nullptr, top);
+    EXPECT_EQ(1u, countPrimitiveInstances(top, NLDB0::isVectorSelect));
+    EXPECT_EQ(0u, countMux2Instances(top));
+    EXPECT_LT(top->getInstances().size(), 5u);
+    const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+    if (std::system("command -v iverilog >/dev/null 2>&1") ||
+        std::system("command -v vvp >/dev/null 2>&1")) {
+      GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+    }
+    auto reference = source;
+    reference.replace(reference.find(name), name.size(), "reference_select");
+    if (kind == "elements") {
+      // Icarus rejects indexed ranges of multidimensional packed arrays.
+      reference.replace(reference.find(range), range.size(), "[15:0]");
+      reference.replace(reference.find(select), select.size(), "index * 80'sd4 +: 8");
+    }
+    const auto tbPath = dumped.parent_path() / "tb.sv";
+    std::ofstream tb(tbPath);
+    tb << reference << "module tb; reg " << (isSigned ? "signed " : "")
+       << "[79:0] index; reg [15:0] data; wire [" << width-1 << ":0] actual,expected;\n"
+       << "localparam SIGNED_INDEX=" << isSigned << ";\n"
+       << name << " dut(index,data,actual); reference_select ref_model(index,data,expected);\n"
+       << R"(reg [$bits(actual)-1:0] reference_value;
+task check; begin
+  #1;
+  // Icarus truncates very wide native select offsets. Check these invalid
+  // addresses explicitly, and use native HDL for ordinary boundary cases.
+  reference_value = expected;
+  if (((^index) === 1'bx) ||
+      (SIGNED_INDEX && index[79:32] != {48{index[31]}}) ||
+      (!SIGNED_INDEX && index[79:32] != 0)) reference_value = 'x;
+  if (actual !== reference_value) $fatal(1,"select mismatch index=%h data=%h actual=%h expected=%h",index,data,actual,reference_value);
+end endtask
+integer i,j;
+initial begin
+  for (j=0; j<5; j=j+1) begin
+    case(j)
+      0: data=16'ha671; 1: data=16'h29ac; 2: data='x; 3: data='z; 4: data=16'b01xz_zx10_xz01_10zx;
+    endcase
+    for(i=-24;i<44;i=i+1) begin index=i; check; end
+    index=80'h10000000000000000; check;
+    index=80'hffffffffffffffffffff; check;
+    index='x; check; index='z; check;
+    index=0; index[12]=1'bx; check;
+    index=0; index[79]=1'bz; check;
+  end
+  $finish;
+end
+endmodule
+)";
+    tb.close();
+    const auto quote = [](const std::filesystem::path& p) { return "\"" + p.string() + "\""; };
+    const auto simulation = dumped.parent_path() / "sim.vvp";
+    const auto command = "iverilog -g2012 -s tb -o " + quote(simulation) + " " + quote(tbPath) +
+      " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+    ASSERT_EQ(0, std::system(command.c_str()));
+    ASSERT_EQ(0, std::system(("vvp " + quote(simulation)).c_str()));
+    if (!std::system("command -v verilator >/dev/null 2>&1")) {
+      const auto lint = "verilator --lint-only --sv --top-module " + name + " -Wno-ASCRANGE " +
+        quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+      ASSERT_EQ(0, std::system(lint.c_str()));
     }
   }
 }

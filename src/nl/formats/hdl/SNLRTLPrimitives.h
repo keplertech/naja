@@ -20,6 +20,19 @@ class SNLRTLPrimitives {
     using Bits = std::vector<SNLBitNet*>;
     enum class GateKind { And, Nand, Or, Nor, Xor, Xnor, Buf, Not };
 
+    /// Clipped combinational update. Bits are LSB first; unknown offset or
+    /// enable other than 1 leaves BASE unchanged. Caller normalizes language
+    /// bounds and scheduling. Signed offsets may partially overlap bit zero.
+    static SNLInstance* createVectorUpdate(
+      SNLDesign* design, const Bits& base, const Bits& data, const Bits& offset,
+      bool isSigned, SNLBitNet* enable, SNLNet* output);
+
+    /// Read a bit window at a full signed/unsigned offset. Each out-of-range
+    /// output bit is X; unknown offset makes the entire result X. Bits are LSB first.
+    static SNLInstance* createVectorSelect(
+      SNLDesign* design, const Bits& data, const Bits& offset,
+      bool isSigned, SNLNet* output);
+
     /// Read-only memory with instance-owned INIT contents. Data is word-major,
     /// address zero first, with each word and address least-significant-bit first.
     /// Data bits must be constant 0/1/X/Z; output width determines word width.

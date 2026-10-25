@@ -17,6 +17,9 @@
 #include "NLLibraryTruthTables.h"
 #include "SNLScalarNet.h"
 #include "SNLTruthTable.h"
+#include "NLDB0.h"
+#include "SNLBusTerm.h"
+#include "SNLBusTermBit.h"
 #include "SNLUniquifier.h"
 
 #include "Reduction.h"
@@ -194,6 +197,35 @@ void ConstantPropagation::collectConstants() {
 
 unsigned ConstantPropagation::computeOutputValue(DNLID instanceID) {
   DNLInstanceFull instance = dnl_->getDNLInstanceFromID(instanceID);
+  const auto* model = instance.getSNLInstance()->getModel();
+  if (NLDB0::isVectorSelect(model)) {
+    if (NLDB0::getVectorSelectSignature(model).selectWidth != 1) return (unsigned)-1;
+    std::vector<bool> inputs;
+    for (DNLID id = instance.getTermIndexes().first; id <= instance.getTermIndexes().second; ++id) {
+      const auto& term = dnl_->getDNLTerminalFromID(id);
+      if (term.getSnlBitTerm()->getDirection() != SNLTerm::Direction::Input) continue;
+      if (constants0_.contains(term.getIsoID())) inputs.push_back(false);
+      else if (constants1_.contains(term.getIsoID())) inputs.push_back(true);
+      else return (unsigned)-1;
+    }
+    const auto value = NLDB0::getVectorSelectTruthTable(model,
+        NLDB0::getVectorSelectOutput(model)->getBit(0)->getOrderID()).evaluateVectorSelect(inputs);
+    return value ? unsigned(*value) : (unsigned)-1;
+  }
+  if (NLDB0::isVectorUpdate(model)) {
+    if (NLDB0::getVectorUpdateSignature(model).width != 1) return (unsigned)-1;
+    std::vector<bool> inputs;
+    for (DNLID id = instance.getTermIndexes().first; id <= instance.getTermIndexes().second; ++id) {
+      const auto& term = dnl_->getDNLTerminalFromID(id);
+      if (term.getSnlBitTerm()->getDirection() != SNLTerm::Direction::Input) continue;
+      if (constants0_.contains(term.getIsoID())) inputs.push_back(false);
+      else if (constants1_.contains(term.getIsoID())) inputs.push_back(true);
+      else return (unsigned)-1;
+    }
+    const auto table = NLDB0::getVectorUpdateTruthTable(model,
+        NLDB0::getVectorUpdateOutput(model)->getBit(0)->getOrderID());
+    return table.evaluateVectorUpdate(inputs);
+  }
   const SNLTruthTable& truthTable =
       SNLDesignModeling::getTruthTable(instance.getSNLInstance());
   if (not truthTable.isInitialized()) {
@@ -215,6 +247,8 @@ unsigned ConstantPropagation::computeOutputValue(DNLID instanceID) {
       constTerms.push_back({term.getSnlTerm()->getBitTerm()->getID(), 1});
     }
   }
+  if (truthTable.getGenericType() == SNLTruthTable::GenericType::VECTOR_UPDATE &&
+      constTerms.size() != truthTable.size()) return (unsigned)-1;
   SNLTruthTable reducedTruthTable = ReductionOptimization::reduceTruthTable(
       instance.getSNLInstance(), truthTable, constTerms);
   if (reducedTruthTable.all0()) {
@@ -370,6 +404,9 @@ void ConstantPropagation::performConstantPropagationAnalysis() {
 unsigned ConstantPropagation::computeOutputValueForConstantInstance(
     DNLID instanceID) {
   DNLInstanceFull instance = dnl_->getDNLInstanceFromID(instanceID);
+  if (NLDB0::isVectorSelect(instance.getSNLInstance()->getModel())) return computeOutputValue(instanceID);
+  if (NLDB0::isVectorUpdate(instance.getSNLInstance()->getModel()))
+    return computeOutputValue(instanceID);
 #ifdef DEBUG_PRINTS
   // LCOV_EXCL_START
   printf("f instance: %s\n",

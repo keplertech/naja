@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+cc_test(
+    name = "snlVHDLConstructorTests",
+    srcs = ["VHDLConstructorTest.cpp", "VHDLTestUtils.h"],
+    data = glob(["*.vhd", "*.sv"]),
+    defines = [
+        'SNL_VHDL_EQUIVALENT_ARITHMETIC_SV=\\"test/nl/formats/vhdl/arithmetic_equivalent.sv\\"',
+        'SNL_VHDL_INDEXED_TABLES=\\"test/nl/formats/vhdl/indexed_tables.vhd\\"',
+        'SNL_VHDL_ASYNCHRONOUS_RESET=\\"test/nl/formats/vhdl/asynchronous_reset.vhd\\"',
+        'SNL_VHDL_MEMORY=\\"test/nl/formats/vhdl/memory.vhd\\"',
+        'SNL_VHDL_GENERATED_FIR=\\"test/nl/formats/vhdl/fir_generated.vhd\\"',
+        'SNL_VHDL_LOGICAL=\\"test/nl/formats/vhdl/logical.vhd\\"',
+        'SNL_VHDL_HIERARCHY=\\"test/nl/formats/vhdl/hierarchy.vhd\\"',
+        'SNL_VHDL_ENABLED=\\"test/nl/formats/vhdl/enabled.vhd\\"',
+        'SNL_VHDL_RESET=\\"test/nl/formats/vhdl/reset.vhd\\"',
+        'SNL_VHDL_RESET_ENABLE=\\"test/nl/formats/vhdl/reset_enable.vhd\\"',
+        'SNL_VHDL_VECTORS=\\"test/nl/formats/vhdl/vectors.vhd\\"',
+        'SNL_VHDL_EQUIVALENT_LOGICAL_SV=\\"test/nl/formats/vhdl/logical_equivalent.sv\\"',
+        'SNL_VHDL_EQUIVALENT_VECTOR_MUX_SV=\\"test/nl/formats/vhdl/vector_mux_equivalent.sv\\"',
+        'SNL_VHDL_RETAINED_VARIABLES=\\"test/nl/formats/vhdl/retained_variables.vhd\\"',
+        'SNL_VHDL_VARIABLES=\\"test/nl/formats/vhdl/variables.vhd\\"',
+        'SNL_VHDL_PIPELINE=\\"test/nl/formats/vhdl/pipeline.vhd\\"',
+        'SNL_VHDL_EQUIVALENT_MUX_SV=\\"test/nl/formats/vhdl/mux_equivalent.sv\\"',
+        'SNL_VHDL_EQUIVALENT_REGISTER_SV=\\"test/nl/formats/vhdl/register_equivalent.sv\\"',
+    ],
+    deps = [
+        "//src/nl/formats/hdl:naja_snl_hdl",
+        "//src/nl/formats/vhdl:naja_snl_vhdl",
+        "//src/nl/formats/systemverilog:naja_snl_systemverilog",
+        "//src/nl/formats/verilog:naja_snl_verilog",
+        "//src/nl/netlist:naja_nl",
+        "@googletest//:gtest_main",
+    ],
+)

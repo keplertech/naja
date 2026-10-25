@@ -296,6 +296,27 @@ operation is fixed by the canonical model identity. Dynamic shifts preserve
 all count bits, including oversized counts, and signed arithmetic right-shift
 fill behavior. These primitives retain combinational dependencies and survive
 NajaIF snapshot round trips; structural Verilog exports include their models.
+Ordinary dynamic packed bit and indexed slice writes can use the canonical
+``naja_vector_update`` primitive. It preserves the full offset, leaves the
+base value unchanged for unknown indices, and clips partially overlapping
+writes. The primitive is language neutral and survives NajaIF save/load;
+frontends normalize their own indexing and assignment rules before using it.
+The VHDL loader also uses it for supported simple combinational element writes
+whose binary index domain is provably in bounds. Nested targets and compound
+updates retain their existing lowering. Formal consumers need explicit support
+for the ``VECTOR_UPDATE`` semantic model; dependency arcs alone are insufficient.
+
+Dynamic indexed slice reads can use ``naja_vector_select``. Its output reads a
+bit window from the full signed or unsigned offset; each out-of-range bit is X,
+and an unknown offset produces an all-X result. X/Z data is preserved. Like
+vector updates, the primitive is frontend independent and survives NajaIF
+save/load. The VHDL loader uses the shared family for nonconstant vector bit
+reads whose index domain is provably in bounds. Formal consumers need a
+``VECTOR_SELECT`` encoder that handles invalid selections explicitly; its
+binary evaluator returns no value for an out-of-range bit rather than inventing
+a Boolean value. Scalar constant propagation folds fully known, valid reads;
+other cases remain conservative.
+
 VHDL arithmetic currently retains its scalar full-adder lowering; the compact
 add/subtract lowering described here applies to SystemVerilog.
 

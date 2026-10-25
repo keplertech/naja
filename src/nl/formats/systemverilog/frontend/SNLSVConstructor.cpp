@@ -12416,14 +12416,8 @@ endmodule
                 currentMatchBit = const0; // LCOV_EXCL_LINE
               } else { // LCOV_EXCL_LINE
                 // LCOV_EXCL_START
-                auto* invertedBit = SNLScalarNet::create(design);
-                annotateSourceInfo(invertedBit, sourceRange);
-                if (!createUnaryGate(
-                      design,
-                      NLDB0::GateType(NLDB0::GateType::Not),
-                      currentMatchBit,
-                      invertedBit,
-                      sourceRange)) {
+                auto* invertedBit = createNotBitGate(design, currentMatchBit, sourceRange);
+                if (!invertedBit) {
                   return false; // LCOV_EXCL_LINE
                 }
                 currentMatchBit = invertedBit;
@@ -12551,14 +12545,8 @@ endmodule
 
       auto makeNot = [&](SNLBitNet* inputBit) -> SNLBitNet* {
         if (!inputBit) return nullptr; // LCOV_EXCL_LINE
-        auto* notNet = SNLScalarNet::create(design);
-        annotateSourceInfo(notNet, sourceRange);
-        if (!createUnaryGate(
-              design,
-              NLDB0::GateType(NLDB0::GateType::Not),
-              inputBit,
-              notNet,
-              sourceRange)) {
+        auto* notNet = createNotBitGate(design, inputBit, sourceRange);
+        if (!notNet) {
           return nullptr; // LCOV_EXCL_LINE
         }
         return notNet;
@@ -12829,14 +12817,8 @@ endmodule
         if (inBit == const1) {
           return const0;
         }
-        auto* outBit = SNLScalarNet::create(design);
-        annotateSourceInfo(outBit, sourceRange);
-        if (!createUnaryGate(
-              design,
-              NLDB0::GateType(NLDB0::GateType::Not),
-              inBit,
-              outBit,
-              sourceRange)) {
+        auto* outBit = createNotBitGate(design, inBit, sourceRange);
+        if (!outBit) {
           return nullptr; // LCOV_EXCL_LINE
         }
         return outBit;
@@ -14715,14 +14697,8 @@ endmodule
               bits.push_back(const0);
               continue;
             }
-            auto* notBit = SNLScalarNet::create(design);
-            annotateSourceInfo(notBit, unarySourceRange);
-            if (!createUnaryGate(
-                  design,
-                  NLDB0::GateType(NLDB0::GateType::Not),
-                  operandBit,
-                  notBit,
-                  unarySourceRange)) {
+            auto* notBit = createNotBitGate(design, operandBit, unarySourceRange);
+            if (!notBit) {
               return false; // LCOV_EXCL_LINE
             }
             bits.push_back(notBit);
@@ -14753,14 +14729,8 @@ endmodule
               invertedBits.push_back(const0);
               continue;
             }
-            auto* notBit = SNLScalarNet::create(design);
-            annotateSourceInfo(notBit, unarySourceRange);
-            if (!createUnaryGate(
-                  design,
-                  NLDB0::GateType(NLDB0::GateType::Not),
-                  operandBit,
-                  notBit,
-                  unarySourceRange)) {
+            auto* notBit = createNotBitGate(design, operandBit, unarySourceRange);
+            if (!notBit) {
               return false; // LCOV_EXCL_LINE
             }
             invertedBits.push_back(notBit);
@@ -14856,14 +14826,8 @@ endmodule
                 } else if (reducedBit == const1) {
                   reducedBit = const0;
                 } else {
-                  auto* notBit = SNLScalarNet::create(design);
-                  annotateSourceInfo(notBit, unarySourceRange);
-                  if (!createUnaryGate(
-                        design,
-                        NLDB0::GateType(NLDB0::GateType::Not),
-                        reducedBit,
-                        notBit,
-                        unarySourceRange)) {
+                  auto* notBit = createNotBitGate(design, reducedBit, unarySourceRange);
+                  if (!notBit) {
                     return false; // LCOV_EXCL_LINE
                   }
                   reducedBit = notBit;
@@ -14875,14 +14839,8 @@ endmodule
                 continue;
               }
               if (reducedBit == const1) {
-                auto* notBit = SNLScalarNet::create(design);
-                annotateSourceInfo(notBit, unarySourceRange);
-                if (!createUnaryGate(
-                      design,
-                      NLDB0::GateType(NLDB0::GateType::Not),
-                      operandBit,
-                      notBit,
-                      unarySourceRange)) {
+                auto* notBit = createNotBitGate(design, operandBit, unarySourceRange);
+                if (!notBit) {
                   return false; // LCOV_EXCL_LINE
                 }
                 reducedBit = notBit;
@@ -14913,14 +14871,8 @@ endmodule
             } else if (reducedBit == const1) {
               reducedBit = const0;
             } else {
-              auto* notBit = SNLScalarNet::create(design);
-              annotateSourceInfo(notBit, unarySourceRange);
-              if (!createUnaryGate(
-                    design,
-                    NLDB0::GateType(NLDB0::GateType::Not),
-                    reducedBit,
-                    notBit,
-                    unarySourceRange)) {
+              auto* notBit = createNotBitGate(design, reducedBit, unarySourceRange);
+              if (!notBit) {
                 return false; // LCOV_EXCL_LINE
               }
               reducedBit = notBit;
@@ -14982,14 +14934,8 @@ endmodule
           } else if (reductionOr == const1) {
             bits.push_back(const0);
           } else {
-            auto* notBit = SNLScalarNet::create(design);
-            annotateSourceInfo(notBit, unarySourceRange);
-            if (!createUnaryGate(
-                  design,
-                  NLDB0::GateType(NLDB0::GateType::Not),
-                  reductionOr,
-                  notBit,
-                  unarySourceRange)) {
+            auto* notBit = createNotBitGate(design, reductionOr, unarySourceRange);
+            if (!notBit) {
               return false; // LCOV_EXCL_LINE
             }
             bits.push_back(notBit);
@@ -15891,6 +15837,21 @@ endmodule
                     auto* const1 = static_cast<SNLBitNet*>(getConstNet(design, true));
                     auto elementSourceRange = getSourceRange(*stripped);
 
+                    const auto elementCount =
+                      static_cast<size_t>(valueType.getFixedRange().width());
+                    const auto rangeLeft = valueType.getFixedRange().left;
+                    const auto rangeRight = valueType.getFixedRange().right;
+                    const auto minIndex = std::min(rangeLeft, rangeRight);
+                    const auto maxIndex = std::max(rangeLeft, rangeRight);
+                    // Include signed-index normalization in the cache key so
+                    // signed and unsigned reads of the same nets stay distinct.
+                    if (minIndex == 0 && elementExpr.selector().type->isSigned()) {
+                      while (selectorBits.size() < sizeof(size_t) * 8 &&
+                             elementCount > (size_t {1} << (selectorBits.size() - 1))) {
+                        selectorBits.push_back(selectorBits.back());
+                      }
+                    }
+
                     DynamicElementSelectCacheKey cacheKey;
                     const bool canUseCache = valueNet != nullptr;
                     if (canUseCache) {
@@ -15907,119 +15868,54 @@ endmodule
                       }
                     }
 
-                    const auto elementCount =
-                      static_cast<size_t>(valueType.getFixedRange().width());
-                    const auto rangeLeft = valueType.getFixedRange().left;
-                    const auto rangeRight = valueType.getFixedRange().right;
-                    const auto minIndex = std::min(rangeLeft, rangeRight);
-                    const auto maxIndex = std::max(rangeLeft, rangeRight);
                     if (minIndex == 0 &&
                         maxIndex >= 0 &&
                         static_cast<size_t>(maxIndex) + 1 == elementCount &&
                         selectorBits.size() < sizeof(size_t) * 8 &&
                         elementCount <= (size_t {1} << selectorBits.size())) {
-                      const auto treeSize = size_t {1} << selectorBits.size();
-                      // The mux-tree path is for generated table reads where
-                      // the selector width closely matches the table size. A
-                      // small table indexed by a wide int is better handled by
-                      // the equality-decode fallback below.
-                      const bool treeSizeCloseToElementCount =
-                        elementCount <= (std::numeric_limits<size_t>::max() / 2) &&
-                        treeSize <= elementCount * 2;
-                      if (treeSizeCloseToElementCount) {
-                        std::vector<SNLBitNet*> tableValueBits;
-                        tableValueBits.reserve(elementCount * elementWidth);
-                        bool tableValueBitsOk = true;
-                        for (size_t logicalIndex = 0; logicalIndex < elementCount; ++logicalIndex) {
-                          const auto translated = valueType.getFixedRange().translateIndex(
-                            static_cast<int32_t>(logicalIndex));
-                          if (translated < 0 ||
-                              translated >= static_cast<int32_t>(elementCount)) {
-                            tableValueBitsOk = false; // LCOV_EXCL_LINE
-                            break; // LCOV_EXCL_LINE
-                          }
-                          const auto offset = static_cast<size_t>(translated) * elementWidth;
-                          if (offset + elementWidth > valueBits.size()) {
-                            tableValueBitsOk = false; // LCOV_EXCL_LINE
-                            break; // LCOV_EXCL_LINE
-                          }
-                          tableValueBits.insert(
-                            tableValueBits.end(),
-                            valueBits.begin() + static_cast<std::ptrdiff_t>(offset),
-                            valueBits.begin() + static_cast<std::ptrdiff_t>(offset + elementWidth));
+                      // Keep the full address: arithmetic indices can be much wider
+                      // than the table, and truncation would alias invalid reads.
+                      std::vector<SNLBitNet*> tableValueBits;
+                      tableValueBits.reserve(elementCount * elementWidth);
+                      bool tableValueBitsOk = true;
+                      for (size_t logicalIndex = 0; logicalIndex < elementCount; ++logicalIndex) {
+                        const auto translated = valueType.getFixedRange().translateIndex(
+                          static_cast<int32_t>(logicalIndex));
+                        if (translated < 0 ||
+                            translated >= static_cast<int32_t>(elementCount)) {
+                          tableValueBitsOk = false; // LCOV_EXCL_LINE
+                          break; // LCOV_EXCL_LINE
                         }
-                        if (tableValueBitsOk) {
-                          std::vector<SNLBitNet*> tableSelectedBits;
-                          if (createTableSelectInstance(
-                                design,
-                                tableValueBits,
-                                selectorBits,
-                                elementWidth,
-                                elementCount,
-                                tableSelectedBits,
-                                elementSourceRange)) {
-                            bits = std::move(tableSelectedBits);
-                            resizeBitsToWidth(bits, targetWidth, const0);
-                            if (canUseCache) {
-                              dynamicElementSelectCache_.emplace(std::move(cacheKey), bits);
-                            }
-                            return true;
-                          }
+                        const auto offset = static_cast<size_t>(translated) * elementWidth;
+                        if (offset + elementWidth > valueBits.size()) {
+                          tableValueBitsOk = false; // LCOV_EXCL_LINE
+                          break; // LCOV_EXCL_LINE
                         }
-
-                        std::vector<SNLBitNet*> zeroElement(elementWidth, const0);
-                        std::vector<std::vector<SNLBitNet*>> level(treeSize, zeroElement);
-                        for (size_t logicalIndex = 0; logicalIndex < elementCount; ++logicalIndex) {
-                          const auto translated = valueType.getFixedRange().translateIndex(
-                            static_cast<int32_t>(logicalIndex));
-                          if (translated < 0 ||
-                              translated >= static_cast<int32_t>(elementCount)) {
-                            return false; // LCOV_EXCL_LINE
-                          }
-                          const auto offset = static_cast<size_t>(translated) * elementWidth;
-                          if (offset + elementWidth > valueBits.size()) {
-                            return false; // LCOV_EXCL_LINE
-                          }
-                          level[logicalIndex].assign(
-                            valueBits.begin() + static_cast<std::ptrdiff_t>(offset),
-                            valueBits.begin() + static_cast<std::ptrdiff_t>(offset + elementWidth));
-                        }
-
-                        for (size_t bitIndex = 0; bitIndex < selectorBits.size(); ++bitIndex) {
-                          std::vector<std::vector<SNLBitNet*>> nextLevel;
-                          nextLevel.reserve(level.size() / 2);
-                          for (size_t pairIndex = 0; pairIndex + 1 < level.size(); pairIndex += 2) {
-                            const auto& lowBits = level[pairIndex];
-                            const auto& highBits = level[pairIndex + 1];
-                            if (lowBits == highBits) {
-                              nextLevel.push_back(lowBits);
-                              continue;
-                            }
-                            std::vector<SNLBitNet*> muxedBits;
-                            if (!createMux2Instance(
-                                  design,
-                                  selectorBits[bitIndex],
-                                  lowBits,
-                                  highBits,
-                                  muxedBits,
-                                  elementSourceRange)) {
-                              return false; // LCOV_EXCL_LINE
-                            }
-                            nextLevel.push_back(std::move(muxedBits));
-                          }
-                          level = std::move(nextLevel);
-                        }
-
-                        if (level.size() != 1 || level.front().size() != elementWidth) {
-                          return false; // LCOV_EXCL_LINE
-                        }
-                        bits = std::move(level.front());
-                        resizeBitsToWidth(bits, targetWidth, const0);
-                        if (canUseCache) {
-                          dynamicElementSelectCache_.emplace(std::move(cacheKey), bits);
-                        }
-                        return true;
+                        tableValueBits.insert(
+                          tableValueBits.end(),
+                          valueBits.begin() + static_cast<std::ptrdiff_t>(offset),
+                          valueBits.begin() + static_cast<std::ptrdiff_t>(offset + elementWidth));
                       }
+                      if (tableValueBitsOk) {
+                        std::vector<SNLBitNet*> tableSelectedBits;
+                        if (createTableSelectInstance(
+                              design,
+                              tableValueBits,
+                              selectorBits,
+                              elementWidth,
+                              elementCount,
+                              tableSelectedBits,
+                              elementSourceRange)) {
+                          bits = std::move(tableSelectedBits);
+                          resizeBitsToWidth(bits, targetWidth, const0);
+                          if (canUseCache) {
+                            dynamicElementSelectCache_.emplace(std::move(cacheKey), bits);
+                          }
+                          return true;
+                        }
+                      }
+
+                      return false; // LCOV_EXCL_LINE
                     }
 
                     // Compare against the full declared indices. Truncating
@@ -16231,6 +16127,13 @@ endmodule
                     if (rhsSliceElements * elementWidth == selectedWidth) {
                       sliceElements = rhsSliceElements;
                     }
+                  }
+
+                  if (createIndexedVectorSelect(design, rangeExpr, valueType.getFixedRange(),
+                        valueBits, elementWidth, sliceElements, bits)) {
+                    resizeBitsToWidth(bits, targetWidth,
+                        static_cast<SNLBitNet*>(getConstNet(design, false)));
+                    return true;
                   }
 
                   const auto collectCandidateBits =
@@ -16533,14 +16436,8 @@ endmodule
               bits.push_back(const0);
               continue;
             }
-            auto* notBit = SNLScalarNet::create(design);
-            annotateSourceInfo(notBit, sourceRange);
-            if (!createUnaryGate(
-                  design,
-                  NLDB0::GateType(NLDB0::GateType::Not),
-                  operandBit,
-                  notBit,
-                  sourceRange)) {
+            auto* notBit = createNotBitGate(design, operandBit, sourceRange);
+            if (!notBit) {
               // LCOV_EXCL_START
               std::ostringstream reason;
               reason << "failed to create NOT gate for bitwise-not operand at bit "
@@ -25413,14 +25310,8 @@ endmodule
               return const0;
             }
             auto unarySourceRange = getSourceRange(*stripped);
-            auto* outBit = SNLScalarNet::create(design);
-            annotateSourceInfo(outBit, unarySourceRange);
-            if (!createUnaryGate(
-                  design,
-                  NLDB0::GateType(NLDB0::GateType::Not),
-                  operandBit,
-                  outBit,
-                  unarySourceRange)) {
+            auto* outBit = createNotBitGate(design, operandBit, unarySourceRange);
+            if (!outBit) {
               return nullptr; // LCOV_EXCL_LINE
             }
             return outBit;
@@ -25671,14 +25562,8 @@ endmodule
               } else if (matchBit == const1) {
                 matchBit = const0;
               } else {
-                auto* invertedBit = SNLScalarNet::create(design);
-                annotateSourceInfo(invertedBit, caseSourceRange);
-                if (!createUnaryGate(
-                      design,
-                      NLDB0::GateType(NLDB0::GateType::Not),
-                      matchBit,
-                      invertedBit,
-                      caseSourceRange)) {
+                auto* invertedBit = createNotBitGate(design, matchBit, caseSourceRange);
+                if (!invertedBit) {
                   return nullptr; // LCOV_EXCL_LINE
                 }
                 matchBit = invertedBit;
@@ -27041,6 +26926,158 @@ endmodule
       return false; // LCOV_EXCL_LINE
     }
 
+    bool createIndexedVectorSelect(
+      SNLDesign* design, const slang::ast::RangeSelectExpression& expression,
+      const slang::ConstantRange& range, const std::vector<SNLBitNet*>& valueBits,
+      size_t elementWidth, size_t sliceElements, std::vector<SNLBitNet*>& bits) {
+      const auto width = getIntegralExpressionBitWidth(expression.left());
+      if (!width || !*width || !elementWidth || !sliceElements) return false;
+      std::vector<SNLBitNet*> offset;
+      if (!resolveExpressionBits(design, expression.left(), *width, offset)) return false;
+      const auto source = getSourceRange(expression);
+      const bool ascending = range.left < range.right;
+      const bool indexedDown = expression.getSelectionKind() == slang::ast::RangeSelectionKind::IndexedDown;
+      const int64_t adjustment = int64_t(range.right) +
+          (indexedDown && !ascending ? int64_t(sliceElements - 1) : 0) -
+          (!indexedDown && ascending ? int64_t(sliceElements - 1) : 0);
+      bool isSigned = expression.left().type->isSigned();
+      if (ascending || adjustment || elementWidth != 1) {
+        size_t extra = 0;
+        for (size_t value = elementWidth; value > 1; value >>= 1) ++extra;
+        const size_t normalizedWidth = std::max<size_t>(offset.size() + 1, 33) + extra + 1;
+        auto* fill = isSigned ? offset.back() : static_cast<SNLBitNet*>(getConstNet(design, false));
+        resizeBitsToWidth(offset, normalizedWidth, fill);
+        std::vector<SNLBitNet*> constantBits;
+        for (size_t bit = 0; bit < normalizedWidth; ++bit) {
+          const bool value = bit < 64 ? ((uint64_t(adjustment) >> bit) & 1) : adjustment < 0;
+          constantBits.push_back(getConstNet(design, value));
+        }
+        if (ascending || adjustment) {
+          auto* output = SNLBusNet::create(design, normalizedWidth - 1, 0);
+          annotateSourceInfo(output, source);
+          auto normalized = collectBits(output);
+          if (!createAddSubInstance(design, ascending ? constantBits : offset,
+                ascending ? offset : constantBits, normalized, true, source)) return false;
+          offset = std::move(normalized);
+        }
+        if (elementWidth != 1) {
+          std::vector<SNLBitNet*> factor(normalizedWidth, getConstNet(design, false));
+          for (size_t bit = 0; bit < sizeof(size_t) * 8 && bit < normalizedWidth; ++bit)
+            factor[bit] = getConstNet(design, ((elementWidth >> bit) & 1) != 0);
+          auto* output = SNLBusNet::create(design, normalizedWidth - 1, 0);
+          auto* model = NLDB0::getOrCreateMultiply(normalizedWidth);
+          auto* instance = SNLInstance::create(design, model);
+          annotateSourceInfo(instance, source);
+          connectInstanceTermBits(instance, NLDB0::getMultiplyInputA(model), offset);
+          connectInstanceTermBits(instance, NLDB0::getMultiplyInputB(model), factor);
+          instance->setTermNet(NLDB0::getMultiplyOutput(model), output);
+          offset = collectBits(output);
+        }
+        isSigned = true;
+      }
+      auto* output = SNLBusNet::create(design, sliceElements * elementWidth - 1, 0);
+      annotateSourceInfo(output, source);
+      auto* instance = SNLRTLPrimitives::createVectorSelect(design, valueBits, offset, isSigned, output);
+      annotateSourceInfo(instance, source);
+      bits = collectBits(output);
+      return true;
+    }
+
+    bool tryApplyPackedVectorUpdate(
+      SNLDesign* design, const Expression& assignedLHS, const Expression& trackedLhs,
+      const AssignAction& action, std::vector<SNLBitNet*>& dataBits,
+      std::string& failureReason, bool& handled) {
+      handled = false;
+      if (assignmentActionRequiresCurrentBits(action) || dataBits.empty() ||
+          std::any_of(dataBits.begin(), dataBits.end(), [](auto* bit) { return !bit; })) return true;
+      const auto* lhs = stripConversions(assignedLHS);
+      const Expression* base = nullptr;
+      const Expression* index = nullptr;
+      bool indexedDown = false, rangeSelect = false;
+      size_t sliceElements = 1;
+      if (lhs->kind == slang::ast::ExpressionKind::ElementSelect) {
+        const auto& select = lhs->as<slang::ast::ElementSelectExpression>();
+        base = stripConversions(select.value());
+        index = &select.selector();
+      } else if (lhs->kind == slang::ast::ExpressionKind::RangeSelect) {
+        const auto& select = lhs->as<slang::ast::RangeSelectExpression>();
+        if (select.getSelectionKind() == slang::ast::RangeSelectionKind::Simple) return true;
+        int32_t width = 0;
+        if (!getConstantInt32(select.right(), width) || width <= 0) return true;
+        base = stripConversions(select.value());
+        index = &select.left();
+        rangeSelect = true;
+        indexedDown = select.getSelectionKind() == slang::ast::RangeSelectionKind::IndexedDown;
+        sliceElements = size_t(width);
+      } else return true;
+      if (!base || !sameLhs(base, &trackedLhs)) return true;
+      const auto& type = base->type->getCanonicalType();
+      if (type.isUnpackedArray() || !type.hasFixedRange()) return true;
+      const auto range = type.getFixedRange();
+      const size_t count = range.width();
+      if (!count || dataBits.size() % count) return true;
+      const size_t elementWidth = dataBits.size() / count;
+      const size_t updateWidth = sliceElements * elementWidth;
+      int32_t constantIndex = 0;
+      if (getConstantInt32(*index, constantIndex)) return true;
+      const auto width = getIntegralExpressionBitWidth(*index);
+      if (!width || !*width) return true;
+      std::vector<SNLBitNet*> offset;
+      if (!resolveExpressionBits(design, *index, *width, offset)) return true;
+      std::vector<SNLBitNet*> replacement;
+      if (!buildCombinationalAssignBits(design, action, updateWidth, replacement, nullptr, failureReason))
+        return false;
+      handled = true;
+      const auto source = getSourceRange(assignedLHS);
+      const bool ascending = range.left < range.right;
+      const int64_t adjustment = int64_t(range.right) +
+          (rangeSelect && indexedDown && !ascending ? int64_t(sliceElements - 1) : 0) -
+          (rangeSelect && !indexedDown && ascending ? int64_t(sliceElements - 1) : 0);
+      bool isSigned = index->type->isSigned();
+      if (ascending || adjustment || elementWidth != 1) {
+        size_t extra = 0;
+        for (size_t value = elementWidth; value > 1; value >>= 1) ++extra;
+        const size_t normalizedWidth = std::max<size_t>(offset.size() + 1, 33) + extra + 1;
+        auto* fill = isSigned ? offset.back() : static_cast<SNLBitNet*>(getConstNet(design, false));
+        resizeBitsToWidth(offset, normalizedWidth, fill);
+        std::vector<SNLBitNet*> constantBits;
+        constantBits.reserve(normalizedWidth);
+        for (size_t bit = 0; bit < normalizedWidth; ++bit) {
+          const bool value = bit < 64 ? ((uint64_t(adjustment) >> bit) & 1) : adjustment < 0;
+          constantBits.push_back(getConstNet(design, value));
+        }
+        if (ascending || adjustment) {
+          auto* output = SNLBusNet::create(design, normalizedWidth - 1, 0);
+          annotateSourceInfo(output, source);
+          auto normalized = collectBits(output);
+          if (!createAddSubInstance(design, ascending ? constantBits : offset,
+                ascending ? offset : constantBits, normalized, true, source)) return false;
+          offset = std::move(normalized);
+        }
+        if (elementWidth != 1) {
+          std::vector<SNLBitNet*> factor(normalizedWidth, getConstNet(design, false));
+          for (size_t bit = 0; bit < sizeof(size_t) * 8 && bit < normalizedWidth; ++bit)
+            factor[bit] = getConstNet(design, ((elementWidth >> bit) & 1) != 0);
+          auto* output = SNLBusNet::create(design, normalizedWidth - 1, 0);
+          auto* model = NLDB0::getOrCreateMultiply(normalizedWidth);
+          auto* instance = SNLInstance::create(design, model);
+          annotateSourceInfo(instance, source);
+          connectInstanceTermBits(instance, NLDB0::getMultiplyInputA(model), offset);
+          connectInstanceTermBits(instance, NLDB0::getMultiplyInputB(model), factor);
+          instance->setTermNet(NLDB0::getMultiplyOutput(model), output);
+          offset = collectBits(output);
+        }
+        isSigned = true;
+      }
+      auto* output = SNLBusNet::create(design, dataBits.size() - 1, 0);
+      annotateSourceInfo(output, source);
+      auto* instance = SNLRTLPrimitives::createVectorUpdate(design, dataBits, replacement,
+          offset, isSigned, getConstNet(design, true), output);
+      annotateSourceInfo(instance, source);
+      dataBits = collectBits(output);
+      return true;
+    }
+
     bool tryApplyCombinationalDynamicElementSubAssignmentForLhs(
       SNLDesign* design,
       const Expression& assignedLHS,
@@ -27065,6 +27102,10 @@ endmodule
         activeForLoopConstants_.resize(activeLoopConstantsSize);
         activeForLoopNameConstants_.resize(activeLoopNameConstantsSize);
       });
+
+      if (!tryApplyPackedVectorUpdate(design, assignedLHS, trackedLhs, action,
+            dataBits, failureReason, handled)) return false;
+      if (handled) return true;
 
       std::vector<CombinationalSelectionStep> steps;
       if (!collectCombinationalSelectionStepsFromTrackedLhs(

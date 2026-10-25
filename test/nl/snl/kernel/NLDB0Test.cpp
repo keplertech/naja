@@ -2428,7 +2428,9 @@ TEST_F(NLDB0Test, CanonicalLibraryGroupsEndWithGateFamilies) {
     NLDB0::getOrCreateDFFSRE(4),
     NLDB0::getOrCreateDFFSRNE(4),
     NLDB0::getOrCreateDFFSSE(4),
-    NLDB0::getOrCreateDFFSSNE(4)
+    NLDB0::getOrCreateDFFSSNE(4),
+    NLDB0::getOrCreateVectorUpdate({4, 2, 3, true}),
+    NLDB0::getOrCreateVectorSelect({4, 2, 3, true})
   };
   for (size_t id = 0; id < fixedFamilies.size(); ++id) {
     if (auto* model = fixedFamilies[id]) {
@@ -2580,4 +2582,121 @@ TEST_F(NLDB0Test, ReadOnlyMemoryInitLiteralsAndOrdering) {
       NLDB0::getAddSubInputA(adder)->getBit(0)->getOrderID()), NLException);
   EXPECT_THROW(SNLTruthTable::Word(SNLTruthTable::GenericType::AND,
       {1, 0, 0, false, false, false}, deps), NLException);
+}
+
+TEST_F(NLDB0Test, VectorUpdateCanonicalIdentityAndBinaryModel) {
+  NLUniverse::create();
+  for (bool isSigned : {false, true}) {
+    const NLDB0::VectorUpdateSignature signature{8, 4, 5, isSigned};
+    auto* model = NLDB0::getOrCreateVectorUpdate(signature);
+    ASSERT_TRUE(NLDB0::isVectorUpdate(model));
+    EXPECT_EQ(signature, NLDB0::getVectorUpdateSignature(model));
+    EXPECT_EQ(model, NLDB0::getOrCreateVectorUpdate(signature));
+    NLDB0::PrimitiveParameters parameters;
+    for (auto* parameter : model->getParameters())
+      parameters[parameter->getName().getString()] = parameter->getValue();
+    EXPECT_EQ(model, NLDB0::getOrCreatePrimitive(model->getLibrary()->getID(), model->getID(), parameters));
+    for (auto* output : NLDB0::getVectorUpdateOutput(model)->getBusBits()) {
+      const auto table = SNLDesignModeling::getTruthTable(model, output->getOrderID());
+      const auto& metadata = table.getVectorUpdateMetadata();
+      EXPECT_EQ(uint32_t(output->getBit()), metadata.outputBit);
+      EXPECT_EQ(11u, table.size());
+      EXPECT_EQ(table.size(), NLBitDependencies::countBitsForVector(table.getDependencies()));
+      for (int encoded = 0; encoded < 32; ++encoded) {
+        const int offset = isSigned && encoded >= 16 ? encoded - 32 : encoded;
+        for (int data = 0; data < 16; ++data) for (bool base : {false, true})
+          for (bool enable : {false, true}) {
+            std::vector<bool> inputs{base};
+            for (int bit = 3; bit >= 0; --bit) inputs.push_back((data >> bit) & 1);
+            for (int bit = 4; bit >= 0; --bit) inputs.push_back((encoded >> bit) & 1);
+            inputs.push_back(enable);
+            const int k = output->getBit() - offset;
+            const bool expected = enable && k >= 0 && k < 4 ? ((data >> k) & 1) : base;
+            EXPECT_EQ(expected, table.evaluateVectorUpdate(inputs));
+          }
+      }
+    }
+  }
+  EXPECT_FALSE(NLDB0::isVectorUpdate(nullptr));
+  EXPECT_THROW(NLDB0::getOrCreateVectorUpdate({0, 1, 1, false}), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateVectorUpdate({1, 0, 1, false}), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateVectorUpdate({1, 1, 0, false}), NLException);
+  EXPECT_THROW(NLDB0::getVectorUpdateSignature(static_cast<SNLDesign*>(nullptr)), NLException);
+}
+
+TEST_F(NLDB0Test, VectorUpdateWideOffsetsDoNotAlias) {
+  NLUniverse::create();
+  auto* model = NLDB0::getOrCreateVectorUpdate({8, 4, 80, false});
+  const auto table = SNLDesignModeling::getTruthTable(model,
+      NLDB0::getVectorUpdateOutput(model)->getBit(0)->getOrderID());
+  std::vector<bool> inputs(table.size(), false);
+  inputs[4] = true; // DATA[0]
+  inputs.back() = true;
+  EXPECT_TRUE(table.evaluateVectorUpdate(inputs));
+  inputs[5] = true; // OFFSET[79]
+  EXPECT_FALSE(table.evaluateVectorUpdate(inputs));
+  auto signedTable = SNLTruthTable::VectorUpdate({8, 4, 80, 0, true},
+      SNLTruthTable::fullDependencies(86));
+  inputs.assign(86, true); // OFFSET=-1, DATA all ones, BASE=1.
+  inputs[0] = false;
+  EXPECT_TRUE(signedTable.evaluateVectorUpdate(inputs));
+  SNLTruthTable copy = signedTable;
+  EXPECT_EQ(signedTable, copy);
+  EXPECT_FALSE(copy < signedTable);
+  EXPECT_THROW(copy.getReducedWithConstants({{0, false}}), NLException);
+}
+
+TEST_F(NLDB0Test, VectorSelectCanonicalIdentityAndBinaryModel) {
+  NLUniverse::create();
+  for (bool isSigned : {false, true}) {
+    const NLDB0::VectorSelectSignature signature{7, 3, 5, isSigned};
+    auto* model = NLDB0::getOrCreateVectorSelect(signature);
+    ASSERT_TRUE(NLDB0::isVectorSelect(model));
+    EXPECT_EQ(signature, NLDB0::getVectorSelectSignature(model));
+    EXPECT_EQ(model, NLDB0::getOrCreateVectorSelect(signature));
+    NLDB0::PrimitiveParameters parameters;
+    for (auto* parameter : model->getParameters())
+      parameters[parameter->getName().getString()] = parameter->getValue();
+    EXPECT_EQ(model, NLDB0::getOrCreatePrimitive(model->getLibrary()->getID(), model->getID(), parameters));
+    for (auto* output : NLDB0::getVectorSelectOutput(model)->getBusBits()) {
+      const auto table = SNLDesignModeling::getTruthTable(model, output->getOrderID());
+      EXPECT_EQ(uint32_t(output->getBit()), table.getVectorSelectMetadata().outputBit);
+      EXPECT_EQ(12u, table.size());
+      EXPECT_EQ(table.size(), NLBitDependencies::countBitsForVector(table.getDependencies()));
+      for (int encoded = 0; encoded < 32; ++encoded) for (unsigned data = 0; data < 128; ++data) {
+        const int offset = isSigned && encoded >= 16 ? encoded - 32 : encoded;
+        std::vector<bool> inputs;
+        for (int bit = 6; bit >= 0; --bit) inputs.push_back((data >> bit) & 1);
+        for (int bit = 4; bit >= 0; --bit) inputs.push_back((encoded >> bit) & 1);
+        const int source = offset + output->getBit();
+        const std::optional<bool> expected = source >= 0 && source < 7
+            ? std::optional<bool>((data >> source) & 1) : std::nullopt;
+        EXPECT_EQ(expected, table.evaluateVectorSelect(inputs));
+      }
+      SNLTruthTable copy;
+      copy = table;
+      EXPECT_EQ(table, copy);
+      EXPECT_FALSE(copy < table);
+      EXPECT_THROW(copy.getReducedWithConstants({{0, false}}), NLException);
+    }
+  }
+  EXPECT_FALSE(NLDB0::isVectorSelect(nullptr));
+  EXPECT_THROW(NLDB0::getOrCreateVectorSelect({0, 1, 1, false}), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateVectorSelect({1, 0, 1, false}), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateVectorSelect({1, 1, 0, false}), NLException);
+  const auto table = SNLTruthTable::VectorSelect({8, 4, 80, 0, false}, SNLTruthTable::fullDependencies(88));
+  std::vector<bool> inputs(88, false);
+  inputs[7] = true;
+  EXPECT_EQ(std::optional<bool>(true), table.evaluateVectorSelect(inputs));
+  inputs[8] = true;
+  EXPECT_EQ(std::nullopt, table.evaluateVectorSelect(inputs));
+  EXPECT_THROW(table.evaluateVectorSelect({}), NLException);
+  const auto signedTable = SNLTruthTable::VectorSelect(
+      {8, 4, 80, 2, true}, SNLTruthTable::fullDependencies(88));
+  inputs.assign(88, true); // OFFSET=-1, output bit 2 reads DATA[1].
+  EXPECT_EQ(std::optional<bool>(true), signedTable.evaluateVectorSelect(inputs));
+  inputs[6] = false;
+  EXPECT_EQ(std::optional<bool>(false), signedTable.evaluateVectorSelect(inputs));
+  inputs[8] = false; // A huge positive offset must not alias the low bits.
+  EXPECT_EQ(std::nullopt, signedTable.evaluateVectorSelect(inputs));
 }

@@ -12,6 +12,10 @@
 #include "NLLibraryTruthTables.h"
 #include "SNLDesignModeling.h"
 #include "ConstantPropagation.h"
+#include "NLDB0.h"
+#include "SNLBusTerm.h"
+#include "SNLBusTermBit.h"
+#include "SNLInstTerm.h"
 
 using namespace naja;
 using namespace naja::NL;
@@ -3827,3 +3831,73 @@ TEST_F(ConstantPropagationTests, TestConstantPropagationAND_Hierarchical_duplica
                .c_str());
   }
 }
+
+class VectorUpdateConstantPropagationTest : public ConstantPropagationTests,
+    public ::testing::WithParamInterface<bool> {};
+
+TEST_P(VectorUpdateConstantPropagationTest, PreservesClippingAndDisabledWrites) {
+  auto* zero = SNLScalarNet::create(top); zero->setType(SNLNet::Type::Assign0);
+  auto* one = SNLScalarNet::create(top); one->setType(SNLNet::Type::Assign1);
+  auto* model = NLDB0::getOrCreateVectorUpdate({1, 3, 4, true});
+  std::vector<std::pair<SNLScalarTerm*, bool>> outputs;
+  for (int offset : {-4, -2, -1, 0, 1, 5}) for (bool enabled : {false, true}) {
+    auto* instance = SNLInstance::create(top, model);
+    instance->setTermNet(NLDB0::getVectorUpdateBase(model)->getBit(0), zero);
+    for (unsigned bit = 0; bit < 3; ++bit)
+      instance->setTermNet(NLDB0::getVectorUpdateData(model)->getBit(bit), ((5u >> bit) & 1) ? one : zero);
+    for (unsigned bit = 0; bit < 4; ++bit)
+      instance->setTermNet(NLDB0::getVectorUpdateOffset(model)->getBit(bit),
+          ((unsigned(offset) >> bit) & 1) ? one : zero);
+    instance->setTermNet(NLDB0::getVectorUpdateEnable(model), enabled ? one : zero);
+    auto* net = SNLScalarNet::create(top);
+    instance->setTermNet(NLDB0::getVectorUpdateOutput(model)->getBit(0), net);
+    auto* term = SNLScalarTerm::create(top, SNLTerm::Direction::Output);
+    term->setNet(net);
+    const int bit = -offset;
+    outputs.emplace_back(term, enabled && bit >= 0 && bit < 3 && ((5u >> bit) & 1));
+  }
+  ConstantPropagation propagation;
+  propagation.setTruthTableEngine(GetParam());
+  propagation.run();
+  for (const auto& [output, expected] : outputs) {
+    EXPECT_TRUE(output->getNet()->isConstant());
+    EXPECT_EQ(expected, output->getNet()->isConstant1());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(BinaryEngines, VectorUpdateConstantPropagationTest, ::testing::Values(false, true));
+
+class VectorSelectConstantPropagationTest : public ConstantPropagationTests,
+    public ::testing::WithParamInterface<bool> {};
+
+TEST_P(VectorSelectConstantPropagationTest, PreservesInvalidReadsAndFoldsValidReads) {
+  auto* zero = SNLScalarNet::create(top); zero->setType(SNLNet::Type::Assign0);
+  auto* one = SNLScalarNet::create(top); one->setType(SNLNet::Type::Assign1);
+  auto* model = NLDB0::getOrCreateVectorSelect({3, 1, 4, true});
+  std::vector<std::pair<SNLScalarTerm*, int>> outputs;
+  for (int offset : {-1, 0, 1, 2, 3, 7}) {
+    auto* instance = SNLInstance::create(top, model);
+    for (unsigned bit = 0; bit < 3; ++bit)
+      instance->setTermNet(NLDB0::getVectorSelectData(model)->getBit(bit), ((5u >> bit) & 1) ? one : zero);
+    for (unsigned bit = 0; bit < 4; ++bit)
+      instance->setTermNet(NLDB0::getVectorSelectOffset(model)->getBit(bit),
+          ((unsigned(offset) >> bit) & 1) ? one : zero);
+    auto* net = SNLScalarNet::create(top);
+    instance->setTermNet(NLDB0::getVectorSelectOutput(model)->getBit(0), net);
+    auto* term = SNLScalarTerm::create(top, SNLTerm::Direction::Output);
+    term->setNet(net);
+    outputs.emplace_back(term, offset >= 0 && offset < 3 ? int((5u >> offset) & 1) : -1);
+  }
+  ConstantPropagation propagation;
+  propagation.setTruthTableEngine(GetParam());
+  propagation.run();
+  for (const auto& [output, expected] : outputs) {
+    if (expected < 0) EXPECT_FALSE(output->getNet()->isConstant());
+    else {
+      EXPECT_TRUE(output->getNet()->isConstant());
+      EXPECT_EQ(bool(expected), output->getNet()->isConstant1());
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(BinaryEngines, VectorSelectConstantPropagationTest, ::testing::Values(false, true));

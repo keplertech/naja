@@ -64,6 +64,10 @@ namespace {
     DFFSSELibraryID,
     DFFSSNELibraryID,
 
+    // Combinational indexed updates.
+    VectorUpdateLibraryID,
+    VectorSelectLibraryID,
+
     // One ID per GateType; designID carries fan-in or fan-out.
     // Add fixed families above this final enumerator.
     GateLibraryIDBase
@@ -1804,6 +1808,195 @@ SNLDesign* NLDB0::getOrCreateShift(const ShiftSignature& signature) {
   return model;
 }
 
+bool NLDB0::isVectorUpdate(const SNLDesign* design) {
+  return design && design->isPrimitive() &&
+      design->getLibrary() == getPrimitiveLibrary(VectorUpdateLibraryID) &&
+      !design->isUnnamed() && design->getName().getString().rfind("naja_vector_update__", 0) == 0;
+}
+
+NLDB0::VectorUpdateSignature NLDB0::getVectorUpdateSignature(const SNLDesign* design) {
+  if (!isVectorUpdate(design)) throw NLException("Design is not a vector update primitive");
+  const auto* signedParameter = design->getParameter(NLName("SIGNED"));
+  if (!signedParameter) throw NLException("Vector update primitive is missing SIGNED");
+  return {getMemoryDecimalParameter(design, "WIDTH"),
+      getMemoryDecimalParameter(design, "UPDATE_WIDTH"),
+      getMemoryDecimalParameter(design, "ABITS"),
+      parseBooleanParameter(signedParameter->getValue(), "SIGNED")};
+}
+
+NLDB0::VectorUpdateSignature NLDB0::getVectorUpdateSignature(const SNLInstance* instance) {
+  if (!instance) throw NLException("Null vector update instance");
+  const auto signature = getVectorUpdateSignature(instance->getModel());
+  for (const auto* name : {"WIDTH", "UPDATE_WIDTH", "ABITS", "SIGNED"}) {
+    if (auto* parameter = instance->getInstParameter(NLName(name))) {
+      if (parameter->getValue() != instance->getModel()->getParameter(NLName(name))->getValue())
+        throw NLException("Vector update instance signature differs from its canonical model");
+    }
+  }
+  return signature;
+}
+
+SNLBusTerm* NLDB0::getVectorUpdateBase(const SNLDesign* design) {
+  getVectorUpdateSignature(design); return design->getBusTerm(Term0ID);
+}
+SNLBusTerm* NLDB0::getVectorUpdateData(const SNLDesign* design) {
+  getVectorUpdateSignature(design); return design->getBusTerm(Term1ID);
+}
+SNLBusTerm* NLDB0::getVectorUpdateOffset(const SNLDesign* design) {
+  getVectorUpdateSignature(design); return design->getBusTerm(Term2ID);
+}
+SNLScalarTerm* NLDB0::getVectorUpdateEnable(const SNLDesign* design) {
+  getVectorUpdateSignature(design); return design->getScalarTerm(Term3ID);
+}
+SNLBusTerm* NLDB0::getVectorUpdateOutput(const SNLDesign* design) {
+  getVectorUpdateSignature(design); return design->getBusTerm(Term4ID);
+}
+
+SNLDesign* NLDB0::getOrCreateVectorUpdate(const VectorUpdateSignature& signature) {
+  const auto maxBit = size_t(std::numeric_limits<NLID::Bit>::max());
+  if (!signature.width || !signature.updateWidth || !signature.abits ||
+      signature.width - 1 > maxBit || signature.updateWidth - 1 > maxBit ||
+      signature.abits - 1 > maxBit ||
+      uint64_t(signature.width) + 2 * uint64_t(signature.updateWidth) > maxBit ||
+      uint64_t(signature.updateWidth) + signature.abits + 2 > std::numeric_limits<uint32_t>::max())
+    throw NLException("Invalid vector update signature");
+  auto* library = getOrCreatePrimitiveLibrary(VectorUpdateLibraryID, "naja_vector_update");
+  if (!library) return nullptr;
+  const auto name = NLName("naja_vector_update__w" + std::to_string(signature.width) +
+      "_u" + std::to_string(signature.updateWidth) + "_a" + std::to_string(signature.abits) +
+      "_s" + std::to_string(signature.isSigned));
+  if (auto* model = library->getSNLDesign(name)) return model;
+  auto* model = SNLDesign::create(library, SNLDesign::Type::Primitive, name);
+  for (const auto& [parameter, value] : PrimitiveParameters{
+      {"WIDTH", std::to_string(signature.width)},
+      {"UPDATE_WIDTH", std::to_string(signature.updateWidth)},
+      {"ABITS", std::to_string(signature.abits)}})
+    SNLParameter::create(model, NLName(parameter), SNLParameter::Type::Decimal, value);
+  SNLParameter::create(model, NLName("SIGNED"), SNLParameter::Type::Boolean,
+      std::to_string(signature.isSigned));
+  auto* base = SNLBusTerm::create(model, Term0ID, SNLTerm::Direction::Input,
+      signature.width - 1, 0, NLName("BASE"));
+  auto* data = SNLBusTerm::create(model, Term1ID, SNLTerm::Direction::Input,
+      signature.updateWidth - 1, 0, NLName("DATA"));
+  auto* offset = SNLBusTerm::create(model, Term2ID, SNLTerm::Direction::Input,
+      signature.abits - 1, 0, NLName("OFFSET"));
+  auto* enable = SNLScalarTerm::create(model, Term3ID, SNLTerm::Direction::Input, NLName("EN"));
+  auto* output = SNLBusTerm::create(model, Term4ID, SNLTerm::Direction::Output,
+      signature.width - 1, 0, NLName("Y"));
+  auto controls = collectBitTerms(*data);
+  const auto addressBits = collectBitTerms(*offset);
+  controls.insert(controls.end(), addressBits.begin(), addressBits.end());
+  controls.push_back(enable);
+  for (auto* term : output->getBits()) {
+    SNLDesignModeling::BitTerms inputs{base->getBit(term->getBit())};
+    inputs.insert(inputs.end(), controls.begin(), controls.end());
+    SNLDesignModeling::addCombinatorialArcs(inputs, {term});
+  }
+  return model;
+}
+
+SNLTruthTable NLDB0::getVectorUpdateTruthTable(const SNLDesign* design, size_t flatTermID) {
+  const auto signature = getVectorUpdateSignature(design);
+  const SNLBusTermBit* output = nullptr;
+  for (const auto* term : getVectorUpdateOutput(design)->getBusBits())
+    if (term->getOrderID() == flatTermID) output = term;
+  if (!output) throw NLException("Vector update truth table requires an output bit");
+  std::vector<size_t> deps{getVectorUpdateBase(design)->getBit(output->getBit())->getOrderID()};
+  for (const auto* port : {getVectorUpdateData(design), getVectorUpdateOffset(design)})
+    for (const auto* bit : port->getBits()) deps.push_back(bit->getOrderID());
+  deps.push_back(getVectorUpdateEnable(design)->getOrderID());
+  return SNLTruthTable::VectorUpdate({uint32_t(signature.width), uint32_t(signature.updateWidth),
+      uint32_t(signature.abits), uint32_t(output->getBit()), signature.isSigned},
+      NLBitDependencies::encodeBits(deps));
+}
+
+bool NLDB0::isVectorSelect(const SNLDesign* design) {
+  return design && design->isPrimitive() &&
+      design->getLibrary() == getPrimitiveLibrary(VectorSelectLibraryID) &&
+      !design->isUnnamed() && design->getName().getString().rfind("naja_vector_select__", 0) == 0;
+}
+
+NLDB0::VectorSelectSignature NLDB0::getVectorSelectSignature(const SNLDesign* design) {
+  if (!isVectorSelect(design)) throw NLException("Design is not a vector select primitive");
+  const auto* signedParameter = design->getParameter(NLName("SIGNED"));
+  if (!signedParameter) throw NLException("Vector select primitive is missing SIGNED");
+  return {getMemoryDecimalParameter(design, "WIDTH"),
+      getMemoryDecimalParameter(design, "SELECT_WIDTH"),
+      getMemoryDecimalParameter(design, "ABITS"),
+      parseBooleanParameter(signedParameter->getValue(), "SIGNED")};
+}
+
+NLDB0::VectorSelectSignature NLDB0::getVectorSelectSignature(const SNLInstance* instance) {
+  if (!instance) throw NLException("Null vector select instance");
+  const auto signature = getVectorSelectSignature(instance->getModel());
+  for (const auto* name : {"WIDTH", "SELECT_WIDTH", "ABITS", "SIGNED"}) {
+    if (auto* parameter = instance->getInstParameter(NLName(name))) {
+      if (parameter->getValue() != instance->getModel()->getParameter(NLName(name))->getValue())
+        throw NLException("Vector select instance signature differs from its canonical model");
+    }
+  }
+  return signature;
+}
+
+SNLBusTerm* NLDB0::getVectorSelectData(const SNLDesign* design) {
+  getVectorSelectSignature(design); return design->getBusTerm(Term0ID);
+}
+SNLBusTerm* NLDB0::getVectorSelectOffset(const SNLDesign* design) {
+  getVectorSelectSignature(design); return design->getBusTerm(Term1ID);
+}
+SNLBusTerm* NLDB0::getVectorSelectOutput(const SNLDesign* design) {
+  getVectorSelectSignature(design); return design->getBusTerm(Term2ID);
+}
+
+SNLDesign* NLDB0::getOrCreateVectorSelect(const VectorSelectSignature& signature) {
+  const auto maxBit = size_t(std::numeric_limits<NLID::Bit>::max());
+  if (!signature.width || !signature.selectWidth || !signature.abits ||
+      signature.width - 1 > maxBit || signature.selectWidth - 1 > maxBit ||
+      signature.abits - 1 > maxBit ||
+      uint64_t(signature.width) + 2 * uint64_t(signature.selectWidth) > maxBit ||
+      uint64_t(signature.width) + signature.abits > std::numeric_limits<uint32_t>::max())
+    throw NLException("Invalid vector select signature");
+  auto* library = getOrCreatePrimitiveLibrary(VectorSelectLibraryID, "naja_vector_select");
+  if (!library) return nullptr;
+  const auto name = NLName("naja_vector_select__w" + std::to_string(signature.width) +
+      "_r" + std::to_string(signature.selectWidth) + "_a" + std::to_string(signature.abits) +
+      "_s" + std::to_string(signature.isSigned));
+  if (auto* model = library->getSNLDesign(name)) return model;
+  auto* model = SNLDesign::create(library, SNLDesign::Type::Primitive, name);
+  for (const auto& [parameter, value] : PrimitiveParameters{
+      {"WIDTH", std::to_string(signature.width)},
+      {"SELECT_WIDTH", std::to_string(signature.selectWidth)},
+      {"ABITS", std::to_string(signature.abits)}})
+    SNLParameter::create(model, NLName(parameter), SNLParameter::Type::Decimal, value);
+  SNLParameter::create(model, NLName("SIGNED"), SNLParameter::Type::Boolean,
+      std::to_string(signature.isSigned));
+  auto* data = SNLBusTerm::create(model, Term0ID, SNLTerm::Direction::Input,
+      signature.width - 1, 0, NLName("DATA"));
+  auto* offset = SNLBusTerm::create(model, Term1ID, SNLTerm::Direction::Input,
+      signature.abits - 1, 0, NLName("OFFSET"));
+  auto* output = SNLBusTerm::create(model, Term2ID, SNLTerm::Direction::Output,
+      signature.selectWidth - 1, 0, NLName("Y"));
+  auto inputs = collectBitTerms(*data);
+  const auto addressBits = collectBitTerms(*offset);
+  inputs.insert(inputs.end(), addressBits.begin(), addressBits.end());
+  SNLDesignModeling::addCombinatorialArcs(inputs, collectBitTerms(*output));
+  return model;
+}
+
+SNLTruthTable NLDB0::getVectorSelectTruthTable(const SNLDesign* design, size_t flatTermID) {
+  const auto signature = getVectorSelectSignature(design);
+  const SNLBusTermBit* output = nullptr;
+  for (const auto* term : getVectorSelectOutput(design)->getBusBits())
+    if (term->getOrderID() == flatTermID) output = term;
+  if (!output) throw NLException("Vector select truth table requires an output bit");
+  std::vector<size_t> deps;
+  for (const auto* port : {getVectorSelectData(design), getVectorSelectOffset(design)})
+    for (const auto* bit : port->getBits()) deps.push_back(bit->getOrderID());
+  return SNLTruthTable::VectorSelect({uint32_t(signature.width), uint32_t(signature.selectWidth),
+      uint32_t(signature.abits), uint32_t(output->getBit()), signature.isSigned},
+      NLBitDependencies::encodeBits(deps));
+}
+
 bool NLDB0::isTableSelect(const SNLDesign* design) {
   return design && design->isPrimitive() && design->getLibrary() == getTableSelectLibrary() &&
          !design->isUnnamed() &&
@@ -2234,6 +2427,10 @@ SNLTruthTable NLDB0::getPrimitiveTruthTable(const SNLDesign* design) {
   if (isShift(design)) {
     throw NLException("NLDB0::getPrimitiveTruthTable: shift primitive has no truth table");
   }
+  if (isVectorSelect(design))
+    throw NLException("Vector select requires an output-bit truth table");
+  if (isVectorUpdate(design))
+    throw NLException("Vector update requires an output-bit truth table");
   if (isMemory(design)) {
     throw NLException("NLDB0::getPrimitiveTruthTable: memory primitive has no truth table");
   }
@@ -3304,6 +3501,14 @@ SNLDesign* NLDB0::getOrCreatePrimitive(
       return getAssign();
     case Mux2LibraryID:
       return getOrCreateMux2(designID);
+    case VectorUpdateLibraryID:
+      return getOrCreateVectorUpdate({getDecimalParameter(parameters, "WIDTH"),
+          getDecimalParameter(parameters, "UPDATE_WIDTH"), getDecimalParameter(parameters, "ABITS"),
+          getBooleanParameter(parameters, "SIGNED")});
+    case VectorSelectLibraryID:
+      return getOrCreateVectorSelect({getDecimalParameter(parameters, "WIDTH"),
+          getDecimalParameter(parameters, "SELECT_WIDTH"), getDecimalParameter(parameters, "ABITS"),
+          getBooleanParameter(parameters, "SIGNED")});
     case TableSelectLibraryID:
       return getOrCreateTableSelect(tableSelectSignatureFromParameters(parameters));
     case AddLibraryID:

@@ -27,6 +27,7 @@ cc_test(
         'SNL_SV_DUMPER_TEST_PATH=\\".\\"',
     ],
     deps = [
+        "@sv-lang//:libsvlang",  # SNLSVIntentTest uses the Slang AST directly.
         "//src/dnl:naja_dnl",
         "//src/metrics:naja_metrics",
         "//src/nl/formats/systemverilog:naja_snl_systemverilog_test",

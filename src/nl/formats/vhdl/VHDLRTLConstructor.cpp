@@ -3101,6 +3101,22 @@ class RTLConstructor {
     for (auto bound = uint64_t(high); bound >>= 1;) ++width;
     width = std::max(width, address.bits.size());
     address.bits = resize(address.bits, width);
+    // Use the common bit-window family only for a provably valid index domain;
+    // VHDL runtime bounds failures must not become clipped reads.
+    const bool inRange = !address.shape.signedInteger && low == 0 &&
+        width < 63 && ((uint64_t{1} << width) - 1) <= uint64_t(high);
+    if (stride == 1 && inRange &&
+        !std::all_of(value.bits.begin(), value.bits.end(), [](auto* bit) { return bit->isConstant(); })) {
+      auto offset = resize(address.bits, width + 1);
+      if (bounds.ascending)
+        offset = add(number(bounds.right, {{"integer"}, {}, width + 1}).bits, offset, true);
+      Bits data(value.bits.rbegin(), value.bits.rend());
+      std::reverse(offset.begin(), offset.end());
+      auto* output = SNLBusNet::create(design_, 0, 0);
+      SNLRTLPrimitives::createVectorSelect(design_, data, offset, false, output);
+      value.bits = {output->getBit(0)};
+      return value;
+    }
     if (low) address.bits = add(address.bits, number(low, {{"integer"}, {}, width}).bits, true);
     Bits data;
     for (size_t entry = 0; entry < bounds.size(); ++entry) {
@@ -4088,6 +4104,69 @@ class RTLConstructor {
       const auto& object = objects_.at(name);
       if (object.input || object.constant || object.variable != (assignment.kind == vhdl::AssignmentKind::Variable))
         fail("dynamic assignment requires a writable object of the matching kind");
+      // Simple combinational array-element writes use the same language-neutral
+      // update family as SV. Nested targets retain the established replay path.
+      auto& destination = object.variable ? state.variables.at(name) : state.scheduled.at(name);
+      if (combinational_ && assignment.indices.size() == 1 && root.shape.ranges.size() == 1 &&
+          root.shape.fields.empty() && !root.shape.enumeration &&
+          !state.variableChoices.contains(name) &&
+          std::all_of(destination.begin(), destination.end(), [](auto* bit) { return bit; })) {
+        const auto bounds = root.shape.ranges.front();
+        if (std::min(bounds.left, bounds.right) < 0) fail("dynamic negative-bound writes are unsupported");
+        auto element = root.shape;
+        element.ranges.erase(element.ranges.begin());
+        element.removeOuterType();
+        const auto address = expression(*assignment.indices.front(), state);
+        checkIndexType(address, bounds);
+        // Only use clipping when the binary index domain is provably in range;
+        // VHDL runtime bounds failures must not silently become clipped writes.
+        const bool inRange = !address.shape.signedInteger && address.bits.size() < 63 &&
+            std::min(bounds.left, bounds.right) == 0 &&
+            ((uint64_t{1} << address.bits.size()) - 1) <= uint64_t(std::max(bounds.left, bounds.right));
+        if (inRange) {
+          const auto value = expression(*assignment.value, state, &element);
+          if (!compatible(element, value.shape)) fail("dynamic assignment target type mismatch");
+          size_t extra = 0;
+          for (size_t n = element.size(); n > 1; n >>= 1) ++extra;
+          const size_t width = std::max<size_t>(33, address.bits.size() + 1) + extra + 1;
+          auto offset = integerBits(address, width);
+          const auto connect = [](SNLInstance* instance, SNLBusTerm* port, const Bits& bits) {
+            for (size_t bit = 0; bit < bits.size(); ++bit)
+              instance->setTermNet(port->getBit(bits.size() - 1 - bit), bits[bit]);
+          };
+          if (bounds.ascending || bounds.right) {
+            const auto bound = number(bounds.right, {{"integer"}, {}, width}).bits;
+            auto* model = NLDB0::getOrCreateAddSub(width, true);
+            auto* instance = SNLInstance::create(design_, model);
+            connect(instance, NLDB0::getAddSubInputA(model), bounds.ascending ? bound : offset);
+            connect(instance, NLDB0::getAddSubInputB(model), bounds.ascending ? offset : bound);
+            auto* output = SNLBusNet::create(design_, width - 1, 0);
+            instance->setTermNet(NLDB0::getAddSubOutput(model), output);
+            offset.clear();
+            for (auto* bit : output->getBits()) offset.push_back(bit);
+          }
+          if (element.size() != 1) {
+            auto* model = NLDB0::getOrCreateMultiply(width);
+            auto* instance = SNLInstance::create(design_, model);
+            connect(instance, NLDB0::getMultiplyInputA(model), offset);
+            connect(instance, NLDB0::getMultiplyInputB(model),
+                number(element.size(), {{"integer"}, {}, width}).bits);
+            auto* output = SNLBusNet::create(design_, width - 1, 0);
+            instance->setTermNet(NLDB0::getMultiplyOutput(model), output);
+            offset.clear();
+            for (auto* bit : output->getBits()) offset.push_back(bit);
+          }
+          Bits base(destination.rbegin(), destination.rend());
+          Bits data(value.bits.rbegin(), value.bits.rend());
+          std::reverse(offset.begin(), offset.end());
+          auto* output = SNLBusNet::create(design_, destination.size() - 1, 0);
+          SNLRTLPrimitives::createVectorUpdate(design_, base, data, offset, true, constant(true), output);
+          destination.clear();
+          for (auto* bit : output->getBits()) destination.push_back(bit);
+          if (!object.variable) std::fill(state.written.at(name).begin(), state.written.at(name).end(), true);
+          return;
+        }
+      }
       std::vector<std::pair<Selection, SNLBitNet*>> targets{{root, constant(true)}};
       for (const auto& indexExpression : assignment.indices) {
         if (indexExpression->kind == Expr::Kind::Selected || indexExpression->kind == Expr::Kind::Range || isStaticIndex(*indexExpression)) {
