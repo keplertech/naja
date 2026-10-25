@@ -15956,12 +15956,6 @@ endmodule
                           valueBits.begin() + static_cast<std::ptrdiff_t>(offset),
                           valueBits.begin() + static_cast<std::ptrdiff_t>(offset + elementWidth));
                         if (elementWidth > 1 && equalsIndexBit != const1) {
-                          // Current parser-backed dynamic element-select flows
-                          // reach equivalent wide updates through earlier
-                          // bit-resolution paths before this explicit mux replay
-                          // helper changes the result. Keep it as a defensive
-                          // alternate lowering path.
-                          // LCOV_EXCL_START
                           std::vector<SNLBitNet*> muxedBits;
                           if (!createMux2Instance(
                                 design,
@@ -15970,22 +15964,23 @@ endmodule
                                 candidateBits,
                                 muxedBits,
                                 elementSourceRange)) {
-                            return false;
+                            return false; // LCOV_EXCL_LINE
                           }
                           selectedBits = std::move(muxedBits);
                           index += step;
                           continue;
-                          // LCOV_EXCL_STOP
                         }
 
                         for (size_t elemBit = 0; elemBit < elementWidth; ++elemBit) {
                           auto* candidateBit = candidateBits[elemBit];
                           if (equalsIndexBit == const1) {
+                            // Constant in-range selectors return above; retain
+                            // this shortcut for alternate folded selector ASTs.
                             selectedBits[elemBit] = candidateBit; // LCOV_EXCL_LINE
                             continue; // LCOV_EXCL_LINE
                           }
                           if (selectedBits[elemBit] == candidateBit) {
-                            continue; // LCOV_EXCL_LINE
+                            continue;
                           }
                           auto* outBit = SNLScalarNet::create(design);
                           annotateSourceInfo(outBit, elementSourceRange);

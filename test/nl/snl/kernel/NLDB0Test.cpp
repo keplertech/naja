@@ -2590,6 +2590,7 @@ TEST_F(NLDB0Test, VectorUpdateCanonicalIdentityAndBinaryModel) {
     const NLDB0::VectorUpdateSignature signature{8, 4, 5, isSigned};
     auto* model = NLDB0::getOrCreateVectorUpdate(signature);
     ASSERT_TRUE(NLDB0::isVectorUpdate(model));
+    EXPECT_THROW(NLDB0::getPrimitiveTruthTable(model), NLException);
     EXPECT_EQ(signature, NLDB0::getVectorUpdateSignature(model));
     EXPECT_EQ(model, NLDB0::getOrCreateVectorUpdate(signature));
     NLDB0::PrimitiveParameters parameters;
@@ -2652,6 +2653,7 @@ TEST_F(NLDB0Test, VectorSelectCanonicalIdentityAndBinaryModel) {
     const NLDB0::VectorSelectSignature signature{7, 3, 5, isSigned};
     auto* model = NLDB0::getOrCreateVectorSelect(signature);
     ASSERT_TRUE(NLDB0::isVectorSelect(model));
+    EXPECT_THROW(NLDB0::getPrimitiveTruthTable(model), NLException);
     EXPECT_EQ(signature, NLDB0::getVectorSelectSignature(model));
     EXPECT_EQ(model, NLDB0::getOrCreateVectorSelect(signature));
     NLDB0::PrimitiveParameters parameters;

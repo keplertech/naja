@@ -6932,6 +6932,29 @@ end;
   }
 }
 
+TEST_F(VHDLConstructorTest, DynamicWritesRequireWritableMatchingObjectKind) {
+  unsigned variant = 0;
+  for (const auto& [declaration, assignment] : std::vector<std::pair<std::string, std::string>>{
+         {"", "a(to_integer(address)) <= data;"},
+         {"constant fixed : bit_vector(3 downto 0) := (others => '0');",
+          "fixed(to_integer(address)) <= data;"},
+         {"signal stored : bit_vector(3 downto 0);", "stored(to_integer(address)) := data;"}}) {
+    const auto name = "invalid_dynamic_write_" + std::to_string(variant++);
+    try {
+      VHDLConstructor(library_).construct(
+        "library ieee; use ieee.numeric_std.all; entity " + name +
+        " is port(a : in bit_vector(3 downto 0); address : in unsigned(1 downto 0); data : in bit); end; "
+        "architecture rtl of " + name + " is " + declaration +
+        " begin process(all) begin " + assignment + " end process; end;");
+      FAIL() << "accepted an invalid dynamic write: " << assignment;
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find(
+        "dynamic assignment requires a writable object of the matching kind"), std::string::npos)
+        << error.what();
+    }
+  }
+}
+
 TEST_F(VHDLConstructorTest, NestedDynamicWritesUpdateRecordFieldsAndVariables) {
   auto* design = VHDLConstructor(library_).construct(R"(
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;

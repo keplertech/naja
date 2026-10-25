@@ -4180,6 +4180,10 @@ class RTLConstructor {
             for (auto* bit : output->getBits()) offset.push_back(bit);
           }
           if (element.size() != 1) {
+            // The supported fast-path shapes above are one-dimensional logic
+            // arrays. Vector elements add a range; records and enumerations
+            // are excluded. Retain scaling for future multi-bit scalar shapes.
+            // LCOV_EXCL_START
             auto* model = NLDB0::getOrCreateMultiply(width);
             auto* instance = origin(SNLInstance::create(design_, model));
             connect(instance, NLDB0::getMultiplyInputA(model), offset);
@@ -4189,6 +4193,7 @@ class RTLConstructor {
             instance->setTermNet(NLDB0::getMultiplyOutput(model), output);
             offset.clear();
             for (auto* bit : output->getBits()) offset.push_back(bit);
+            // LCOV_EXCL_STOP
           }
           Bits base(destination.rbegin(), destination.rend());
           Bits data(value.bits.rbegin(), value.bits.rend());

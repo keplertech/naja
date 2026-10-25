@@ -3835,6 +3835,45 @@ TEST_F(ConstantPropagationTests, TestConstantPropagationAND_Hierarchical_duplica
 class VectorUpdateConstantPropagationTest : public ConstantPropagationTests,
     public ::testing::WithParamInterface<bool> {};
 
+TEST_F(ConstantPropagationTests, PartiallyConstantVectorOperationsRemainDynamic) {
+  auto* zero = SNLScalarNet::create(top);
+  zero->setType(SNLNet::Type::Assign0);
+  auto* one = SNLScalarNet::create(top);
+  one->setType(SNLNet::Type::Assign1);
+  auto* runtime = SNLScalarNet::create(top);
+  SNLScalarTerm::create(top, SNLTerm::Direction::Input)->setNet(runtime);
+  auto* selectModel = NLDB0::getOrCreateVectorSelect({1, 1, 1, false});
+  auto* updateModel = NLDB0::getOrCreateVectorUpdate({1, 1, 1, false});
+  std::vector<SNLScalarTerm*> outputs;
+  for (auto* model : {selectModel, updateModel}) {
+    auto* instance = SNLInstance::create(top, model);
+    // DATA stays dynamic; every other input is known. ENABLE is true, so
+    // the scalar result must remain dependent on DATA rather than fold.
+    unsigned input = 0;
+    for (auto* term : model->getBitTerms()) {
+      if (term->getDirection() != SNLTerm::Direction::Input) continue;
+      const unsigned dataIndex = model == selectModel ? 0 : 1;
+      instance->setTermNet(term, input == dataIndex ? runtime :
+        (model != selectModel && input == 3 ? one : zero));
+      ++input;
+    }
+    auto* net = SNLScalarNet::create(top);
+    for (auto* term : model->getBitTerms())
+      if (term->getDirection() == SNLTerm::Direction::Output) instance->setTermNet(term, net);
+    auto* output = SNLScalarTerm::create(top, SNLTerm::Direction::Output, model->getName());
+    output->setNet(net);
+    outputs.push_back(output);
+  }
+  ConstantPropagation propagation;
+  propagation.setTruthTableEngine(true);
+  EXPECT_NO_THROW(propagation.run());
+  for (auto* output : outputs) {
+    ASSERT_NE(nullptr, output->getNet());
+    EXPECT_FALSE(output->getNet()->isConstant()) << output->getName().getString();
+    EXPECT_FALSE(output->getNet()->getInstTerms().empty());
+  }
+}
+
 TEST_P(VectorUpdateConstantPropagationTest, PreservesClippingAndDisabledWrites) {
   auto* zero = SNLScalarNet::create(top); zero->setType(SNLNet::Type::Assign0);
   auto* one = SNLScalarNet::create(top); one->setType(SNLNet::Type::Assign1);

@@ -9,6 +9,101 @@
 #include "NLBitDependencies.h"
 using namespace naja::NL;
 
+TEST(SNLTruthTableTest, VectorMetadataOrdering) {
+  using Update = SNLTruthTable::VectorUpdateMetadata;
+  using Select = SNLTruthTable::VectorSelectMetadata;
+  const Update update{4, 2, 3, 0, false};
+  const Select select{4, 2, 3, 0, false};
+  for (const auto& larger : {Update{5, 2, 3, 0, false}, Update{4, 3, 3, 0, false},
+                            Update{4, 2, 4, 0, false}, Update{4, 2, 3, 1, false},
+                            Update{4, 2, 3, 0, true}}) {
+    EXPECT_LT(update, larger);
+    EXPECT_FALSE(larger < update);
+  }
+  for (const auto& larger : {Select{5, 2, 3, 0, false}, Select{4, 3, 3, 0, false},
+                            Select{4, 2, 4, 0, false}, Select{4, 2, 3, 1, false},
+                            Select{4, 2, 3, 0, true}}) {
+    EXPECT_LT(select, larger);
+    EXPECT_FALSE(larger < select);
+  }
+  EXPECT_FALSE(update < update);
+  EXPECT_FALSE(select < select);
+  const auto updateTable = SNLTruthTable::VectorUpdate(update, SNLTruthTable::fullDependencies(7));
+  const auto selectTable = SNLTruthTable::VectorSelect(select, SNLTruthTable::fullDependencies(7));
+  auto otherUpdate = update;
+  auto otherSelect = select;
+  otherUpdate.outputBit = 1;
+  otherSelect.outputBit = 1;
+  const auto largerUpdate = SNLTruthTable::VectorUpdate(otherUpdate, SNLTruthTable::fullDependencies(7));
+  const auto largerSelect = SNLTruthTable::VectorSelect(otherSelect, SNLTruthTable::fullDependencies(7));
+  EXPECT_LT(updateTable, largerUpdate);
+  EXPECT_FALSE(largerUpdate < updateTable);
+  EXPECT_LT(selectTable, largerSelect);
+  EXPECT_FALSE(largerSelect < selectTable);
+}
+
+TEST(SNLTruthTableTest, VectorMetadataValidation) {
+  const auto deps = SNLTruthTable::fullDependencies(6);
+  const SNLTruthTable::VectorUpdateMetadata update{3, 2, 2, 1, false};
+  const SNLTruthTable::VectorSelectMetadata select{4, 2, 2, 1, false};
+  EXPECT_EQ(update, SNLTruthTable::VectorUpdate(update, deps).getVectorUpdateMetadata());
+  EXPECT_EQ(select, SNLTruthTable::VectorSelect(select, deps).getVectorSelectMetadata());
+  for (const auto& invalidDeps : {std::vector<uint64_t>{}, SNLTruthTable::fullDependencies(5),
+                                  SNLTruthTable::fullDependencies(7)}) {
+    EXPECT_THROW(SNLTruthTable::VectorUpdate(update, invalidDeps), NLException);
+    EXPECT_THROW(SNLTruthTable::VectorSelect(select, invalidDeps), NLException);
+  }
+  const auto max = std::numeric_limits<uint32_t>::max();
+  const SNLTruthTable::VectorUpdateMetadata overflowingUpdate{3, max, 2, 0, false};
+  const SNLTruthTable::VectorSelectMetadata overflowingSelect{max, 2, 2, 0, false};
+  EXPECT_THROW(SNLTruthTable::VectorUpdate(overflowingUpdate, {}), NLException);
+  EXPECT_THROW(SNLTruthTable::VectorSelect(overflowingSelect, {}), NLException);
+  for (const auto& invalid : {SNLTruthTable::VectorUpdateMetadata{0, 2, 2, 0, false},
+                             {3, 0, 2, 0, false}, {3, 2, 0, 0, false}, {3, 2, 2, 3, false}}) {
+    const auto count = invalid.updateWidth + invalid.addressSize + 2;
+    EXPECT_THROW(SNLTruthTable::VectorUpdate(invalid, SNLTruthTable::fullDependencies(count)), NLException);
+  }
+  for (const auto& invalid : {SNLTruthTable::VectorSelectMetadata{0, 2, 2, 0, false},
+                             {4, 0, 2, 0, false}, {4, 2, 0, 0, false}, {4, 2, 2, 2, false}}) {
+    const auto count = invalid.width + invalid.addressSize;
+    EXPECT_THROW(SNLTruthTable::VectorSelect(invalid, SNLTruthTable::fullDependencies(count)), NLException);
+  }
+  EXPECT_THROW(SNLTruthTable::Logic0().getVectorUpdateMetadata(), NLException);
+  EXPECT_THROW(SNLTruthTable::Logic0().getVectorSelectMetadata(), NLException);
+  EXPECT_THROW(SNLTruthTable::VectorUpdate(update, deps).getVectorSelectMetadata(), NLException);
+  EXPECT_THROW(SNLTruthTable::VectorSelect(select, deps).getVectorUpdateMetadata(), NLException);
+}
+
+TEST(SNLTruthTableTest, VectorConstantReduction) {
+  const auto deps = SNLTruthTable::fullDependencies(6);
+  const auto select = SNLTruthTable::VectorSelect({4, 2, 2, 0, false}, deps);
+  EXPECT_THROW(select.getReducedWithConstants({{0, false}}), NLException);
+  const auto table = SNLTruthTable::TableSelect(2, 4, deps);
+  EXPECT_THROW(table.getReducedWithConstants({{0, false}}), NLException);
+  for (const bool isSigned : {false, true}) {
+    for (uint32_t output = 0; output < 3; ++output) {
+      const auto update = SNLTruthTable::VectorUpdate({3, 2, 2, output, isSigned}, deps);
+      EXPECT_THROW(update.getReducedWithConstants({{0, false}}), NLException);
+      EXPECT_THROW(update.getReducedWithConstants(
+        {{0, false}, {1, false}, {2, false}, {3, false}, {4, false}, {4, true}}), NLException);
+      for (unsigned pattern = 0; pattern < 64; ++pattern) {
+        SNLTruthTable::ConstantInputs constants;
+        // Reverse order verifies constants are assigned by index, not position.
+        for (unsigned index = 6; index > 0; --index)
+          constants.emplace_back(index - 1, (pattern >> (index - 1)) & 1u);
+        const int rawOffset = ((pattern >> 2) & 2u) | ((pattern >> 4) & 1u);
+        const int offset = isSigned && rawOffset >= 2 ? rawOffset - 4 : rawOffset;
+        const int dataBit = static_cast<int>(output) - offset;
+        const bool expected = (pattern & 32u) && dataBit >= 0 && dataBit < 2
+          ? bool((pattern >> (2 - dataBit)) & 1u) : bool(pattern & 1u);
+        EXPECT_EQ(expected ? SNLTruthTable::Logic1() : SNLTruthTable::Logic0(),
+          update.getReducedWithConstants(constants))
+          << "signed=" << isSigned << " output=" << output << " pattern=" << pattern;
+      }
+    }
+  }
+}
+
 TEST(SNLTruthTableTest, test) {
 
   SNLTruthTable ttand2(2, 0b1000, SNLTruthTable::fullDependencies(2));

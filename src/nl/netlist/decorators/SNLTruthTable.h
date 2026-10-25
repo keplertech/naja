@@ -944,8 +944,10 @@ class SNLTruthTable {
       }
       return;
     }
+    // Public factories populate vector metadata only for its matching generic;
+    // constructors, copies and assignment preserve that invariant.
     if (vectorSelect_ != VectorSelectMetadata{})
-      throw NLException("Unexpected VECTOR_SELECT metadata on truth table");
+      throw NLException("Unexpected VECTOR_SELECT metadata on truth table"); // LCOV_EXCL_LINE
     if (genericType_ == GenericType::VECTOR_UPDATE) {
       if (!vectorUpdate_.width || !vectorUpdate_.updateWidth || !vectorUpdate_.addressSize ||
           vectorUpdate_.outputBit >= vectorUpdate_.width ||
@@ -955,7 +957,7 @@ class SNLTruthTable {
       return;
     }
     if (vectorUpdate_ != VectorUpdateMetadata{})
-      throw NLException("Unexpected VECTOR_UPDATE metadata on truth table");
+      throw NLException("Unexpected VECTOR_UPDATE metadata on truth table"); // LCOV_EXCL_LINE
     if (genericType_ == GenericType::TABLE_SELECT) {
       if (tableSelectAddressSize_ == 0 || tableSelectDepth_ == 0 ||
           size_ != static_cast<size_t>(tableSelectAddressSize_) +

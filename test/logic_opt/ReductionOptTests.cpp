@@ -493,6 +493,25 @@ TEST_F(ReductionOptTests, testReduceTruthTableWithSparseDependencies) {
   };
 
   auto maskData = createInterleavedInstance("mask_cell", 2);
+  auto updateData = createInterleavedInstance("update_cell", 4);
+  const auto update = SNLTruthTable::VectorUpdate(
+    {1, 1, 1, 0, false}, sparseDeps(updateData.inputs));
+  EXPECT_FALSE(NLBitDependencies::isSimple(update.getDependencies()));
+  // Even without constants, dependency normalization must retain the metadata.
+  EXPECT_EQ(SNLTruthTable::VectorUpdate({1, 1, 1, 0, false}, SNLTruthTable::fullDependencies(4)),
+    ReductionOptimization::reduceTruthTable(updateData.instance, update, {}));
+  EXPECT_EQ(SNLTruthTable::Logic1(), ReductionOptimization::reduceTruthTable(
+    updateData.instance, update, {{updateData.inputs[0]->getID(), 0},
+      {updateData.inputs[1]->getID(), 1}, {updateData.inputs[2]->getID(), 0},
+      {updateData.inputs[3]->getID(), 1}}));
+  auto selectData = createInterleavedInstance("select_cell", 2);
+  const auto select = SNLTruthTable::VectorSelect(
+    {1, 1, 1, 0, false}, sparseDeps(selectData.inputs));
+  EXPECT_FALSE(NLBitDependencies::isSimple(select.getDependencies()));
+  EXPECT_EQ(SNLTruthTable::VectorSelect({1, 1, 1, 0, false}, SNLTruthTable::fullDependencies(2)),
+    ReductionOptimization::reduceTruthTable(selectData.instance, select, {}));
+  EXPECT_THROW(ReductionOptimization::reduceTruthTable(
+    selectData.instance, select, {{selectData.inputs[0]->getID(), 1}}), NLException);
   auto maskDeps = sparseDeps(maskData.inputs);
   EXPECT_FALSE(NLBitDependencies::isSimple(maskDeps));
   SNLTruthTable sparseAnd2(2, 0b1000, maskDeps);

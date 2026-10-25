@@ -16547,6 +16547,59 @@ endmodule
   EXPECT_TRUE(noDrivers.empty()) << formatStringVector(noDrivers);
 }
 
+TEST_F(SNLSVConstructorTestSimple, parseAutomaticVariableNonzeroBasedSelects) {
+  const auto path = writeSVTestFile("automatic_nonzero_selects", R"(
+package select_values;
+  localparam logic [5:2] data = 4'b1010;
+endpackage
+module automatic_nonzero_selects(input logic [6:0] a,
+  output logic scalar_q, scalar_again, constant_q, constant_again, cached_q, cached_again,
+  output logic [1:0] wide_q, slice_q);
+  wire [5:2] source_data = a[3:0];
+  assign constant_q = select_values::data[a[6:4]];
+  assign constant_again = select_values::data[a[6:4]];
+  always_comb begin
+    automatic logic cached = source_data[a[6:4]];
+    automatic logic cached_copy = source_data[a[6:4]];
+    automatic logic [5:2] scalar_data = a[3:0];
+    automatic logic [2:5][1:0] wide_data = {a[3:0], a[3:0]};
+    scalar_q = scalar_data[a[6:4]];
+    scalar_again = scalar_data[a[6:4]];
+    wide_q = wide_data[a[6:4]];
+    slice_q = scalar_data[3 +: 2];
+    cached_q = cached;
+    cached_again = cached_copy;
+  end
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  ASSERT_NO_THROW(constructor.construct(path));
+  auto* top = library_->getSNLDesign(NLName("automatic_nonzero_selects"));
+  ASSERT_NE(nullptr, top);
+  for (unsigned input = 0; input < 128; ++input) {
+    const unsigned index = input >> 4;
+    const bool inRange = index >= 2 && index <= 5;
+    const bool scalar = inRange && ((input >> (index - 2)) & 1u);
+    const unsigned wide = inRange ? (input >> (2 * ((5 - index) % 2))) & 3u : 0;
+    for (const auto* name : {"scalar_q", "scalar_again", "cached_q", "cached_again"}) {
+      EXPECT_EQ(scalar, evaluateFunctionResultBit(
+        top, top->getScalarTerm(NLName(name))->getNet(), input)) << input;
+    }
+    for (const auto* name : {"constant_q", "constant_again"}) {
+      EXPECT_EQ(inRange && ((10u >> (index - 2)) & 1u), evaluateFunctionResultBit(
+        top, top->getScalarTerm(NLName(name))->getNet(), input)) << input;
+    }
+    for (auto* bit : top->getBusTerm(NLName("wide_q"))->getBits()) {
+      EXPECT_EQ(bool((wide >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input)) << input;
+    }
+    for (auto* bit : top->getBusTerm(NLName("slice_q"))->getBits()) {
+      EXPECT_EQ(bool((input >> (bit->getBit() + 1)) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input)) << input;
+    }
+  }
+}
+
 TEST_F(
   SNLSVConstructorTestSimple,
   parseSequentialAutomaticVariableInitializersUseReplayValues) {

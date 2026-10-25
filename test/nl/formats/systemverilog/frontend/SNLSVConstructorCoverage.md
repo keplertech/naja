@@ -61,6 +61,13 @@ are still expected in real designs:
   original connections.
 - `parseContinuousMuxDirectConstantsAndDestinations`: zero constants select
   the zero-net cache and reuse the same net across mux bits and instances.
+- `parseAutomaticVariableNonzeroBasedSelects`: all 128 binary inputs check
+  scalar and wide dynamic reads of procedural locals with nonzero bounds in
+  both range directions, repeated reads of a stable net (cache insertion and
+  reuse), package constants (equal candidate-bit shortcut), out-of-range reads,
+  and a fixed indexed slice. LLVM coverage confirms the scalar and vector mux
+  fallbacks and the following range-select dispatch execute. The vector mux
+  block and equal candidate-bit shortcut are no longer excluded.
 
 The `SNLSVConstructorTestAlwaysComb.*Coverage` tests also cover:
 
@@ -86,6 +93,10 @@ The lines below are marked `LCOV_EXCL_LINE` because they require internal
 primitive-construction failures or structurally unreachable null conditions in
 the current architecture:
 
+- Dynamic element-select fallback: vector mux construction failure remains
+  excluded after both candidate vectors have been validated to have the same
+  nonzero element width. The constant-true selector shortcut remains excluded
+  because constant in-range selectors return through the earlier direct slice.
 - `createSubAssign`: unary gate creation failure (`return false` after
   `createUnaryGate`).
 - `createSubAssign`: full-adder instantiation failure (`return false` after

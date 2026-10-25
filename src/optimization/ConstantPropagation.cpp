@@ -247,8 +247,10 @@ unsigned ConstantPropagation::computeOutputValue(DNLID instanceID) {
       constTerms.push_back({term.getSnlTerm()->getBitTerm()->getID(), 1});
     }
   }
+  // Canonical vector updates return through the dedicated branch above;
+  // stored non-DB0 truth tables do not preserve vector-update metadata.
   if (truthTable.getGenericType() == SNLTruthTable::GenericType::VECTOR_UPDATE &&
-      constTerms.size() != truthTable.size()) return (unsigned)-1;
+      constTerms.size() != truthTable.size()) return (unsigned)-1; // LCOV_EXCL_LINE
   SNLTruthTable reducedTruthTable = ReductionOptimization::reduceTruthTable(
       instance.getSNLInstance(), truthTable, constTerms);
   if (reducedTruthTable.all0()) {
