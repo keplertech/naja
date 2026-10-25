@@ -1322,7 +1322,10 @@ new roles neither reclassify nor overwrite that slot. SystemVerilog loading
 dual-writes the legacy slot and typed declarations for module definitions, ports,
 named signals and source instantiations; lowered logic gets origins labelled
 ``slang`` / ``systemverilog`` / ``rtl``. Retaining an AST is optional.
-VHDL population remains pending. High-level query wrappers are documented in
+VHDL loading populates the same roles, labelled ``naja-vhdl`` / ``vhdl`` /
+``rtl``. Designs point to entity declarations; their origins identify architecture
+bodies. Explicit instances point to instantiations, and generated logic points
+to expressions or processes. High-level query wrappers are documented in
 :doc:`api`. Python does not expose source metadata mutation APIs.
 
 References are deep-copied by supported SNL clones and preserved by NajaIF,

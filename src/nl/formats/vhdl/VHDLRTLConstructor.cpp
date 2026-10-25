@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "VHDLRTLConstructor.h"
+#include "VHDLSourceInfo.h"
 
 #include "NLException.h"
 #include "NLDB0.h"
@@ -204,6 +205,7 @@ class LibraryContext {
   NLLibrary* destination;
   const std::vector<VHDLLibrarySource>& sources;
   const vhdl::DesignFile& syntax;
+  const VHDLSourceMap& sourceMap;
   NLLibrary* owner(size_t offset) const {
     for (const auto& source : sources)
       if (offset >= source.offset && offset < source.offset + source.size) return source.library;
@@ -379,6 +381,27 @@ class RTLConstructor {
   }
 
  private:
+  template<typename T>
+  T* origin(T* object) const {
+    return libraryContext_.sourceMap.annotate(object, diagnosticSpan);
+  }
+  std::vector<SNLInstance*> origin(std::vector<SNLInstance*> instances) const {
+    for (auto* instance : instances) origin(instance);
+    return instances;
+  }
+  template<typename T>
+  T* declaration(T* object, const vhdl::SourceSpan& span) const {
+    return libraryContext_.sourceMap.annotate(object, span, true);
+  }
+
+  SNLBitNet* reuse(SNLBitNet* net) const {
+    if (auto* infos = net->getRTLInfos(); infos && infos->getSourceDeclaration()) return net;
+    origin(net);
+    for (auto* term : net->getInstTerms())
+      if (term->getDirection() == SNLTerm::Direction::Output) origin(term->getInstance());
+    return net;
+  }
+
   struct Sensitivity {
     std::set<std::string> names;
     std::set<SNLBitNet*> bits;
@@ -571,7 +594,7 @@ class RTLConstructor {
     for (const auto& read : memory.reads)
       if (read.address == address)
         return {element, mux(valid, read.data, Bits(element.size(), constant(false)))};
-    auto* output = SNLBusNet::create(design_, element.size() - 1, 0);
+    auto* output = origin(SNLBusNet::create(design_, element.size() - 1, 0));
     Bits data;
     for (size_t i = 0; i < element.size(); ++i) data.push_back(output->getBitAtPosition(i));
     memory.reads.push_back({std::move(address), data});
@@ -581,13 +604,14 @@ class RTLConstructor {
   void finalizeMemories(const std::set<std::string>* names = nullptr) {
     for (auto& [name, memory] : memories_) {
       if (names && !names->contains(name)) continue;
+      DiagnosticScope location(memory.process->span);
       if (!memory.clock) fail("inferred memory has no clocked writer: " + name);
       memory.signature.readPorts = std::max<size_t>(1, memory.reads.size());
       auto* model = NLDB0::getOrCreateMemory(memory.signature);
       auto instanceName = objectPrefix_ + name + "_mem";
       for (size_t suffix = 1; design_->getInstance(NLName(instanceName)); ++suffix)
         instanceName = objectPrefix_ + name + "_mem_" + std::to_string(suffix);
-      auto* instance = SNLInstance::create(design_, model, NLName(instanceName));
+      auto* instance = origin(SNLInstance::create(design_, model, NLName(instanceName)));
       // Export uses the shared parameterized naja_mem module, whose default
       // dimensions differ from this width-specific canonical model.
       for (const auto& [parameter, value] : std::vector<std::pair<std::string, size_t>>{
@@ -1154,7 +1178,7 @@ class RTLConstructor {
     }
     const auto instanceName = prefix + instance.label.spelling;
     if (!instanceNames_.insert(prefix + key(instance.label)).second) fail("duplicate instance label");
-    auto* child = SNLInstance::create(design_, model, NLName(instanceName));
+    auto* child = declaration(SNLInstance::create(design_, model, NLName(instanceName)), instance.span);
     std::map<SNLTerm*, std::vector<bool>> bound;
     SNLTerm* previousPort = nullptr;
     named = false;
@@ -2615,18 +2639,20 @@ class RTLConstructor {
           position %= stride;
         }
         auto* net = SNLBusNet::create(design_, r.left, r.right, NLName(busName));
+        declaration(net, name.span);
         for (size_t i = 0; i < r.size(); ++i) bits.push_back(net->getBitAtPosition(i));
-        if (port) SNLBusTerm::create(design_, input ? SNLTerm::Direction::Input :
-            SNLTerm::Direction::Output, r.left, r.right, NLName(name.spelling))->setNet(net);
+        if (port) declaration(SNLBusTerm::create(design_, input ? SNLTerm::Direction::Input :
+            SNLTerm::Direction::Output, r.left, r.right, NLName(name.spelling)), name.span)->setNet(net);
       }
     } else {
       for (size_t i = 0; i < size; ++i) {
         auto* bit = SNLScalarNet::create(design_, NLName(objectPrefix_ + name.spelling +
             (size == 1 ? "" : "_" + std::to_string(i))));
+        declaration(bit, name.span);
         bits.push_back(bit);
       }
-      if (port) SNLScalarTerm::create(design_, input ? SNLTerm::Direction::Input :
-          SNLTerm::Direction::Output, NLName(name.spelling))->setNet(bits.front());
+      if (port) declaration(SNLScalarTerm::create(design_, input ? SNLTerm::Direction::Input :
+          SNLTerm::Direction::Output, NLName(name.spelling)), name.span)->setNet(bits.front());
     }
     objects_.emplace(id, Object{{type, std::move(bits)}, input, output, variable});
   }
@@ -2709,7 +2735,7 @@ class RTLConstructor {
       net = SNLScalarNet::create(design_);
       net->setType(one ? SNLNet::Type::Assign1 : SNLNet::Type::Assign0);
     }
-    return net;
+    return origin(net);
   }
   SNLBitNet* logicLiteral(char value, const Shape& type) {
     if (value == '0' || value == '1') return constant(value == '1');
@@ -2720,7 +2746,7 @@ class RTLConstructor {
       net = SNLScalarNet::create(design_);
       net->setType(value == 'X' ? SNLNet::Type::AssignX : SNLNet::Type::AssignZ);
     }
-    return net;
+    return origin(net);
   }
   std::optional<bool> constantValue(SNLBitNet* net) {
     if (net && net->isConstant0()) return false;
@@ -2730,7 +2756,10 @@ class RTLConstructor {
   Bits mux(SNLBitNet* condition, const Bits& yes, const Bits& no) {
     if (auto value = constantValue(condition)) return *value ? yes : no;
     const auto cacheKey = std::make_tuple(condition, yes, no);
-    if (const auto found = muxes_.find(cacheKey); found != muxes_.end()) return found->second;
+    if (const auto found = muxes_.find(cacheKey); found != muxes_.end()) {
+      for (auto* bit : found->second) if (bit) reuse(bit);
+      return found->second;
+    }
     Bits result(yes.size());
     for (size_t first = 0; first < yes.size();) {
       if (yes[first] == no[first] || !yes[first] || !no[first]) {
@@ -2742,13 +2771,13 @@ class RTLConstructor {
       size_t end = first + 1;
       while (end < yes.size() && yes[end] && no[end] && yes[end] != no[end]) ++end;
       const auto width = end - first;
-      SNLNet* output = width == 1 ? static_cast<SNLNet*>(SNLScalarNet::create(design_))
-          : SNLBusNet::create(design_, width - 1, 0);
+      SNLNet* output = width == 1 ? static_cast<SNLNet*>(origin(SNLScalarNet::create(design_)))
+          : origin(SNLBusNet::create(design_, width - 1, 0));
       // RTL values follow declaration order; canonical primitive inputs are LSB first.
       Bits a(no.begin() + first, no.begin() + end), b(yes.begin() + first, yes.begin() + end);
       std::reverse(a.begin(), a.end());
       std::reverse(b.begin(), b.end());
-      SNLRTLPrimitives::createMux(design_, condition, a, b, output);
+      origin(SNLRTLPrimitives::createMux(design_, condition, a, b, output));
       for (size_t i = first; i < end; ++i)
         result[i] = width == 1 ? static_cast<SNLBitNet*>(output)
             : static_cast<SNLBusNet*>(output)->getBitAtPosition(i - first);
@@ -2763,14 +2792,14 @@ class RTLConstructor {
       return left->getNLID() < right->getNLID();
     });
     const auto cacheKey = std::make_pair(op, inputs);
-    if (const auto found = gates_.find(cacheKey); found != gates_.end()) return found->second;
+    if (const auto found = gates_.find(cacheKey); found != gates_.end()) return reuse(found->second);
     using Gate = SNLRTLPrimitives::GateKind;
     static const std::map<std::string, Gate> kinds{{"and", Gate::And}, {"or", Gate::Or},
         {"xor", Gate::Xor}, {"nand", Gate::Nand}, {"nor", Gate::Nor},
         {"xnor", Gate::Xnor}, {"not", Gate::Not}};
-    auto* output = SNLScalarNet::create(design_);
-    SNLRTLPrimitives::createGate(design_, kinds.at(op),
-        std::vector<SNLNet*>(inputs.begin(), inputs.end()), output);
+    auto* output = origin(SNLScalarNet::create(design_));
+    origin(SNLRTLPrimitives::createGate(design_, kinds.at(op),
+        std::vector<SNLNet*>(inputs.begin(), inputs.end()), output));
     gates_.emplace(cacheKey, output);
     return output;
   }
@@ -2812,9 +2841,9 @@ class RTLConstructor {
     for (size_t i = left.size(); i; --i) {
       auto* a = left[i - 1];
       auto* b = subtract ? gate("not", right[i - 1]) : right[i - 1];
-      auto* sum = SNLScalarNet::create(design_);
-      auto* carryOut = i > 1 ? SNLScalarNet::create(design_) : nullptr;
-      auto* instance = SNLInstance::create(design_, NLDB0::getFA());
+      auto* sum = origin(SNLScalarNet::create(design_));
+      auto* carryOut = i > 1 ? origin(SNLScalarNet::create(design_)) : nullptr;
+      auto* instance = origin(SNLInstance::create(design_, NLDB0::getFA()));
       instance->getInstTerm(NLDB0::getFAInputA())->setNet(a);
       instance->getInstTerm(NLDB0::getFAInputB())->setNet(b);
       instance->getInstTerm(NLDB0::getFAInputCI())->setNet(carry);
@@ -3122,16 +3151,16 @@ class RTLConstructor {
       return value;
     }
     if (rom) {
-      auto* output = SNLBusNet::create(design_, stride - 1, 0);
+      auto* output = origin(SNLBusNet::create(design_, stride - 1, 0));
       auto addressBits = address.bits;
       std::reverse(addressBits.begin(), addressBits.end());
-      SNLRTLPrimitives::createROM(design_, data, addressBits, output);
+      origin(SNLRTLPrimitives::createROM(design_, data, addressBits, output));
       value.bits.clear();
       for (size_t bit = stride; bit; --bit) value.bits.push_back(output->getBit(bit - 1));
       tables_.emplace(cacheKey, value.bits);
       return value;
     }
-    auto* instance = SNLInstance::create(design_, model);
+    auto* instance = origin(SNLInstance::create(design_, model));
     // Verilog export uses the shared parameterized module, not the canonical
     // model's name or default dimensions.
     for (const auto& [parameter, size] : std::vector<std::pair<std::string, size_t>>{
@@ -3141,7 +3170,7 @@ class RTLConstructor {
       instance->getInstTerm(NLDB0::getTableSelectData(model)->getBit(bit))->setNet(data[bit]);
     for (size_t bit = 0; bit < width; ++bit)
       instance->getInstTerm(NLDB0::getTableSelectAddress(model)->getBit(bit))->setNet(address.bits[width - 1 - bit]);
-    auto* output = SNLBusNet::create(design_, stride - 1, 0);
+    auto* output = origin(SNLBusNet::create(design_, stride - 1, 0));
     value.bits.clear();
     for (size_t bit = stride; bit; --bit) {
       auto* net = output->getBit(bit - 1);
@@ -3501,7 +3530,7 @@ class RTLConstructor {
           const NLDB0::ShiftSignature signature{width, countValue.bits.size(), !left,
               !left && value.shape.types.front() == "signed"};
           auto* model = NLDB0::getOrCreateShift(signature);
-          auto* instance = SNLInstance::create(design_, model);
+          auto* instance = origin(SNLInstance::create(design_, model));
           for (const auto& [parameter, size] : NLDB0::PrimitiveParameters{
               {"WIDTH", std::to_string(signature.width)},
               {"COUNT_WIDTH", std::to_string(signature.countWidth)},
@@ -3512,7 +3541,7 @@ class RTLConstructor {
             instance->getInstTerm(NLDB0::getShiftData(model)->getBit(bit))->setNet(value.bits[width-1-bit]);
           for (size_t bit = 0; bit < countValue.bits.size(); ++bit)
             instance->getInstTerm(NLDB0::getShiftCount(model)->getBit(bit))->setNet(countValue.bits[countValue.bits.size()-1-bit]);
-          auto* output = SNLBusNet::create(design_, width-1, 0);
+          auto* output = origin(SNLBusNet::create(design_, width-1, 0));
           value.bits.clear();
           for (size_t bit = width; bit; --bit) {
             auto* net = output->getBit(bit-1);
@@ -4025,13 +4054,14 @@ class RTLConstructor {
 
   void drive(SNLBitNet* target, SNLBitNet* source) {
     if (!drivers_.insert(target).second) fail("multiple drivers for one signal bit");
+    origin(target);
     const auto terms = target->getBitTerms();
     const bool drivesPort = std::any_of(terms.begin(), terms.end(), [](auto* term) {
       return term->getDirection() != SNLTerm::Direction::Input;
     });
     if (source->isConstant() && !drivesPort)
       target->setType(source->getType());
-    else SNLRTLPrimitives::createAssign(design_, source, target);
+    else origin(SNLRTLPrimitives::createAssign(design_, source, target));
   }
   void concurrent(const vhdl::Assignment& assignment, const State& state) {
     DiagnosticScope location(assignment.span);
@@ -4573,7 +4603,8 @@ class RTLConstructor {
     };
     for (const auto& declaration : process.variables) for (const auto& name : declaration.names) {
       auto& object = objects_.at(key(name));
-      auto* storage = SNLBusNet::create(design_, object.value.shape.size()-1, 0);
+      auto* storage = this->declaration(
+          SNLBusNet::create(design_, object.value.shape.size()-1, 0), name.span);
       Bits bits;
       auto initial = defaults(defaults, object.value.shape);
       if (declaration.initializer) {
@@ -4730,7 +4761,7 @@ class RTLConstructor {
         auto* model = asynchronousKind < 0 ? NLDB0::getOrCreateDFF(width) :
             asynchronousKind == 1 ? NLDB0::getOrCreateDFFS(width) :
             process.resetLevel == "'0'" ? NLDB0::getOrCreateDFFRN(width) : NLDB0::getOrCreateDFFR(width);
-        auto* flop = SNLInstance::create(design_, model);
+        auto* flop = origin(SNLInstance::create(design_, model));
         flop->setTermNet(model->getScalarTerm(NLName("C")), objects_.at(clockName).value.bits.front());
         if (asynchronousKind >= 0) {
           const auto* pin = asynchronousKind == 1 ? "S" : process.resetLevel == "'0'" ? "RN" : "R";
@@ -4770,6 +4801,7 @@ class RTLConstructor {
   SNLBitNet* control(const vhdl::Name& name, const std::string& level, const State& state) {
     Expr expr;
     expr.kind = Expr::Kind::Name;
+    expr.span = name.span;
     expr.canonical = key(name);
     auto value = expression(expr, state);
     if (!value.shape.ranges.empty() || (level != "'0'" && level != "'1'"))
@@ -4925,8 +4957,9 @@ bool requiresVHDLRTL(const vhdl::DesignFile& syntax) {
 
 SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
                           std::string_view top, std::string_view source,
-                          const std::vector<VHDLLibrarySource>& libraries) {
-  const LibraryContext context{library, libraries, syntax};
+                          const std::vector<VHDLLibrarySource>& libraries,
+                          const VHDLSourceMap& sourceMap) {
+  const LibraryContext context{library, libraries, syntax, sourceMap};
   std::set<std::pair<NLLibrary*, std::string>> packages, bodies;
   for (const auto& package : syntax.packages) {
     DiagnosticScope location(package.name.span);
@@ -5035,6 +5068,8 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     }
     auto* design = SNLDesign::create(owner, NLName(modelName));
     created.push_back(design);
+    sourceMap.annotate(design, entity->span, true);
+    sourceMap.annotate(design, architecture->span);
     RTLConstructor(design, *entity, *architecture, syntax, context, overrides, build).run();
     RTLSourceProperty::attach(design, signature);
     active.erase({owner, name});

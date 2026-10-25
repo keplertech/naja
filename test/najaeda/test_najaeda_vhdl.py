@@ -29,6 +29,109 @@ architecture rtl of inverter is begin y <= not a; end;
         self.assertEqual(1, top.count_input_terms())
         self.assertEqual(1, top.count_output_terms())
 
+    def test_source_references_across_libraries_and_snapshot(self):
+        leaf_source = """\
+-- File-local coordinates, independent of library concatenation.
+library ieee; use ieee.std_logic_1164.all;
+entity leaf is generic(n : positive);
+  port(clk, a : in std_logic; y : out std_logic_vector(n-1 downto 0));
+end;
+library ieee; use ieee.std_logic_1164.all;
+architecture rtl of leaf is begin
+  lanes: for i in 0 to n-1 generate
+    process(clk) begin
+      if rising_edge(clk) then y(i) <= not a; end if;
+    end process;
+  end generate;
+end;
+"""
+        top_source = """\
+-- This file must keep its own line numbering.
+library ieee; use ieee.std_logic_1164.all;
+entity top is port(clk, a : in std_logic; y : out std_logic_vector(1 downto 0)); end;
+library ieee; use ieee.std_logic_1164.all;
+library cells;
+architecture rtl of top is begin
+  u: entity cells.leaf generic map(2) port map(clk, a, y);
+end;
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            leaf = Path(directory) / "leaf.vhd"
+            top_file = Path(directory) / "top.vhd"
+            leaf.write_text(leaf_source, encoding="utf-8")
+            top_file.write_text(top_source, encoding="utf-8")
+            universe = netlist.naja.NLUniverse.create()
+            db = netlist.naja.NLDB.create(universe)
+            db.loadVHDL(str(leaf), library="cells", diagnostics_report_path=None)
+            top = netlist.load_vhdl(top_file, diagnostics_report_path=None)
+            self.assertEqual(str(top_file), top.get_source_declaration().range.file)
+            self.assertEqual(3, top.get_source_declaration().range.line)
+            child = top.get_child_instance("u")
+            self.assertEqual(7, child.get_source_declaration().range.line)
+            self.assertEqual(str(top_file), child.get_source_declaration().range.file)
+            self.assertEqual([], child.get_source_origins())
+            self.assertEqual(3, child.get_model_source_declaration().range.line)
+            self.assertEqual(str(leaf), child.get_model_source_declaration().range.file)
+            port = child.get_term("y").get_source_declaration()
+            self.assertEqual(4, port.range.line)
+            self.assertEqual("naja-vhdl", port.provider)
+            self.assertEqual("vhdl", port.language)
+            self.assertEqual("rtl", port.representation)
+            model = db.getLibrary("cells").getSNLDesign(child.get_model_name())
+            gates = list(model.getInstances())
+            self.assertTrue(gates)
+            for gate in gates:
+                self.assertIsNone(gate.getSourceDeclaration())
+                self.assertTrue(gate.getSourceOrigins())
+                for origin in gate.getSourceOrigins():
+                    self.assertEqual(str(leaf), origin[0][0])
+                    self.assertIn(origin[0][1], (9, 10))
+            def source_state(model):
+                objects = ([model] + list(model.getInstances()) + list(model.getNets()) +
+                           list(model.getBitNets()) + list(model.getTerms()) + list(model.getBitTerms()))
+                return [(obj.getNLID().toTuple(), obj.getSourceLoc(),
+                         obj.getSourceDeclaration(), obj.getSourceOrigins()) for obj in objects]
+
+            expected = source_state(model)
+            snapshot = Path(directory) / "snapshot"
+            netlist.dump_naja_if(str(snapshot))
+            leaf.unlink()
+            top_file.unlink()
+            netlist.reset()
+            netlist.load_naja_if(str(snapshot))
+            child = netlist.get_top().get_child_instance("u")
+            self.assertEqual(port, child.get_term("y").get_source_declaration())
+            model = netlist.naja.NLUniverse.get().getTopDesign().getInstance("u").getModel()
+            self.assertEqual(expected, source_state(model))
+
+    def test_source_references_batch_and_cached_logic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            leaf = Path(directory) / "a_leaf.vhd"
+            top_file = Path(directory) / "z_top.vhd"
+            leaf.write_bytes(b"-- first unit\r\nentity leaf is port(a : in bit; y : out bit); end;\r\n"
+                             b"architecture rtl of leaf is begin y <= not a; end;")
+            top_file.write_text("-- second unit\nentity top is port(a : in bit; y : out bit); end;\n"
+                                "architecture rtl of top is begin\n"
+                                "  u: entity work.leaf port map(a, y);\nend;")
+            for files in ([leaf, top_file], [top_file, leaf]):
+                top = netlist.load_vhdl(files, diagnostics_report_path=None)
+                self.assertEqual(str(top_file), top.get_source_declaration().range.file)
+                self.assertEqual(2, top.get_source_declaration().range.line)
+                child = top.get_child_instance("u")
+                self.assertEqual(4, child.get_source_declaration().range.line)
+                self.assertEqual(str(leaf), child.get_model_source_declaration().range.file)
+                self.assertEqual(2, child.get_model_source_declaration().range.line)
+                netlist.reset()
+            top_file.write_text("entity top is port(a, b : in bit; y, z : out bit); end;\n"
+                                "architecture rtl of top is begin\n"
+                                "  y <= a and b;\n  z <= a and b;\nend;")
+            netlist.load_vhdl(top_file, diagnostics_report_path=None)
+            model = netlist.naja.NLUniverse.get().getTopDesign()
+            gates = [gate for gate in model.getInstances()
+                     if gate.getModel().getLibrary().getName() == "and"]
+            self.assertEqual(1, len(gates))
+            self.assertEqual([3, 4], [ref[0][1] for ref in gates[0].getSourceOrigins()])
+
     def test_load_vhdl_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             leaf = Path(directory) / "leaf.vhd"

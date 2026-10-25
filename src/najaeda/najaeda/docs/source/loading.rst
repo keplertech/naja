@@ -841,6 +841,29 @@ conditions can select generate branches or drive supported boolean expressions.
 Required boolean generics follow the same deferred dependency-loading convention
 as required integer generics. Vector generic values are not yet supported.
 
+VHDL source references
+~~~~~~~~~~~~~~~~~~~~~~
+
+VHDL loading records source declarations for entities, explicit instances, ports,
+and signals, including bus bits. A model declaration identifies the entity;
+its origins identify the architecture. Generated logic has source origins for
+its expressions or processes, rather than textual declarations. Shared generated
+logic can have several origins. Generic specializations and generate iterations
+retain references to their original source syntax.
+
+Use ``get_source_declaration()``, ``get_model_source_declaration()``, and
+``get_source_origins()`` on high-level objects, or the equivalent expert methods
+in :doc:`raw_api`. References carry ``provider="naja-vhdl"``, ``language="vhdl"``,
+and ``representation="rtl"``. File coordinates remain local to each original
+input across batch and incremental loads and logical libraries. Coordinates are
+one-based, inclusive byte positions. Anonymous C++ string inputs use
+``<source>`` as their filename.
+
+The loader also populates the legacy ``get_source_range()`` location. Typed
+references survive NajaIF snapshot round trips without retaining the AST or
+requiring the source files to remain available. Live VHDL AST links are not
+currently exposed.
+
 HDL destination libraries
 -------------------------
 

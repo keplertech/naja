@@ -20,6 +20,8 @@ struct VHDLRTLException : NLException {
 };
 
 // Offsets identify ownership in the adapter's combined parsing buffer.
+class VHDLSourceMap;
+
 struct VHDLLibrarySource {
   NLLibrary* library;
   size_t offset;
@@ -31,5 +33,6 @@ struct VHDLLibrarySource {
 bool requiresVHDLRTL(const vhdl::DesignFile& syntax);
 SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
                           std::string_view top, std::string_view source,
-                          const std::vector<VHDLLibrarySource>& libraries = {});
+                          const std::vector<VHDLLibrarySource>& libraries,
+                          const VHDLSourceMap& sourceMap);
 }

@@ -16,6 +16,8 @@ namespace naja::NL {
 
 class SNLDesign;
 
+class VHDLSourceMap;
+
 /// Temporary Naja adapter for scalar/vector combinational, scalar
 /// clocked-register, and one-level direct-entity hierarchy proofs.
 /// The standalone VHDL frontend remains independent of this class and SNL.
@@ -64,7 +66,7 @@ class VHDLConstructor {
                                const std::string& path) const;
     SNLDesign* constructInputs(
       const std::vector<std::pair<std::string, std::string>>& inputs,
-      std::string_view top, bool batch) const;
+      std::string_view top, bool batch, const VHDLSourceMap* mappedSource = nullptr) const;
     NLLibrary* library_;
     ConstructOptions options_;
 };

@@ -19,6 +19,7 @@
 #include "SNLInstParameter.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLPrimitives.h"
+#include "SNLRTLInfos.h"
 #include "SNLVRLDumper.h"
 #include "SNLScalarTerm.h"
 #include "SNLScalarNet.h"
@@ -7387,4 +7388,84 @@ architecture rtl of invalid_condition is begin process(all) begin if )" + condit
     EXPECT_THROW(VHDLConstructor(library_).construct(source), NLException);
     EXPECT_TRUE(library_->getSNLDesigns().empty());
   }
+}
+
+TEST_F(VHDLConstructorTest, AnonymousSourceReferences) {
+  const std::string source = "-- source coordinates\r\n\r\n"
+      "entity leaf is\r\n  port(a : in bit; y : out bit);\r\nend;\r\n"
+      "architecture rtl of leaf is begin\r\n  y <= not a;\r\nend;\r\n";
+  auto* design = VHDLConstructor(library_).construct(source);
+  const auto& declaration = design->getRTLInfos()->getSourceDeclaration();
+  ASSERT_TRUE(declaration);
+  EXPECT_EQ(NLName("<source>"), declaration->range.file);
+  EXPECT_EQ(3, declaration->range.line);
+  EXPECT_EQ(5, declaration->range.endLine);
+  EXPECT_EQ(4, declaration->range.endColumn);
+  const auto& port = design->getTerm(NLName("a"))->getRTLInfos()->getSourceDeclaration();
+  ASSERT_TRUE(port);
+  EXPECT_EQ(4, port->range.line);
+  EXPECT_EQ(8, port->range.column);
+  EXPECT_EQ(8, port->range.endColumn);
+  for (auto* instance : design->getInstances()) {
+    EXPECT_FALSE(instance->getRTLInfos()->getSourceDeclaration());
+    ASSERT_EQ(1, instance->getRTLInfos()->getSourceOrigins().size());
+    const auto& origin = instance->getRTLInfos()->getSourceOrigins().front();
+    EXPECT_EQ(NLName("naja-vhdl"), origin.provider);
+    EXPECT_EQ(NLName("vhdl"), origin.language);
+    EXPECT_EQ(NLName("rtl"), origin.representation);
+    EXPECT_EQ(7, origin.range.line);
+    EXPECT_EQ(8, origin.range.column);
+    EXPECT_EQ(12, origin.range.endColumn);
+  }
+}
+
+TEST_F(VHDLConstructorTest, StructuralSpecializationSourceReferences) {
+  const std::string source =
+      "-- original coordinates survive extraction and generic rewriting\n"
+      "entity leaf is generic(n : positive := 123); port(a : in bit_vector(n-1 downto 0); y : out bit_vector(n-1 downto 0)); end;\n"
+      "architecture rtl of leaf is begin\n  y <= not a;\nend;\n"
+      "entity top is port(a : in bit_vector(1 downto 0); y : out bit_vector(1 downto 0)); end;\n"
+      "architecture rtl of top is begin\n  u: entity work.leaf generic map(2) port map(a, y);\nend;\n";
+  auto* design = VHDLConstructor(library_).construct(source, "top");
+  auto* instance = design->getInstance(NLName("u"));
+  ASSERT_NE(nullptr, instance);
+  ASSERT_TRUE(instance->getRTLInfos()->getSourceDeclaration());
+  EXPECT_EQ(8, instance->getRTLInfos()->getSourceDeclaration()->range.line);
+  auto* model = instance->getModel();
+  ASSERT_TRUE(model->getRTLInfos()->getSourceDeclaration());
+  EXPECT_EQ(2, model->getRTLInfos()->getSourceDeclaration()->range.line);
+  auto* term = model->getBusTerm(NLName("a"));
+  ASSERT_TRUE(term->getRTLInfos()->getSourceDeclaration());
+  const auto column = source.substr(source.find("entity leaf")).find("a : in") + 1;
+  EXPECT_EQ(column, term->getRTLInfos()->getSourceDeclaration()->range.column);
+  for (auto* bit : term->getBusBits()) {
+    ASSERT_TRUE(bit->getRTLInfos()->getSourceDeclaration());
+    EXPECT_EQ(column, bit->getRTLInfos()->getSourceDeclaration()->range.column);
+  }
+  for (auto* gate : model->getInstances()) {
+    ASSERT_FALSE(gate->getRTLInfos()->getSourceOrigins().empty());
+    EXPECT_EQ(4, gate->getRTLInfos()->getSourceOrigins().front().range.line);
+  }
+}
+
+TEST_F(VHDLConstructorTest, RTLMultilineSourceReferencesWithWideColumns) {
+  const std::string source = "-- byte coordinates: \xc3\xa9\n"
+      "entity top is generic(enabled : boolean := true); port(a, b : in bit; y : out bit); end;\n"
+      "architecture rtl of top is begin\n  y <= " + std::string(70000, ' ') + "a and\n    b;\nend;\n";
+  auto* design = VHDLConstructor(library_).construct(source);
+  size_t gates = 0;
+  for (auto* instance : design->getInstances()) {
+    if (NLDB0::getGateName(instance->getModel()) != "and") continue;
+    ++gates;
+    const auto* infos = instance->getRTLInfos();
+    ASSERT_NE(nullptr, infos);
+    ASSERT_EQ(1, infos->getSourceOrigins().size());
+    const auto& origin = infos->getSourceOrigins().front();
+    EXPECT_EQ(NLName("<source>"), origin.range.file);
+    EXPECT_EQ(4, origin.range.line);
+    EXPECT_EQ(70008, origin.range.column);
+    EXPECT_EQ(5, origin.range.endLine);
+    EXPECT_EQ(5, origin.range.endColumn);
+  }
+  EXPECT_EQ(1, gates);
 }

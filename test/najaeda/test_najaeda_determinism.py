@@ -145,7 +145,12 @@ def dump_state(output):
     state = []
 
     def attributes(obj):
-        return [[a.getName(), a.getValue(), a.hasValue()] for a in obj.getAttributes()]
+        return {
+            "attributes": [[a.getName(), a.getValue(), a.hasValue()] for a in obj.getAttributes()],
+            "source_location": obj.getSourceLoc(),
+            "source_declaration": obj.getSourceDeclaration(),
+            "source_origins": obj.getSourceOrigins(),
+        }
 
     def visit(library):
         for design in library.getSNLDesigns():
