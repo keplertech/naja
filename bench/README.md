@@ -24,6 +24,7 @@ compatibility library and its upstream dependencies. Use a separate build direct
 ```sh
 cmake -S . -B build-codspeed -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DBUILD_BENCHMARKS=ON -DNAJA_BENCHMARK_CODSPEED=ON \
+  -DCODSPEED_MODE=simulation \
   -DENABLE_SANITIZERS=OFF -DENABLE_THREAD_SANITIZER=OFF -DCODE_COVERAGE=OFF
 cmake --build build-codspeed --target snl_bench --parallel 4
 ```
@@ -44,16 +45,16 @@ parsing work, but exclude time spent in system calls. The initial CI filter
 excludes `BM_CapnPSerialize`: that benchmark measures a filesystem-backed dump
 and reload, and its paused setup sections need separate compatibility review.
 
-The existing native benchmark workflow and history remain in place during
-calibration. Before enabling regression enforcement:
+CodSpeed replaces the legacy native timing workflow and its blocking alerts.
+The historical `gh-pages` results are retained but no longer updated. Before
+enabling regression enforcement in CodSpeed:
 
 1. Collect at least five independent runs of the same revision and assess
    variance for each benchmark.
 2. Verify that a temporary, unmerged slowdown produces a regression report
    with useful flamegraphs.
 3. Verify comparisons against a `main` baseline, including a fork pull request.
-4. Choose thresholds from the observed variance and retire the old blocking
-   native timing alert in a follow-up change.
+4. Choose thresholds from the observed variance.
 
 Keep compiler and dependency versions, optimization flags, and the CodSpeed
 library/action versions stable when comparing revisions. Toolchain or benchmark
@@ -204,8 +205,55 @@ Local simulation-mode execution validates the benchmarks without uploading
 measurements. Omit `--codspeed` to run just the workload and correctness checks.
 
 CodSpeed CI selects all **111 cases**: 60 core C++, 39 format C++, and 12 Python.
-The three commands run under one action invocation, producing one combined run
-with distinct benchmark identities. No macro runners are required.
+The three commands run under one simulation action invocation, producing one
+combined run with distinct benchmark identities. Simulation needs no macro runners.
+
+## CodSpeed I/O walltime
+
+The same workflow has a separate advisory Walltime job for all four
+`BM_LoadVerilogFile` cases and all 39 format cases. This includes filesystem-backed
+snapshot encoding and decoding, as well as SystemVerilog, VHDL, and Liberty
+loading. These 43 cases measure elapsed time including system calls, complementing
+the CPU simulation results. The old `BM_CapnPSerialize` combined round trip is
+replaced by the six separate snapshot encode/decode cases; it remains available
+in ordinary native builds.
+
+The Walltime job uses the fixed
+`codspeed-macro-x64-ryzen-9950x-ubuntu-24-04` runner label. Enable access to that
+runner for this repository in CodSpeed first, then set the GitHub Actions
+repository variable `CODSPEED_WALLTIME_ENABLED` to `true`. Until then, the job is
+skipped. Keep the runner label stable across baseline and candidate runs; do not
+substitute shared GitHub runners, whose hardware and load can distort comparisons.
+Macro Runner access and usage depend on the organization's CodSpeed plan.
+
+Build the Walltime harness locally in a separate directory:
+
+```sh
+cmake -S . -B build-codspeed-walltime -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DBUILD_BENCHMARKS=ON -DNAJA_BENCHMARK_CODSPEED=ON \
+  -DCODSPEED_MODE=walltime \
+  -DENABLE_SANITIZERS=OFF -DENABLE_THREAD_SANITIZER=OFF -DCODE_COVERAGE=OFF
+cmake --build build-codspeed-walltime --target snl_bench snl_format_bench --parallel 4
+codspeed run --mode walltime -- ./build-codspeed-walltime/bench/snl_bench \
+  --benchmark_filter='::BM_LoadVerilogFile(\[|$)' --benchmark_repetitions=10
+codspeed run --mode walltime -- ./build-codspeed-walltime/bench/snl_format_bench \
+  --benchmark_repetitions=10
+```
+
+CI runs these two benchmark commands serially within one action invocation, with
+ten repetitions per case. Each repetition rebuilds fixtures for single-iteration
+loading cases, rather than measuring a populated library or universe.
+Filesystem measurements use temporary files and the normal operating-system
+cache; they do not establish cold-cache disk throughput or durable-write latency.
+
+Walltime coverage remains inactive until Macro Runner access and the repository
+variable above are configured; CPU simulation continues to run independently.
+Before enforcing Walltime regressions, establish a baseline on `main`, assess
+variance with repeated same-revision measurements, and verify regression
+detection with a temporary slowdown. The first Walltime upload only establishes
+a baseline; a green upload job alone does not prove unchanged performance.
+Compare Walltime results only with Walltime results from the same runner type,
+toolchain, and benchmark configuration.
 
 See the [CodSpeed C++ integration](https://codspeed.io/docs/benchmarks/cpp) and
 [GitHub Actions integration](https://codspeed.io/docs/integrations/ci/github-actions).

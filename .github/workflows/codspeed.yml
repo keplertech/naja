@@ -47,6 +47,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DBUILD_BENCHMARKS=ON \
             -DNAJA_BENCHMARK_CODSPEED=ON \
+            -DCODSPEED_MODE=simulation \
             -DENABLE_SANITIZERS=OFF \
             -DENABLE_THREAD_SANITIZER=OFF \
             -DCODE_COVERAGE=OFF \
@@ -77,3 +78,46 @@ jobs:
             ./build-codspeed/bench/snl_bench --benchmark_filter='::BM_(CreateNetlist0|CreateInstances|TraversalInstances|LoadVerilogFile|HierarchyTraversal|DNLConstruction|DNLIndependentNets|Equipotential|AssignChain|ConstantPropagation|DeadLogicElimination|DesignClone|InstanceLookupByName|InstanceLookupByID|TerminalReconnect)(\[|$)'
             ./build-codspeed/bench/snl_format_bench
             python -m pytest bench/python/test_workflows.py --codspeed --codspeed-mode=simulation
+
+  walltime:
+    name: I/O walltime (advisory)
+    # Enable only after granting this repository access to CodSpeed Macro Runners.
+    if: vars.CODSPEED_WALLTIME_ENABLED == 'true'
+    runs-on: codspeed-macro-x64-ryzen-9950x-ubuntu-24-04
+    timeout-minutes: 60
+    env:
+      CC: gcc-13
+      CXX: g++-13
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -yq gcc-13 g++-13 libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build-codspeed-walltime \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_BENCHMARKS=ON \
+            -DNAJA_BENCHMARK_CODSPEED=ON \
+            -DCODSPEED_MODE=walltime \
+            -DENABLE_SANITIZERS=OFF \
+            -DENABLE_THREAD_SANITIZER=OFF \
+            -DCODE_COVERAGE=OFF \
+            -DLONG_TESTS=OFF
+
+      - name: Build benchmarks
+        run: cmake --build build-codspeed-walltime --target snl_bench snl_format_bench --parallel 4
+
+      # Run serially on one fixed hardware type; shared VMs distort I/O timings.
+      - name: Measure I/O benchmarks
+        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
+        with:
+          mode: walltime
+          run: |
+            set -e
+            ./build-codspeed-walltime/bench/snl_bench --benchmark_filter='::BM_LoadVerilogFile(\[|$)' --benchmark_repetitions=10
+            ./build-codspeed-walltime/bench/snl_format_bench --benchmark_repetitions=10

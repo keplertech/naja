@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-option(NAJA_BENCHMARK_CODSPEED "Build benchmarks for CodSpeed CPU simulation" OFF)
+option(NAJA_BENCHMARK_CODSPEED "Build benchmarks for CodSpeed" OFF)
 
 if(NAJA_BENCHMARK_CODSPEED)
   include(FetchContent)
@@ -11,7 +11,7 @@ if(NAJA_BENCHMARK_CODSPEED)
   endif()
   set(BENCHMARK_ENABLE_TESTING OFF)
   set(BENCHMARK_ENABLE_INSTALL OFF)
-  set(CODSPEED_MODE simulation CACHE STRING "Build mode for CodSpeed" FORCE)
+  set(CODSPEED_MODE simulation CACHE STRING "Build mode for CodSpeed")
   FetchContent_Declare(codspeed_benchmark
     # codspeed-cpp v2.4.0
     URL https://github.com/CodSpeedHQ/codspeed-cpp/archive/f5a917fdd14db7293bd37acb682873fec19f8b6c.tar.gz
