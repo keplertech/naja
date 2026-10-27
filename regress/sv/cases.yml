@@ -81,21 +81,22 @@ cases:
       rtl_infos_as_attributes: true
     # Structural integration signatures are intentionally tied to the pinned
     # CVA6 commit above. Update these counts only after reviewing the cone diff.
-    # Shared index decoding removes 42 XNOR and 20 AND gates (82 edges).
-    # Cached inverter reuse retains one explicit named-net assignment (+1 node
-    # and edge); cone boundary counts and individual-bit probes are unchanged.
+    # Nested packed writes use vector select/update primitives instead of
+    # per-bit decoding and muxes: 42 fewer internal nodes and 73 fewer edges.
+    # Reviewed node changes are confined to the AXI adapter; root, register,
+    # and port occurrences and the individual-bit probes are unchanged.
     logic_cones:
       - term: noc_req_o
         direction: fanin
         expected:
-          nodes: 1634
-          edges: 2317
+          nodes: 1592
+          edges: 2244
           leaves: 19
           roots: 471
           registers: 16
           ports: 3
           blackboxes: 0
-          internal: 1144
+          internal: 1102
       - term: noc_req_o
         bit: 468
         direction: fanin

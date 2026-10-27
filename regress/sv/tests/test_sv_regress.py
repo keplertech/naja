@@ -663,14 +663,14 @@ endmodule
         )
         self.assertEqual(
             {
-                "nodes": 1634,
-                "edges": 2317,
+                "nodes": 1592,
+                "edges": 2244,
                 "leaves": 19,
                 "roots": 471,
                 "registers": 16,
                 "ports": 3,
                 "blackboxes": 0,
-                "internal": 1144,
+                "internal": 1102,
             },
             cva6["logic_cones"][0]["expected"],
         )
