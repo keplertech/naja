@@ -45,14 +45,14 @@ class SNLInstParameter : public NajaObject {
     std::string getDescription() const override;
 
     friend bool operator< (const SNLInstParameter& lp, const SNLInstParameter& rp) {
-      return lp.getName() < rp.getName();
+      return lp.getName().getString() < rp.getName().getString();
     }
     struct SNLInstanceParameterComp {
       bool operator()(const NLName& ln, const SNLInstParameter& rp) const {
-        return ln < rp.getName();
+        return ln.getString() < rp.getName().getString();
       }
       bool operator()(const SNLInstParameter& lp, const NLName& rn) const {
-        return lp.getName() < rn;
+        return lp.getName().getString() < rn.getString();
       }
     };
     bool deepCompare(const SNLInstParameter* other, std::string& reason) const;

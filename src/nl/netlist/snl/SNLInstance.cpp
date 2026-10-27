@@ -499,7 +499,7 @@ void SNLInstance::removeInstParameter(SNLInstParameter* instParameter) {
 }
 
 SNLInstParameter* SNLInstance::getInstParameter(const NLName& name) const {
-  auto it = instParameters_.find(name, NLNameComp<SNLInstParameter>());
+  auto it = instParameters_.find(name, SNLInstParameter::SNLInstanceParameterComp());
   if (it != instParameters_.end()) {
     return const_cast<SNLInstParameter*>(&*it);
   }

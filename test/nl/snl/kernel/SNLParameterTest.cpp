@@ -138,3 +138,26 @@ TEST_F(SNLParameterTest, requiredParameters) {
   auto actual = SNLInstParameter::create(instance, parameter, "8");
   EXPECT_EQ("8", actual->getValue());
 }
+
+TEST_F(SNLParameterTest, lexicalOrderIgnoresInterningAndInsertionOrder) {
+  const auto lastName = NLName("zeta");
+  const auto firstName = NLName("alpha");
+  const auto middleName = NLName("middle");
+  auto* last = SNLParameter::create(design_, lastName, SNLParameter::Type::Decimal, "1");
+  auto* first = SNLParameter::create(design_, firstName, SNLParameter::Type::Decimal, "2");
+  auto* middle = SNLParameter::create(design_, middleName, SNLParameter::Type::Decimal, "3");
+  EXPECT_THAT(std::vector(design_->getParameters().begin(), design_->getParameters().end()),
+    ElementsAre(first, middle, last));
+  auto* instance = SNLInstance::create(SNLDesign::create(designsLib_), design_);
+  auto* lastOverride = SNLInstParameter::create(instance, last, "4");
+  auto* middleOverride = SNLInstParameter::create(instance, middle, "5");
+  auto* firstOverride = SNLInstParameter::create(instance, first, "6");
+  EXPECT_THAT(std::vector(instance->getInstParameters().begin(), instance->getInstParameters().end()),
+    ElementsAre(firstOverride, middleOverride, lastOverride));
+  for (auto* parameter : {first, middle, last}) {
+    EXPECT_EQ(parameter, design_->getParameter(parameter->getName()));
+    auto* override = instance->getInstParameter(parameter->getName());
+    ASSERT_NE(nullptr, override);
+    EXPECT_EQ(parameter, override->getParameter());
+  }
+}

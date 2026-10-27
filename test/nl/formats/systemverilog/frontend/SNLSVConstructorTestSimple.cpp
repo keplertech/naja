@@ -40976,3 +40976,92 @@ endmodule
     }
   }
 }
+
+TEST_F(SNLSVConstructorTestSimple, NestedPackedWritesPreserveStorageAndPriority) {
+  // Icarus cannot simulate variable multi-dimensional packed LHS selections
+  // reliably (some versions abort or alias out-of-range inner indices). Use an
+  // independent flat reference with explicit per-dimension bounds, including
+  // unknown-index no-op semantics, rather than treating that simulator as oracle.
+  struct Case { std::string name, shape, lhs, offset, valid; unsigned width; };
+  const std::vector<Case> cases{
+    {"descending", "[1:0][2:0][2:0]", "q[row][col]", "(row*3+col)*3", "row>=0 && row<=1 && col>=0 && col<=2", 18},
+    {"ascending", "[0:1][0:2][2:0]", "q[row][col]", "((1-row)*3+2-col)*3", "row>=0 && row<=1 && col>=0 && col<=2", 18},
+    {"bounds", "[3:2][-2:0][2:0]", "q[row][col]", "((row-2)*3-col)*3", "row>=2 && row<=3 && col>=-2 && col<=0", 18},
+    {"three", "[-1:0][4:3][2:1][2:0]", "q[row][col][lane]", "((-row*2+col-3)*2+lane-1)*3", "row>=-1 && row<=0 && col>=3 && col<=4 && lane>=1 && lane<=2", 24},
+    {"dependent", "[1:0][2:0][2:0]", "q[row][indices[row]]", "(row*3+((indices>>(row*2))&3))*3", "row>=0 && row<=1 && ((indices>>(row*2))&3)<3", 18},
+    {"state_index", "[1:0][2:0][2:0]", "q[row][q[0][0]]", "(row*3+expected[2:0])*3", "row>=0 && row<=1 && expected[2:0]<3", 18}
+  };
+  for (const auto& item : cases) {
+    SCOPED_TRACE(item.name);
+    const auto name = "nested_write_" + item.name;
+    const auto source = "module " + name +
+      "(input logic clk,rst_n,enable,priority_write, input logic signed [39:0] row,col,lane, "
+      "input logic [1:0][1:0] indices, input logic [2:0] data, output logic " + item.shape + " q);\n"
+      "always_ff @(posedge clk or negedge rst_n) begin\n"
+      "if (!rst_n) q <= '0; else if (enable) begin\n" +
+      (item.name == "state_index" ? std::string("q[0][0] <= col[2:0];\n") : std::string()) +
+      item.lhs + " <= data;\n"
+      "if (priority_write) " + item.lhs + " <= ~data;\n"
+      // RHS and destination indices must still see pre-NBA values.
+      "q" + (item.name == "three" ? std::string("[-1][4][2]") :
+             item.name == "bounds" ? std::string("[3][-2]") :
+             item.name == "ascending" ? std::string("[0][0]") : std::string("[1][2]")) +
+      " <= q" + (item.name == "three" ? std::string("[0][3][1]") :
+                  item.name == "bounds" ? std::string("[2][0]") :
+                  item.name == "ascending" ? std::string("[1][2]") : std::string("[0][0]")) +
+      "; end end endmodule\n";
+    SNLSVConstructor(library_).construct(writeSVTestFile(name, source));
+    auto* top = library_->getSNLDesign(NLName(name));
+    ASSERT_NE(top, nullptr);
+    const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+    if (std::system("command -v iverilog >/dev/null 2>&1") ||
+        std::system("command -v vvp >/dev/null 2>&1"))
+      GTEST_SKIP() << "Icarus Verilog required for four-state simulation";
+    const auto tbPath = dumped.parent_path() / "tb.sv";
+    std::ofstream tb(tbPath);
+    tb << "module tb; reg clk=0,rst_n=1,enable=0,priority_write=0;\n"
+       << "reg signed [39:0] row,col,lane; reg [3:0] indices; reg [2:0] data;\n"
+       << "wire [" << item.width-1 << ":0] actual; reg [" << item.width-1 << ":0] expected,next;\n"
+       << name << " dut(.*,.q(actual));\n"
+       << "task tick; begin next=expected; if(enable) begin\n"
+       << (item.name == "state_index" ? "next[0+:3]=col[2:0];\n" : "")
+       << "if (" << item.valid << ") next[(" << item.offset << ")+:3]=priority_write ? ~data : data;\n"
+       << "next[" << item.width-3 << "+:3]=expected[0+:3]; end\n"
+       << "#1; clk=1; #1; expected=next; if(actual !== expected) "
+       << "$fatal(1,\"write mismatch row=%d col=%d lane=%d actual=%h expected=%h\",row,col,lane,actual,expected); clk=0; #1; end endtask\n"
+       << R"(integer r,c,l,p;
+initial begin
+  #1; rst_n=0; #1; expected=0;
+  if(actual !== expected) $fatal(1,"asynchronous reset");
+  rst_n=1;
+  for(p=0;p<8;p=p+1) begin
+    enable=(p!=0); priority_write=p[0]; indices=p;
+    case(p) 0:data=0; 1:data=3; 2:data=5; 3:data=7;
+      4:data=3'bx1z; 5:data='x; 6:data='z; 7:data=2; endcase
+    for(r=-3;r<6;r=r+1) for(c=-4;c<7;c=c+1) for(l=0;l<4;l=l+1) begin
+      row=r; col=c; lane=l; tick;
+    end
+    enable=0; row=0; col=0; lane=1; data=~data; tick;
+    data=~data; enable=(p!=0);
+    row='x; col=0; tick; row='z; tick;
+    row=0; col='x; tick; col='z; tick;
+    row=0; col=0; lane='x; tick; lane='z; tick;
+    row=40'h100000000; col=0; lane=0; tick;
+    row=0; col=40'h100000000; tick;
+    indices='x; row=0; col=0; tick;
+    indices='z; tick;
+  end
+  #1; rst_n=0; #1; if(actual !== 0) $fatal(1,"reset after writes");
+  $finish;
+end
+endmodule
+)";
+    tb.close();
+    const auto quote = [](const std::filesystem::path& path) { return "'" + path.string() + "'"; };
+    const auto executable = dumped.parent_path() / "sim.vvp";
+    const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+      " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+    ASSERT_EQ(0, std::system(command.c_str()));
+    ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+  }
+}

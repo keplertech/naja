@@ -66,14 +66,14 @@ class SNLParameter : public NajaObject {
     std::string getDescription() const;
 
     friend bool operator< (const SNLParameter& lp, const SNLParameter& rp) {
-      return lp.getName() < rp.getName();
+      return lp.getName().getString() < rp.getName().getString();
     }
     struct SNLParameterComp {
       bool operator()(const NLName& ln, const SNLParameter& rp) const {
-        return ln < rp.getName();
+        return ln.getString() < rp.getName().getString();
       }
       bool operator()(const SNLParameter& lp, const NLName& rn) const {
-        return lp.getName() < rn;
+        return lp.getName().getString() < rn.getString();
       }
     };
     bool deepCompare(const SNLParameter* other, std::string& reason) const;

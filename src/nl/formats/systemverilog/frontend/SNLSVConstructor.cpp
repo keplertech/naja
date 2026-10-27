@@ -26978,57 +26978,19 @@ endmodule
       return true;
     }
 
-    bool tryApplyPackedVectorUpdate(
-      SNLDesign* design, const Expression& assignedLHS, const Expression& trackedLhs,
-      const AssignAction& action, std::vector<SNLBitNet*>& dataBits,
-      std::string& failureReason, bool& handled) {
-      handled = false;
-      if (assignmentActionRequiresCurrentBits(action) || dataBits.empty() ||
-          std::any_of(dataBits.begin(), dataBits.end(), [](auto* bit) { return !bit; })) return true;
-      const auto* lhs = stripConversions(assignedLHS);
-      const Expression* base = nullptr;
-      const Expression* index = nullptr;
-      bool indexedDown = false, rangeSelect = false;
-      size_t sliceElements = 1;
-      if (lhs->kind == slang::ast::ExpressionKind::ElementSelect) {
-        const auto& select = lhs->as<slang::ast::ElementSelectExpression>();
-        base = stripConversions(select.value());
-        index = &select.selector();
-      } else if (lhs->kind == slang::ast::ExpressionKind::RangeSelect) {
-        const auto& select = lhs->as<slang::ast::RangeSelectExpression>();
-        if (select.getSelectionKind() == slang::ast::RangeSelectionKind::Simple) return true;
-        int32_t width = 0;
-        if (!getConstantInt32(select.right(), width) || width <= 0) return true;
-        base = stripConversions(select.value());
-        index = &select.left();
-        rangeSelect = true;
-        indexedDown = select.getSelectionKind() == slang::ast::RangeSelectionKind::IndexedDown;
-        sliceElements = size_t(width);
-      } else return true;
-      if (!base || !sameLhs(base, &trackedLhs)) return true;
-      const auto& type = base->type->getCanonicalType();
-      if (type.isUnpackedArray() || !type.hasFixedRange()) return true;
-      const auto range = type.getFixedRange();
-      const size_t count = range.width();
-      if (!count || dataBits.size() % count) return true;
-      const size_t elementWidth = dataBits.size() / count;
-      const size_t updateWidth = sliceElements * elementWidth;
-      int32_t constantIndex = 0;
-      if (getConstantInt32(*index, constantIndex)) return true;
-      const auto width = getIntegralExpressionBitWidth(*index);
-      if (!width || !*width) return true;
-      std::vector<SNLBitNet*> offset;
-      if (!resolveExpressionBits(design, *index, *width, offset)) return true;
-      std::vector<SNLBitNet*> replacement;
-      if (!buildCombinationalAssignBits(design, action, updateWidth, replacement, nullptr, failureReason))
-        return false;
-      handled = true;
-      const auto source = getSourceRange(assignedLHS);
+    bool buildPackedSelectionOffset(
+      SNLDesign* design, const Expression& index, const slang::ConstantRange& range,
+      size_t elementWidth, size_t sliceElements, bool indexedDown,
+      std::vector<SNLBitNet*>& offset, bool& isSigned,
+      const std::optional<slang::SourceRange>& source) {
+      const auto width = getIntegralExpressionBitWidth(index);
+      if (!width || !*width ||
+          (offset.empty() && !resolveExpressionBits(design, index, *width, offset))) return false;
       const bool ascending = range.left < range.right;
       const int64_t adjustment = int64_t(range.right) +
-          (rangeSelect && indexedDown && !ascending ? int64_t(sliceElements - 1) : 0) -
-          (rangeSelect && !indexedDown && ascending ? int64_t(sliceElements - 1) : 0);
-      bool isSigned = index->type->isSigned();
+          (indexedDown && !ascending ? int64_t(sliceElements - 1) : 0) -
+          (!indexedDown && ascending ? int64_t(sliceElements - 1) : 0);
+      isSigned = index.type->isSigned();
       if (ascending || adjustment || elementWidth != 1) {
         size_t extra = 0;
         for (size_t value = elementWidth; value > 1; value >>= 1) ++extra;
@@ -27064,6 +27026,144 @@ endmodule
         }
         isSigned = true;
       }
+      return true;
+    }
+
+    bool tryApplyNestedPackedVectorUpdate(
+      SNLDesign* design, const Expression& assignedLHS, const Expression& trackedLhs,
+      const AssignAction& action, std::vector<SNLBitNet*>& dataBits,
+      std::string& failureReason, bool& handled) {
+      handled = false;
+      std::vector<CombinationalSelectionStep> steps;
+      if (assignmentActionRequiresCurrentBits(action) || dataBits.empty() ||
+          !hasDynamicSelectionInLHS(assignedLHS) ||
+          std::any_of(dataBits.begin(), dataBits.end(), [](auto* bit) { return !bit; }) ||
+          !collectCombinationalSelectionStepsFromTrackedLhs(assignedLHS, trackedLhs, steps) ||
+          std::count_if(steps.begin(), steps.end(),
+            [](const auto& step) { return step.element != nullptr; }) < 2) return true;
+      // Only packed element chains are addressed here. Unpacked arrays and
+      // range selections retain their existing lowering / diagnostics.
+      for (const auto& step : steps) {
+        if (step.element) {
+          const auto& type = step.element->value().type->getCanonicalType();
+          if (type.isUnpackedArray() || !type.hasFixedRange()) return true;
+        } else if (step.range) {
+          return true;
+        }
+      }
+      handled = true;
+      const auto source = getSourceRange(assignedLHS);
+      struct Frame {
+        std::vector<SNLBitNet*> base;
+        std::vector<SNLBitNet*> offset;
+        std::vector<size_t> positions;
+        bool isSigned = false;
+      };
+      std::vector<Frame> frames;
+      auto selected = dataBits;
+      for (const auto& step : steps) {
+        Frame frame;
+        frame.base = selected;
+        if (step.element) {
+          const auto range = step.element->value().type->getCanonicalType().getFixedRange();
+          const auto elementWidth = getElementSelectionWidth(*step.element, selected.size());
+          if (!elementWidth || !*elementWidth ||
+              !buildPackedSelectionOffset(design, step.element->selector(), range,
+                *elementWidth, 1, false, frame.offset, frame.isSigned, source)) {
+            failureReason = "unable to resolve nested packed assignment index";
+            return false;
+          }
+          auto* output = SNLBusNet::create(design, *elementWidth - 1, 0);
+          annotateSourceInfo(output, source);
+          auto* instance = SNLRTLPrimitives::createVectorSelect(
+            design, selected, frame.offset, frame.isSigned, output);
+          annotateSourceInfo(instance, source);
+          selected = collectBits(output);
+        } else {
+          std::vector<size_t> positions;
+          for (size_t bit = 0; bit < selected.size(); ++bit) positions.push_back(bit);
+          if (!applyStaticCombinationalSelectionStepOffsets(step, positions, frame.positions)) {
+            failureReason = "unsupported static selection in nested packed assignment";
+            return false;
+          }
+          selected.clear();
+          for (auto bit : frame.positions) selected.push_back(frame.base[bit]);
+        }
+        frames.push_back(std::move(frame));
+      }
+      std::vector<SNLBitNet*> replacement;
+      if (!buildCombinationalAssignBits(design, action, selected.size(), replacement,
+            assignmentActionRequiresCurrentBits(action) ? &selected : nullptr, failureReason)) return false;
+      // Rebuild each selected parent from the inside out. Each update clips to
+      // that dimension alone; flattening the indices would alias invalid inner
+      // indices into adjacent outer elements. Use the replayed next-state base
+      // here, while index/RHS expressions still read the pre-NBA storage nets.
+      for (auto it = frames.rbegin(); it != frames.rend(); ++it) {
+        if (it->offset.empty()) {
+          for (size_t bit = 0; bit < it->positions.size(); ++bit)
+            it->base[it->positions[bit]] = replacement[bit];
+          replacement = std::move(it->base);
+        } else {
+          auto* output = SNLBusNet::create(design, it->base.size() - 1, 0);
+          annotateSourceInfo(output, source);
+          auto* instance = SNLRTLPrimitives::createVectorUpdate(design, it->base, replacement,
+            it->offset, it->isSigned, getConstNet(design, true), output);
+          annotateSourceInfo(instance, source);
+          replacement = collectBits(output);
+        }
+      }
+      dataBits = std::move(replacement);
+      return true;
+    }
+
+    bool tryApplyPackedVectorUpdate(
+      SNLDesign* design, const Expression& assignedLHS, const Expression& trackedLhs,
+      const AssignAction& action, std::vector<SNLBitNet*>& dataBits,
+      std::string& failureReason, bool& handled) {
+      handled = false;
+      if (assignmentActionRequiresCurrentBits(action) || dataBits.empty() ||
+          std::any_of(dataBits.begin(), dataBits.end(), [](auto* bit) { return !bit; })) return true;
+      const auto* lhs = stripConversions(assignedLHS);
+      const Expression* base = nullptr;
+      const Expression* index = nullptr;
+      bool indexedDown = false;
+      size_t sliceElements = 1;
+      if (lhs->kind == slang::ast::ExpressionKind::ElementSelect) {
+        const auto& select = lhs->as<slang::ast::ElementSelectExpression>();
+        base = stripConversions(select.value());
+        index = &select.selector();
+      } else if (lhs->kind == slang::ast::ExpressionKind::RangeSelect) {
+        const auto& select = lhs->as<slang::ast::RangeSelectExpression>();
+        if (select.getSelectionKind() == slang::ast::RangeSelectionKind::Simple) return true;
+        int32_t width = 0;
+        if (!getConstantInt32(select.right(), width) || width <= 0) return true;
+        base = stripConversions(select.value());
+        index = &select.left();
+        indexedDown = select.getSelectionKind() == slang::ast::RangeSelectionKind::IndexedDown;
+        sliceElements = size_t(width);
+      } else return true;
+      if (!base || !sameLhs(base, &trackedLhs)) return true;
+      const auto& type = base->type->getCanonicalType();
+      if (type.isUnpackedArray() || !type.hasFixedRange()) return true;
+      const auto range = type.getFixedRange();
+      const size_t count = range.width();
+      if (!count || dataBits.size() % count) return true;
+      const size_t elementWidth = dataBits.size() / count;
+      const size_t updateWidth = sliceElements * elementWidth;
+      int32_t constantIndex = 0;
+      if (getConstantInt32(*index, constantIndex)) return true;
+      const auto width = getIntegralExpressionBitWidth(*index);
+      if (!width || !*width) return true;
+      std::vector<SNLBitNet*> offset;
+      if (!resolveExpressionBits(design, *index, *width, offset)) return true;
+      std::vector<SNLBitNet*> replacement;
+      if (!buildCombinationalAssignBits(design, action, updateWidth, replacement, nullptr, failureReason))
+        return false;
+      handled = true;
+      const auto source = getSourceRange(assignedLHS);
+      bool isSigned = false;
+      if (!buildPackedSelectionOffset(design, *index, range, elementWidth,
+            sliceElements, indexedDown, offset, isSigned, source)) return false;
       auto* output = SNLBusNet::create(design, dataBits.size() - 1, 0);
       annotateSourceInfo(output, source);
       auto* instance = SNLRTLPrimitives::createVectorUpdate(design, dataBits, replacement,
@@ -27097,6 +27197,10 @@ endmodule
         activeForLoopConstants_.resize(activeLoopConstantsSize);
         activeForLoopNameConstants_.resize(activeLoopNameConstantsSize);
       });
+
+      if (!tryApplyNestedPackedVectorUpdate(design, assignedLHS, trackedLhs, action,
+            dataBits, failureReason, handled)) return false;
+      if (handled) return true;
 
       if (!tryApplyPackedVectorUpdate(design, assignedLHS, trackedLhs, action,
             dataBits, failureReason, handled)) return false;

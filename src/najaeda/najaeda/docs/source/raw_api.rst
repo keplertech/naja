@@ -1,6 +1,11 @@
 Expert Raw API
 ==============
 
+Design parameters returned by ``SNLDesign.getParameters()`` and overrides returned
+by ``SNLInstance.getInstParameters()`` iterate in lexical parameter-name order.
+This order is independent of name interning and is preserved across fresh-process
+NajaIF reloads.
+
 ``najaeda`` ships two Python API levels:
 
 * :mod:`najaeda.netlist` is the supported high-level API for most tools.

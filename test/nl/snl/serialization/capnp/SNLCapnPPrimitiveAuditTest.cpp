@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <filesystem>
 #include <cstdlib>
 #include "SNLVRLDumper.h"
@@ -363,6 +364,13 @@ TEST_F(SNLCapnPPrimitiveIdentityTest, AllFamiliesArtifacts) {
   for (int i = 0; i < 128 + (run ? std::atoi(run) * 17 : 0); ++i)
     allocations.emplace_back(512 + (i * 137) % 8192);
   auto* top = createTop();
+  // Parameter order must not depend on which frontend interned names first.
+  // Alternate opposite interning orders across writers; fresh readers intern
+  // neither sequence before reconstructing the canonical models.
+  std::vector<std::string> names{"SIGNED", "WIDTH", "ABITS", "UPDATE_WIDTH",
+      "COUNT_WIDTH", "RIGHT", "ARITHMETIC", "DEPTH", "RD_PORTS", "WR_PORTS"};
+  if (run && std::atoi(run) % 2) std::reverse(names.begin(), names.end());
+  for (const auto& name : names) (void)NLName(name);
   NLDB0::getOrCreateTableSelect({2, 7, 3}); // An unused model must retain its ID.
   std::vector<std::pair<std::string, SNLDesign*>> models;
   for (const auto& item : primitiveCases(false)) models.emplace_back(item.name, item.create());

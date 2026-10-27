@@ -138,7 +138,7 @@ end;
 
 
 def dump_state(output):
-    from najaeda import netlist, naja
+    from najaeda import naja
 
     # Capture the live database before invoking any dumper. A dumper-only sort
     # cannot repair unstable creation order, IDs, names or connectivity.
@@ -156,7 +156,10 @@ def dump_state(output):
         for design in library.getSNLDesigns():
             state.append([
                 design.getNLID().toTuple(), design.getName(), attributes(design),
+                [[p.getName(), p.getValue()] for p in design.getParameters()],
                 [[i.getNLID().toTuple(), i.getName(), attributes(i),
+                  i.getModel().getNLID().toTuple(),
+                  [[p.getName(), p.getValue()] for p in i.getInstParameters()],
                   [[t.getNLID().toTuple(), attributes(t),
                     t.getNet().getNLID().toTuple() if t.getNet() else None]
                    for t in i.getInstTerms()]] for i in design.getInstances()],
@@ -173,23 +176,25 @@ def dump_state(output):
             visit(library)
     output.mkdir()
     (output / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
-    top = netlist.get_top()
-    top.dump_gate_level_verilog(str(output / "design.v"))
-    top.dump_full_dot(str(output / "design.dot"))
-    netlist.dump_naja_if(str(output / "snapshot"))
+    top = naja.NLUniverse.get().getTopDesign()
+    top.dumpGateLevelVerilog(str(output), "design.v")
+    top.dumpFullDotFile(str(output / "design.dot"))
+    top.getDB().dumpNajaIF(str(output / "snapshot"))
 
 
 def worker(kind, source, output, run):
     # Keep differently sized allocations alive across native elaboration, in
     # addition to fresh-process ASLR and different Python hash seeds.
     allocations = [bytearray(512 + (i * 137) % 8192) for i in range(256 + int(run) * 17)]
-    from najaeda import netlist
+    from najaeda import naja
 
+    universe = naja.NLUniverse.create()
+    db = naja.NLDB.create(universe)
+    universe.setTopDB(db)
     if kind == "sv":
-        netlist.load_system_verilog(source, netlist.SystemVerilogConfig(
-            top="top", diagnostics_report_path=None))
+        db.loadSystemVerilog([source], diagnostics_report_path=None)
     elif kind == "v":
-        netlist.load_gate_level_verilog(source)
+        db.loadGateLevelVerilog([source])
         from najaeda import naja
         top = naja.NLUniverse.get().getTopDesign()
         instance = top.getInstance("u0")
@@ -201,13 +206,13 @@ def worker(kind, source, output, run):
             obj.addAttribute(naja.SNLAttribute("tag", 23))
             obj.addAttribute(naja.SNLAttribute("marker"))
     elif kind == "vhd":
-        netlist.load_vhdl(source, top="top", diagnostics_report_path=None)
+        db.loadVHDL(source, top="top", diagnostics_report_path=None)
     else:
         raise ValueError(kind)
     output = Path(output)
     dump_state(output / "original")
-    netlist.reset()
-    netlist.load_naja_if(str(output / "original" / "snapshot"))
+    universe.destroy()
+    naja.NLDB.loadNajaIF(str(output / "original" / "snapshot"))
     dump_state(output / "reloaded")
     assert allocations  # Retain heap perturbation until both dumps are complete.
 
@@ -331,6 +336,25 @@ module top(input logic [3:0] index, input logic [3:0] data,
     y[index] = data[0];
     y[index +: 4] = data;
     y[index +: 2] = y[index +: 2] ^ data[1:0];
+  end
+endmodule
+""")
+
+    def test_systemverilog_nested_packed_writes(self):
+        self.check_determinism("sv", """
+module top(input logic clk, rst_n, enable,
+           input logic signed [5:0] row, col, lane,
+           input logic [1:0][2:0] indices,
+           input logic [3:0] data,
+           output logic [1:0][7:0][3:0] q,
+           output logic [2:3][-2:0][4:3][3:0] r);
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin q <= '0; r <= '0; end
+    else if (enable) begin
+      q[row][indices[row]] <= data;
+      q[row][col] <= ~data;
+      r[row][col][lane] <= data;
+    end
   end
 endmodule
 """)
@@ -491,8 +515,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--worker":
         worker(*sys.argv[2:])
     elif len(sys.argv) > 1 and sys.argv[1] == "--load-worker":
-        from najaeda import netlist
-        netlist.load_naja_if(sys.argv[2])
+        from najaeda import naja
+        naja.NLDB.loadNajaIF(sys.argv[2])
         dump_state(Path(sys.argv[3]))
     else:
         unittest.main()
