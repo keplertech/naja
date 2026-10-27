@@ -266,3 +266,12 @@ Procedural assignment-offset requests (source line numbers before this change):
 | 29632 | Excluded: accepted fixed-range integral arrays have positive element widths dividing the parent storage width; preceding static selections retain whole typed elements or fail before reaching this check. |
 | 29642 | Excluded: Slang rejects nonconstant simple-range bounds and indexed ranges with nonconstant or nonpositive widths before constructor lowering. |
 | 29647 | Excluded: Slang rejects any chained selection after a range select, so a range selection is necessarily the final step. Parser-backed probes checked dynamic element, constant element, and range suffixes. |
+
+Nested packed assignment requests (source line numbers before this change):
+
+| Original lines | Coverage or exclusion |
+| --- | --- |
+| 27051 | `nestedPackedWriteFailuresCoverage`, `range` variant: a range following two packed element selections retains the unsupported dynamic sequential assignment diagnostic. |
+| 27073–27074 | `nestedPackedWriteFailuresCoverage`, outer and inner index variants: unsupported runtime system calls must report the nested packed index resolution failure and throw. |
+| 27083–27085, 27089–27090, 27103–27106 | `nestedPackedMemberWritesPreserveOtherFields`: packed struct fields before, between, and after dynamic element selections. Four-state simulation checks untouched fields, invalid and unknown indices, reset, enable, and NBA write priority against an independent flat reference. |
+| 27086–27087 | Excluded: range steps have already returned; the remaining static steps are packed struct fields whose positive widths and in-bounds offsets Slang validates against their containing packed type. |

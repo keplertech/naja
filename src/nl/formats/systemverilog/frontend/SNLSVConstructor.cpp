@@ -27083,8 +27083,12 @@ endmodule
           std::vector<size_t> positions;
           for (size_t bit = 0; bit < selected.size(); ++bit) positions.push_back(bit);
           if (!applyStaticCombinationalSelectionStepOffsets(step, positions, frame.positions)) {
+            // Only members remain after the range guard above. Slang validates
+            // their fixed widths and offsets within the selected packed base.
+            // LCOV_EXCL_START
             failureReason = "unsupported static selection in nested packed assignment";
             return false;
+            // LCOV_EXCL_STOP
           }
           selected.clear();
           for (auto bit : frame.positions) selected.push_back(frame.base[bit]);
