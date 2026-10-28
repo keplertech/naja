@@ -1330,6 +1330,46 @@ class Instance:
         """
         return self.__get_snl_model().isAssign()
 
+    def is_add(self) -> bool:
+        """
+        :return: True if this model is an NLDB0 addition primitive.
+        :rtype: bool
+        """
+        model = self.__get_snl_model()
+        return model.isAddSub() and not model.isSubtract()
+
+    def is_sub(self) -> bool:
+        """
+        :return: True if this model is an NLDB0 subtraction primitive.
+        :rtype: bool
+        """
+        model = self.__get_snl_model()
+        return model.isSubtract()
+
+    def is_mul(self) -> bool:
+        """
+        :return: True if this model is an NLDB0 multiplication primitive.
+        :rtype: bool
+        """
+        model = self.__get_snl_model()
+        return model.isMultiply()
+
+    def is_shift(self) -> bool:
+        """
+        :return: True if this model is an NLDB0 shift primitive.
+        :rtype: bool
+        """
+        model = self.__get_snl_model()
+        return model.isShift()
+
+    def is_divmod(self) -> bool:
+        """
+        :return: True if this model is an NLDB0 division/modulo primitive.
+        :rtype: bool
+        """
+        model = self.__get_snl_model()
+        return model.isDivMod()
+
     def is_blackbox(self) -> bool:
         """
         :return: True if this is a blackbox.

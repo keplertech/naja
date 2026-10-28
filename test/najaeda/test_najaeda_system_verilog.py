@@ -25,6 +25,85 @@ class NajaEDASystemVerilogTest(unittest.TestCase):
     def tearDown(self):
         netlist.reset()
 
+    def test_word_level_operator_predicates(self):
+        source = """module ops(
+            input logic [3:0] a, b, input logic [1:0] n, input logic s,
+            output logic [3:0] sum, diff, prod, shl, shr, sra, m, q, r);
+          assign sum = a + b; assign diff = a - b; assign prod = a * b;
+          assign shl = a << n; assign shr = a >> n;
+          assign sra = $signed(a) >>> n;
+          assign m = s ? a : b; assign q = a / b; assign r = a % b;
+        endmodule
+        """
+        raw_methods = ("isAddSub", "isSubtract", "isMultiply", "isShift",
+                       "isDivMod", "isShiftRight", "isShiftArithmetic")
+        high_methods = ("is_add", "is_sub", "is_mul", "is_shift", "is_divmod")
+        expected = {
+            "sum": {"isAddSub"}, "diff": {"isAddSub", "isSubtract"},
+            "prod": {"isMultiply"}, "shl": {"isShift"},
+            "shr": {"isShift", "isShiftRight"},
+            "sra": {"isShift", "isShiftRight", "isShiftArithmetic"},
+            "q": {"isDivMod"}, "r": {"isDivMod"}, "m": set(),
+        }
+
+        def check(model, positives=()):
+            for method in raw_methods:
+                with self.subTest(model=model.getName(), method=method):
+                    self.assertIs(getattr(model, method)(), method in positives)
+
+        with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
+            path = Path(directory) / "operators.sv"
+            path.write_text(source, encoding="utf-8")
+            top = netlist.load_system_verilog(str(path))
+            raw_top = naja.NLUniverse.get().getTopDesign()
+            check(raw_top)
+            for method in high_methods:
+                self.assertIs(getattr(top, method)(), False)
+
+            instances = list(raw_top.getInstances())
+            checked = set()
+            for output, positives in expected.items():
+                output_net = raw_top.getTerm(output).getBusTermBit(0).getNet()
+                drivers = [instance for instance in instances
+                           if any(term.getDirection() == naja.SNLTerm.Direction.Output
+                                  and term.getNet() == output_net
+                                  for term in instance.getInstTerms())]
+                self.assertEqual(1, len(drivers), output)
+                instance = drivers[0]
+                model = instance.getModel()
+                check(model, positives)
+                checked.add(instance.getID())
+                child = next(child for child in top.get_child_instances()
+                             if child.pathIDs[-1] == instance.getID())
+                high_positive = {
+                    "sum": "is_add", "diff": "is_sub", "prod": "is_mul",
+                    "shl": "is_shift", "shr": "is_shift", "sra": "is_shift",
+                    "q": "is_divmod", "r": "is_divmod",
+                }.get(output)
+                for method in high_methods:
+                    self.assertIs(getattr(child, method)(), method == high_positive)
+            for instance in instances:
+                if instance.getID() not in checked:
+                    check(instance.getModel())
+
+        # Exercise unrelated DB0 models and a blackbox loaded through the frontend.
+        with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
+            path = Path(directory) / "unrelated.sv"
+            path.write_text(
+                "module other(input a, b, output y, z);"
+                "assign y = a; assign z = a & b;"
+                "missing u(.a(a)); endmodule", encoding="utf-8")
+            netlist.reset()
+            netlist.load_system_verilog(str(path),
+                config=netlist.SystemVerilogConfig(blackbox_unknown_modules=True))
+            models = [instance.getModel() for instance in
+                      naja.NLUniverse.get().getTopDesign().getInstances()]
+            self.assertTrue(any(model.isAssign() for model in models))
+            self.assertTrue(any(model.isAnd() for model in models))
+            self.assertTrue(any(model.isBlackBox() for model in models))
+            for model in models:
+                check(model)
+
     def test_source_roles_and_model_definitions(self):
         with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
             path = os.path.join(directory, "source.sv")

@@ -37,6 +37,7 @@
 #include "PySNLAttribute.h"
 
 #include "SNLDesign.h"
+#include "NLDB0.h"
 #include "SNLDesignModeling.h"
 #include "SNLRTLInfos.h"
 #include "PySNLSourceReference.h"
@@ -747,6 +748,35 @@ GetBoolAttributeWithFunction(SNLDesign, isNor, SNLDesignModeling::isNor)
 GetBoolAttributeWithFunction(SNLDesign, isXor, SNLDesignModeling::isXor)
 GetBoolAttributeWithFunction(SNLDesign, isXnor, SNLDesignModeling::isXnor)
 GetBoolAttribute(SNLDesign, isMux)
+GetBoolAttributeWithFunction(SNLDesign, isAddSub, NLDB0::isAddSub)
+GetBoolAttributeWithFunction(SNLDesign, isSubtract, NLDB0::isSubtract)
+GetBoolAttributeWithFunction(SNLDesign, isMultiply, NLDB0::isMultiply)
+GetBoolAttributeWithFunction(SNLDesign, isShift, NLDB0::isShift)
+GetBoolAttributeWithFunction(SNLDesign, isDivMod, NLDB0::isDivMod)
+
+static PyObject* PySNLDesign_isShiftRight(PySNLDesign* self) {
+  METHOD_HEAD("SNLDesign.isShiftRight()")
+  try {
+    if (NLDB0::isShift(selfObject) && NLDB0::getShiftSignature(selfObject).right) {
+      Py_RETURN_TRUE;
+    }
+  } catch (...) {
+    // Invalid shift metadata must not escape the predicate into Python.
+  }
+  Py_RETURN_FALSE;
+}
+
+static PyObject* PySNLDesign_isShiftArithmetic(PySNLDesign* self) {
+  METHOD_HEAD("SNLDesign.isShiftArithmetic()")
+  try {
+    if (NLDB0::isShift(selfObject) && NLDB0::getShiftSignature(selfObject).arithmetic) {
+      Py_RETURN_TRUE;
+    }
+  } catch (...) {
+    // Invalid shift metadata must not escape the predicate into Python.
+  }
+  Py_RETURN_FALSE;
+}
 GetBoolAttributeWithFunction(SNLDesign, isSequential, SNLDesignModeling::isSequential)
 HasElementsMethod(SNLDesign, hasTerms, getTerms)
 GetContainerMethod(SNLDesign, SNLTerm*, SNLTerms, Terms)
@@ -960,6 +990,20 @@ PyMethodDef PySNLDesign_Methods[] = {
     "Returns True if this design is an XNOR primitive"},
   { "isMux", (PyCFunction)PySNLDesign_isMux, METH_NOARGS,
     "Returns True if this design is a mux primitive"},
+  { "isAddSub", (PyCFunction)PySNLDesign_isAddSub, METH_NOARGS,
+    "Returns True if this design is an NLDB0 add or subtract primitive"},
+  { "isSubtract", (PyCFunction)PySNLDesign_isSubtract, METH_NOARGS,
+    "Returns True if this design is an NLDB0 subtract primitive"},
+  { "isMultiply", (PyCFunction)PySNLDesign_isMultiply, METH_NOARGS,
+    "Returns True if this design is an NLDB0 multiply primitive"},
+  { "isShift", (PyCFunction)PySNLDesign_isShift, METH_NOARGS,
+    "Returns True if this design is an NLDB0 shift primitive"},
+  { "isDivMod", (PyCFunction)PySNLDesign_isDivMod, METH_NOARGS,
+    "Returns True if this design is an NLDB0 divide/modulo primitive"},
+  { "isShiftRight", (PyCFunction)PySNLDesign_isShiftRight, METH_NOARGS,
+    "Returns True if this design is an NLDB0 right shift primitive"},
+  { "isShiftArithmetic", (PyCFunction)PySNLDesign_isShiftArithmetic, METH_NOARGS,
+    "Returns True if this design is an NLDB0 arithmetic shift primitive"},
   { "isTopDesign", (PyCFunction)PySNLDesign_isTopDesign, METH_NOARGS,
     "Returns True if this design is an inverter primitive"},  
   { "getName", (PyCFunction)PySNLDesign_getName, METH_NOARGS,
