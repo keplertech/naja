@@ -188,7 +188,7 @@ jobs:
             eval "$(brew shellenv)"
             brew install -q boost
       - name: Install cibuildwheel (and delvewheel for Windows)
-        run: python -m pip install cibuildwheel==4.2.1 delvewheel
+        run: python -m pip install cibuildwheel==4.3.5 delvewheel
       - name: Configure Windows dependency cache
         if: runner.os == 'Windows'
         shell: pwsh
@@ -366,7 +366,6 @@ jobs:
     if: github.repository == 'keplertech/naja' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
-    #environment: pypi
     permissions:
       id-token: write
     steps:
@@ -383,7 +382,6 @@ jobs:
 
       - uses: pypa/gh-action-pypi-publish@v1.14.2
         with:
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
 
@@ -406,5 +404,4 @@ jobs:
           path: dist
       - uses: pypa/gh-action-pypi-publish@v1.14.2
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
