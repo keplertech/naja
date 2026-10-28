@@ -382,6 +382,14 @@ packed vectors and structs, and declarations in named blocks. Later assignments
 see and can overwrite the initialized value. Combinational automatic tasks with
 output arguments use the same local replay behavior.
 
+Functions ending in an explicit ``return`` can return from earlier ``if`` or
+``case`` branches after blocking assignments. Each path returns its current
+local values; statements after an early return execute only on paths that fall
+through. Writes to packed-struct input members, including nested members,
+update the function's local copy without changing the caller. Nested calls,
+packed return layouts, and argument and return conversions retain their normal
+SystemVerilog widths and signedness.
+
 Connected bits of inlined locals and formal arguments which have no driver emit
 an ``undriven_inlined_local`` elaboration warning with the declaration location.
 Unused replay storage does not trigger this warning. The normal warning

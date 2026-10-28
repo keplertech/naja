@@ -13066,6 +13066,145 @@ endmodule
              bits.size() == targetWidth;
     }
 
+    void collectFunctionReturnExpressions(
+      const Statement& stmt, std::vector<const Expression*>& expressions) const {
+      const auto* current = unwrapStatement(stmt);
+      if (!current) return;
+      switch (current->kind) {
+        case slang::ast::StatementKind::Return:
+          expressions.push_back(current->as<slang::ast::ReturnStatement>().expr);
+          break;
+        case slang::ast::StatementKind::List:
+          for (const auto* item : current->as<slang::ast::StatementList>().list) {
+            if (item) collectFunctionReturnExpressions(*item, expressions);
+          }
+          break;
+        case slang::ast::StatementKind::Conditional: {
+          const auto& conditional = current->as<slang::ast::ConditionalStatement>();
+          collectFunctionReturnExpressions(conditional.ifTrue, expressions);
+          if (conditional.ifFalse) collectFunctionReturnExpressions(*conditional.ifFalse, expressions);
+          break;
+        }
+        case slang::ast::StatementKind::Case: {
+          const auto& caseStmt = current->as<slang::ast::CaseStatement>();
+          for (const auto& item : caseStmt.items) {
+            collectFunctionReturnExpressions(*item.stmt, expressions);
+          }
+          if (caseStmt.defaultCase) collectFunctionReturnExpressions(*caseStmt.defaultCase, expressions);
+          break;
+        }
+        case slang::ast::StatementKind::ForLoop:
+        case slang::ast::StatementKind::ForeachLoop:
+          collectFunctionReturnExpressions(getStaticLoopBody(*current), expressions);
+          break;
+        default:
+          break;
+      }
+    }
+
+    bool replayFunctionUntilReturn(
+      SNLDesign* design,
+      std::vector<const Statement*> pending,
+      const Expression& trackedLhs,
+      const std::vector<SNLBitNet*>& lhsBits,
+      std::vector<SNLBitNet*> dataBits,
+      std::unordered_map<const slang::ast::ValueSymbol*, std::vector<SNLBitNet*>> environment,
+      const std::unordered_set<const slang::ast::ValueSymbol*>& replaySymbols,
+      size_t& tempIndex,
+      size_t targetWidth,
+      std::vector<SNLBitNet*>& bits,
+      std::string& failureReason) {
+      const auto* savedLhs = activeProceduralReplayLHS_;
+      const auto* savedBits = activeProceduralReplayBits_;
+      auto* savedEnv = activeProceduralReplayEnv_;
+      activeProceduralReplayLHS_ = &trackedLhs;
+      activeProceduralReplayBits_ = &dataBits;
+      activeProceduralReplayEnv_ = &environment;
+      const auto guard = slang::ScopeGuard([&]() {
+        activeProceduralReplayLHS_ = savedLhs;
+        activeProceduralReplayBits_ = savedBits;
+        activeProceduralReplayEnv_ = savedEnv;
+      });
+      // Fork the continuation as well as the branch. A return freezes that
+      // path's value; later writes execute only on paths which fall through.
+      const auto replayBranch = [&](const Statement* branch, std::vector<SNLBitNet*>& result) {
+        auto continuation = pending;
+        if (branch) continuation.insert(continuation.begin(), branch);
+        return replayFunctionUntilReturn(design, std::move(continuation), trackedLhs,
+          lhsBits, dataBits, environment, replaySymbols, tempIndex, targetWidth, result, failureReason);
+      };
+      while (!pending.empty()) {
+        const auto* statement = pending.front();
+        pending.erase(pending.begin());
+        const auto* current = statement ? unwrapStatement(*statement) : nullptr;
+        if (!current) continue;
+        if (current->kind == slang::ast::StatementKind::List) {
+          const auto& list = current->as<slang::ast::StatementList>().list;
+          pending.insert(pending.begin(), list.begin(), list.end());
+          continue;
+        }
+        if (current->kind == slang::ast::StatementKind::Return) {
+          const auto* expr = current->as<slang::ast::ReturnStatement>().expr;
+          return expr && resolveExpressionBits(design, *expr, targetWidth, bits) &&
+            bits.size() == targetWidth;
+        }
+        std::vector<const Expression*> returns;
+        collectFunctionReturnExpressions(*current, returns);
+        if (!returns.empty()) {
+          auto* const0 = static_cast<SNLBitNet*>(getConstNet(design, false));
+          auto* const1 = static_cast<SNLBitNet*>(getConstNet(design, true));
+          if (current->kind == slang::ast::StatementKind::Conditional) {
+            const auto& conditional = current->as<slang::ast::ConditionalStatement>();
+            if (conditional.conditions.size() != 1 || !conditional.conditions[0].expr ||
+                conditional.conditions[0].pattern) return false;
+            auto* condition = resolveCombinationalConditionNet(
+              design, *conditional.conditions[0].expr, &failureReason);
+            if (!condition) return false;
+            if (condition == const0 || condition == const1) {
+              return replayBranch(condition == const1 ? &conditional.ifTrue : conditional.ifFalse, bits);
+            }
+            std::vector<SNLBitNet*> trueBits, falseBits;
+            if (!replayBranch(&conditional.ifTrue, trueBits) ||
+                !replayBranch(conditional.ifFalse, falseBits)) return false;
+            return createMux2Instance(design, condition, falseBits, trueBits, bits,
+              getSourceRange(*current), nullptr, true);
+          }
+          if (current->kind == slang::ast::StatementKind::Case) {
+            const auto& caseStmt = current->as<slang::ast::CaseStatement>();
+            std::vector<std::pair<SNLBitNet*, const Statement*>> branches;
+            const Statement* fallback = caseStmt.defaultCase;
+            for (const auto& item : caseStmt.items) {
+              auto* match = buildCaseItemMatchBit(design, caseStmt.expr, caseStmt, item, failureReason);
+              if (!match) return false;
+              if (match == const0) continue;
+              if (match == const1) {
+                fallback = item.stmt;
+                break;
+              }
+              branches.emplace_back(match, item.stmt);
+            }
+            if (!replayBranch(fallback, bits)) return false;
+            for (auto it = branches.rbegin(); it != branches.rend(); ++it) {
+              std::vector<SNLBitNet*> candidate, merged;
+              if (!replayBranch(it->second, candidate) ||
+                  !createMux2Instance(design, it->first, bits, candidate, merged,
+                    getSourceRange(*it->second), nullptr, true)) return false;
+              bits = std::move(merged);
+            }
+            return true;
+          }
+          // Loop returns retain the dedicated priority-loop lowering path.
+          return false;
+        }
+        if (!applyCombinationalStatementForLhs(design, *current, trackedLhs,
+              lhsBits, dataBits, tempIndex, failureReason, nullptr, nullptr, &replaySymbols)) {
+          return false;
+        }
+      }
+      // Every live path needs an explicit result on this lowering path.
+      return false;
+    }
+
     bool resolveSimpleProceduralReturnFunctionCallBits(
       SNLDesign* design,
       const slang::ast::CallExpression& callExpr,
@@ -13153,6 +13292,12 @@ endmodule
       } else if (!subroutine->returnValVar) {
         return false; // LCOV_EXCL_LINE: non-void Slang functions always have an implicit return variable.
       }
+
+      std::vector<const Expression*> earlyReturnExpressions;
+      for (size_t i = 0; i + 1 < terminalStmtIndex; ++i) {
+        if (stmts[i]) collectFunctionReturnExpressions(*stmts[i], earlyReturnExpressions);
+      }
+      const bool hasEarlyReturns = !earlyReturnExpressions.empty();
 
       auto formalArgs = subroutine->getArguments();
       auto callArgs = callExpr.arguments();
@@ -13278,7 +13423,7 @@ endmodule
             *current, assignedLhsExpressions, &failureReason, true);
         };
         for (size_t i = 0; i + 1 < terminalStmtIndex; ++i) {
-          if (stmts[i] && !validateStatement(*stmts[i])) return false;
+          if (!hasEarlyReturns && stmts[i] && !validateStatement(*stmts[i])) return false;
         }
         resultLhs.emplace(*subroutine->returnValVar, callExpr.sourceRange);
         trackedLhsExpr = &*resultLhs;
@@ -13306,6 +13451,17 @@ endmodule
         collectExpressionRootValueSymbols(*finalValueExpr, dependencies[resultSymbol]);
       }
       auto replaySymbols = getProceduralReplayRelevantSymbols(*resultSymbol, dependencies);
+      if (hasEarlyReturns) {
+        // Earlier returns can depend on different locals than the terminal
+        // expression. Retain their dependencies and writes in every branch.
+        for (const auto& [symbol, inputs] : dependencies) {
+          replaySymbols.insert(symbol);
+          replaySymbols.insert(inputs.begin(), inputs.end());
+        }
+        for (const auto* expr : earlyReturnExpressions) {
+          if (expr) collectExpressionRootValueSymbols(*expr, replaySymbols);
+        }
+      }
       ProceduralReplayEnv replayEnv;
       for (const auto* symbol : symbolsInDeclarationOrder(replaySymbols)) {
         if (!isSymbolInSubroutineScope(*symbol, *subroutine)) continue;
@@ -13335,6 +13491,10 @@ endmodule
       size_t tempIndex = 0;
       CombinationalSubtreeSummaryCache subtreeSummaryCache;
       std::string lowerFailureReason;
+      if (hasEarlyReturns && !terminalIsImplicitReturn) {
+        return replayFunctionUntilReturn(design, stmts, *trackedLhsExpr, lhsBits,
+          dataBits, replayEnv, replaySymbols, tempIndex, targetWidth, bits, lowerFailureReason);
+      }
       const size_t statementsToApply =
         terminalIsImplicitReturn ? terminalStmtIndex : terminalStmtIndex - 1;
       for (size_t i = 0; i < statementsToApply; ++i) {
@@ -28048,60 +28208,70 @@ endmodule
       }
       handled = true;
 
-      std::vector<SNLBitNet*> selectedLhsBits;
-      {
-        const auto* savedActiveProceduralReplayLHS = activeProceduralReplayLHS_;
-        const auto* savedActiveProceduralReplayBits = activeProceduralReplayBits_;
-        auto* savedActiveProceduralReplayEnv = activeProceduralReplayEnv_;
-        activeProceduralReplayLHS_ = nullptr;
-        activeProceduralReplayBits_ = nullptr;
-        activeProceduralReplayEnv_ = nullptr;
-        const auto physicalLhsResolutionGuard = slang::ScopeGuard([&]() {
-          activeProceduralReplayLHS_ = savedActiveProceduralReplayLHS;
-          activeProceduralReplayBits_ = savedActiveProceduralReplayBits;
-          activeProceduralReplayEnv_ = savedActiveProceduralReplayEnv;
-        });
-        if (!resolveAssignmentLHSBits(
-              design,
-              assignedLHS,
-              selectedLhsBits,
-              &failureReason)) {
+      // Selection positions describe storage, independently of its current
+      // value. Resolving LHS bits as an expression can substitute input-formal
+      // copies or replay values, losing their correspondence with lhsBits.
+      std::vector<size_t> selectedOffsets;
+      if (hasDynamicSelectionInLHS(assignedLHS) ||
+          !collectProceduralAssignmentOffsets(
+            assignedLHS, trackedLhs, lhsBits.size(), selectedOffsets) ||
+          selectedOffsets.empty()) {
+        // Non-integral unpacked members retain their storage-net mapping.
+        selectedOffsets.clear();
+        std::vector<SNLBitNet*> selectedLhsBits;
+        {
+          const auto* savedActiveProceduralReplayLHS = activeProceduralReplayLHS_;
+          const auto* savedActiveProceduralReplayBits = activeProceduralReplayBits_;
+          auto* savedActiveProceduralReplayEnv = activeProceduralReplayEnv_;
+          activeProceduralReplayLHS_ = nullptr;
+          activeProceduralReplayBits_ = nullptr;
+          activeProceduralReplayEnv_ = nullptr;
+          const auto physicalLhsResolutionGuard = slang::ScopeGuard([&]() {
+            activeProceduralReplayLHS_ = savedActiveProceduralReplayLHS;
+            activeProceduralReplayBits_ = savedActiveProceduralReplayBits;
+            activeProceduralReplayEnv_ = savedActiveProceduralReplayEnv;
+          });
+          if (!resolveAssignmentLHSBits(
+                design,
+                assignedLHS,
+                selectedLhsBits,
+                &failureReason)) {
+            // LCOV_EXCL_START
+            // collectAssignedLHSExpressions tracks selection bases before replay,
+            // so parser-backed fixed sub-assignments resolve here or are rejected
+            // earlier when collecting the tracked LHS.
+            return false;
+            // LCOV_EXCL_STOP
+          }
+        }
+        if (selectedLhsBits.empty()) {
           // LCOV_EXCL_START
-          // collectAssignedLHSExpressions tracks selection bases before replay,
-          // so parser-backed fixed sub-assignments resolve here or are rejected
-          // earlier when collecting the tracked LHS.
+          // resolveAssignmentLHSBits only reports success with a non-empty bit
+          // vector. Keep this guard for API invariants.
+          failureReason = formatDescribedFailure(
+            "empty always_comb sub-assignment LHS: ",
+            describeExpression(assignedLHS));
           return false;
           // LCOV_EXCL_STOP
         }
-      }
-      if (selectedLhsBits.empty()) {
-        // LCOV_EXCL_START
-        // resolveAssignmentLHSBits only reports success with a non-empty bit
-        // vector. Keep this guard for API invariants.
-        failureReason = formatDescribedFailure(
-          "empty always_comb sub-assignment LHS: ",
-          describeExpression(assignedLHS));
-        return false;
-        // LCOV_EXCL_STOP
-      }
 
-      std::unordered_map<SNLBitNet*, size_t> lhsBitOffsets;
-      lhsBitOffsets.reserve(lhsBits.size());
-      for (size_t bit = 0; bit < lhsBits.size(); ++bit) {
-        if (lhsBits[bit]) {
-          lhsBitOffsets.emplace(lhsBits[bit], bit);
+        std::unordered_map<SNLBitNet*, size_t> lhsBitOffsets;
+        lhsBitOffsets.reserve(lhsBits.size());
+        for (size_t bit = 0; bit < lhsBits.size(); ++bit) {
+          if (lhsBits[bit]) {
+            lhsBitOffsets.emplace(lhsBits[bit], bit);
+          }
         }
-      }
 
-      std::vector<size_t> selectedOffsets;
-      selectedOffsets.reserve(selectedLhsBits.size());
-      for (auto* selectedBit : selectedLhsBits) {
-        const auto found = lhsBitOffsets.find(selectedBit);
-        if (found == lhsBitOffsets.end()) {
-          handled = false;
-          return true;
+        selectedOffsets.reserve(selectedLhsBits.size());
+        for (auto* selectedBit : selectedLhsBits) {
+          const auto found = lhsBitOffsets.find(selectedBit);
+          if (found == lhsBitOffsets.end()) {
+            handled = false;
+            return true;
+          }
+          selectedOffsets.push_back(found->second);
         }
-        selectedOffsets.push_back(found->second);
       }
 
       std::vector<SNLBitNet*> currentSelectedBits;
@@ -28121,15 +28291,15 @@ endmodule
       if (!buildCombinationalAssignBits(
             design,
             action,
-            selectedLhsBits.size(),
+            selectedOffsets.size(),
             assignedBits,
             assignmentActionRequiresCurrentBits(action) ? &currentSelectedBits : nullptr,
             failureReason)) {
         return false;
       }
-      if (assignedBits.size() != selectedLhsBits.size()) {
+      if (assignedBits.size() != selectedOffsets.size()) {
         // LCOV_EXCL_START
-        // buildCombinationalAssignBits is called with selectedLhsBits.size()
+        // buildCombinationalAssignBits is called with selectedOffsets.size()
         // as the target width, so a successful result has the requested width.
         failureReason = formatDescribedFailure(
           "width mismatch while lowering always_comb sub-assignment for ",

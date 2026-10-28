@@ -327,6 +327,15 @@ class NajaEDADeterminismTest(unittest.TestCase):
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 
+    def test_systemverilog_function_input_copy_returns(self):
+        from test_najaeda_function_replay import SYSTEMVERILOG as function_source
+        self.check_determinism("sv", function_source)
+
+    def test_systemverilog_function_case_returns(self):
+        from test_najaeda_function_replay import wide_case_fixture
+        source, _ = wide_case_fixture()
+        self.check_determinism("sv", source)
+
     def test_systemverilog_indexed_vector_updates(self):
         self.check_determinism("sv", """
 module top(input logic [3:0] index, input logic [3:0] data,
