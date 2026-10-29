@@ -48,6 +48,16 @@ Use :py:meth:`najaeda.netlist.Instance.is_and`, :py:meth:`~najaeda.netlist.Insta
 :py:meth:`~najaeda.netlist.Instance.is_xor`, and :py:meth:`~najaeda.netlist.Instance.is_xnor`
 to identify n-input gate families without decoding raw truth-table masks.
 
+Word-level operators
+--------------------
+
+Use ``is_add()``, ``is_sub()``, ``is_mul()``, ``is_shift()``, and ``is_divmod()``
+to identify NLDB0 word-level operator models without inspecting names.
+``is_add()`` identifies addition only; division and modulo share ``is_divmod()``.
+These checks return ``False`` for unrelated models and for the top design.
+The raw ``naja.SNLDesign`` API additionally exposes shift direction and
+arithmetic mode; see :doc:`raw_api`.
+
 Instance Attributes
 -------------------
 

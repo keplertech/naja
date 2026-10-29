@@ -37,7 +37,21 @@ jobs:
       run: bazel build //... --jobs=auto
 
     - name: Check netlist determinism
-      run: bazel test //test/najaeda:najaeda_determinism_tests --test_output=errors
+      run: >-
+        bazel test //test/najaeda:najaeda_determinism_tests --test_output=errors
+        --experimental_ui_max_stdouterr_bytes=10485760
 
     - name: Test
-      run: bazel test //... --test_output=errors --jobs=auto
+      run: >-
+        bazel test //... --test_output=errors --jobs=auto
+        --experimental_ui_max_stdouterr_bytes=10485760
+
+    - name: Upload Bazel test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: bazel-test-logs-${{ matrix.os }}
+        path: |
+          bazel-testlogs/**/test.log
+          bazel-testlogs/**/test.xml
+        if-no-files-found: warn
