@@ -759,13 +759,14 @@ registers, or affect only registered data/enable paths after combinational
 settling. Register INIT values remain intact. Initializers reaching observable
 outputs or asynchronous controls without such a proof are rejected.
 
-Uninitialized arrays with one dynamically indexed, whole-word clocked write
+Arrays with one dynamically indexed, whole-word clocked write
 site are inferred as canonical RAM primitives. Conditional write enables are
 preserved, and clocked read assignments retain a separate output register,
 including its enable and read-before-write behavior on address collisions.
 Resetting address registers does not reset the RAM contents. Both ascending and
-descending arrays with nonnegative 32-bit bounds are supported. Arrays with
-initializers, multiple syntactic write sites, whole-word writes inside loops,
+descending arrays with nonnegative 32-bit bounds are supported. Static initial
+contents are preserved in the RAM initialization parameters. Arrays with
+multiple syntactic write sites, whole-word writes inside loops,
 writes in asynchronous-reset processes, or direct connections to child-instance
 ports retain the register/mux lowering.
 
@@ -987,3 +988,25 @@ C++ callers using the separate interface/implementation operations must dump
 DB0's interface as well as the user database and load DB0's interface first.
 Canonical primitive terminals, timing arcs, roles and sequential/memory modeling
 are reconstructed by Naja's existing primitive constructors.
+
+
+VHDL RAM initialization from text files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+VHDL signal and constant initializers can call supported impure functions that
+read local text files during elaboration. Supported operations are read-only
+``text`` file declarations inside functions, local ``line`` variables,
+``endfile``, and two-positional-argument ``readline``, ``read`` and ``hread`` calls
+for logic vectors. String arguments, static loops, conditionals and local array
+updates are evaluated before constructing the memory. Runtime file I/O and
+unsupported TextIO overloads remain errors.
+
+Relative filenames resolve against the process working directory. File errors
+and malformed data are diagnosed; initialization is never silently discarded.
+The initializer function controls zero-fill, address order and EOF handling.
+Arrays accepted by memory inference keep their contents in the writable memory's
+initialization parameters instead of becoming register banks. Their data is
+embedded in NajaIF snapshots, so reloading a snapshot does not require the file.
+If an initialization file changes after its design has been cached in a library,
+load into a fresh library rather than reusing the cached design. Existing array
+size and elaboration-step limits continue to apply.

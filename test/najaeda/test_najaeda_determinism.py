@@ -252,13 +252,15 @@ class NajaEDADeterminismTest(unittest.TestCase):
                     fromfile="expected/" + name, tofile="actual/" + name))[:4000]
             self.fail(message)
 
-    def check_determinism(self, kind, source):
+    def check_determinism(self, kind, source, files=None):
         runs = int(os.environ.get("NAJA_DETERMINISM_RUNS", "5"))
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
             source_path = directory / ("source." + kind)
-            source_path.write_text(source, encoding="utf-8")
+            for name, contents in (files or {}).items():
+                (directory / name).write_text(contents, encoding="utf-8")
+            source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
             baseline = None
             for run in range(runs):
                 output = directory / str(run)
@@ -504,6 +506,69 @@ entity top is port(index : in unsigned(2 downto 0); data : in bit;
                    base : in bit_vector(7 downto 0); y : out bit_vector(7 downto 0)); end;
 architecture rtl of top is begin
   process(all) begin y <= base; y(to_integer(index)) <= data; end process;
+end;
+""")
+
+    def test_vhdl_file_initialized_memory(self):
+        self.check_determinism("vhd", """
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use std.textio.all;
+entity top is port(clk, en : in std_logic; address : in natural range 4 to 12;
+  data : in std_logic_vector(4 downto 0); q : out std_logic_vector(4 downto 0)); end;
+architecture rtl of top is
+  type words is array(4 to 12) of std_logic_vector(4 downto 0);
+  impure function initialize return words is
+    file source : text is in "__DATA_DIRECTORY__/words.hex";
+    variable line_buffer : line;
+    variable word : std_logic_vector(4 downto 0);
+    variable result : words := (others => (others => '0'));
+  begin
+    for i in result'range loop
+      exit when endfile(source);
+      readline(source, line_buffer); hread(line_buffer, word);
+      result(i) := word;
+    end loop;
+    return result;
+  end;
+  signal storage : words := initialize;
+begin
+  process(clk) begin if rising_edge(clk) then
+    if en='1' then storage(address) <= data; end if;
+    q <= storage(address);
+  end if; end process;
+end;
+""", files={"words.hex": "0d\n12\n01\n"})
+
+    def test_vhdl_soc_language_features(self):
+        self.check_determinism("vhd", """
+entity leaf is generic(filename : string); port(clk, en : in bit;
+  a : in natural range 0 to 255; y : out bit_vector(7 downto 0)); end;
+architecture rtl of leaf is
+  signal stored : bit_vector(3 downto 0) := "1010";
+  alias low : bit_vector(0 to 3) is stored;
+begin
+  process(clk)
+    type phase_t is (idle, active);
+    subtype flag_t is bit;
+    function invert(v : bit) return bit is begin return not v; end;
+    variable phase : phase_t;
+    variable v : flag_t;
+  begin
+    if falling_edge(clk) then
+      phase := idle; v := invert(en);
+      if a = 255 then phase := active; end if;
+      low(0) <= v when phase = active;
+    end if;
+  end process;
+  y <= (3 downto 0 => stored, others => '0');
+end;
+entity top is port(clk, en : in bit; a : in natural range 0 to 255;
+  y : out bit_vector(15 downto 0); flag : out bit); end;
+architecture rtl of top is signal held : bit := '1';
+begin
+  disabled: if false generate held <= en; end generate;
+  flag <= held;
+  u: entity work.leaf generic map("a/b") port map(clk,en,a,y(7 downto 0));
+  v: entity work.leaf generic map("a_2fb") port map(clk,en,a,y(15 downto 8));
 end;
 """)
 

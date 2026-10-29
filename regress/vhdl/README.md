@@ -3,148 +3,50 @@ SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/b
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Microwatt VHDL co-simulation
+# VHDL frontend regressions
 
-`microwatt_cosim.py` runs Microwatt's original VUnit/OSVVM testbenches twice:
-first against the original VHDL DUT in GHDL, then against Naja's exported
-Verilog in Verilator. The stimulus, random seeds, behavioral reference
-functions, assertions, clock generation and checking times remain in the
-unmodified upstream VHDL bench. A generated VHDL DUT architecture calls the
-Verilated model through GHDL's VHPIDIRECT interface. Both runs must pass the
-same nonempty test set, and every co-simulation run must evaluate the exported
-DUT. Process timeouts, stopped/incomplete tests and missing bridge counters
-are failures. No NajaIF snapshot is used.
+## Language features
 
-The default cases are:
+`test_soc_frontend.py` and the small `soc_probes/` fixtures exercise sequential
+conditional assignment without a final else, process-local declarations,
+architecture object aliases, integer-range ports, falling-edge registers,
+static string generics, standard simulation-package imports, and initializer
+semantics. Exported Verilog cycle checks use Icarus Verilog when available.
+Run them with the built raw `naja` module on `PYTHONPATH`, or through
+`ctest -R '^VHDLSocFrontend$'` / `bazel test //regress/vhdl:soc_frontend_tests`.
+Output defaults and runtime impure function calls remain explicit diagnostics.
+Constrained string generics, general runtime file operations,
+aliases outside architecture declarative parts, falling-edge asynchronous
+resets, and falling-edge inferred memory writes are not added by these probes.
 
-| Case | Tests | Upstream checks |
-| --- | ---: | --- |
-| `rotator` | 13 | Rotates, shifts, masks, sign extension and carry |
-| `countbits` | 3 | Leading/trailing zero counts and clocked latency |
-| `multiply` | 8 | Interface latency and signed/unsigned low/high/word products |
-| `divider` | 13 | Interface latency, signed/unsigned and extended division, remainders |
 
-The countbits bench covers zero counting; it does not exercise every function
-implemented by the DUT. The multiplier uses `PIPELINE_DEPTH=4`, matching the
-upstream bench's explicit generic map. A generated configuration wrapper selects
-that value during Naja elaboration; the simulation wrapper rejects a different
-generic value. Multiplier/divider record ports are packed in field declaration
-order at the bridge, retaining the original record interface in the VHDL bench.
+## Static RAM initialization
 
-These unit cases do not need the temporary dcache assignment-order patch. The
-separate full-core smoke below currently does.
+`memory_file_init.vhdl` and `test_memory_initialization.py` cover read-only TextIO
+functions used in static signal/constant initializers. File declarations are
+supported in function bodies, with `text` files opened in `read_mode`, local
+`line` variables, `endfile`, and the two-positional-argument forms of `readline`,
+`read`, and `hread` for logic vectors. Static string formals/defaults and ordinary
+local array assignments, conditionals, `for`/`while`, `exit`, and returns are
+interpreted at elaboration. Unsupported overloads and operations fail explicitly.
+Binary reads accept 0/1 and representable uppercase X/Z values for logic vectors;
+hex reads support hexadecimal digits and internal underscores. Missing files,
+short/invalid data and nonzero truncated high bits are errors. Relative filenames
+use the loader process's working directory. The VHDL function itself determines
+address order, zero-fill, EOF handling and whether surplus input is read.
 
-## Run locally
+Arrays satisfying the existing synchronous-memory inference rules retain their
+initial values on the canonical writable-memory `INIT_ENABLE`/`INIT` parameters.
+Inference runs before per-word signal nets are allocated. Uniform binary or X/Z
+nibbles are stored in a compact hex literal; mixed X/Z nibbles retain binary
+encoding. No runtime file-reader hardware is generated. Memory initialization
+survives NajaIF reload without the original data file. Reusing a cached design
+after a contributing file changes is rejected; load into a fresh library.
+The existing hardware-array size and elaboration-step limits still apply.
 
-Use a Python interpreter matching the ABI of the built Naja extension. Install
-`vunit_hdl==4.7.1` in that environment, plus Verilator, a C++ compiler, make,
-and GHDL with its LLVM or GCC backend (not mcode). For example:
-
-```sh
-git clone https://github.com/antonblanchard/microwatt.git build/microwatt
-git -C build/microwatt checkout f341bed306a9a7281bf65200df8cc1f0a002617d
-cmake --build build --target naja --parallel 6
-python3 -m pip install vunit_hdl==4.7.1
-PYTHONPATH="$PWD/build/src/nl/python/naja_wrapping" \
-  python3 regress/vhdl/microwatt_cosim.py \
-    --source build/microwatt \
-    --output build/microwatt-results \
-    --ghdl ghdl-llvm
-```
-
-Use `--cases multiply divider` to select cases. An absolute path
-to GHDL is also accepted. Verilator builds use four parallel jobs and a
-600-second timeout by default; adjust these with `--jobs` and
-`--build-timeout` (seconds). Generated C++ is split with
-`--output-split 20000` to keep compilation units manageable. Simulation
-commands retain their 300-second timeout.
-Keep checkouts and generated files outside tracked
-source directories. The runner records hashes of its input files, Naja's
-producer identity, test counts and model evaluation counts in `report.json`.
-The `reference.xml`/`naja.xml` reports and per-stage logs remain under each case
-output directory. CI runs these cases in `.github/workflows/vhdl-regress.yml`
-against the pinned revision above.
-
-## Full-core console smoke
-
-`microwatt_core_smoke.py` runs the upstream `core_tb` and SoC, including its
-Wishbone interconnect, simulated RAM and UART, in GHDL. It first runs the original
-core as a reference, then replaces only the core with Naja's exported Verilog.
-The defaults cover all 16 upstream noninteractive console programs, containing
-137 reported checks. Both executions must terminate and reproduce each program's
-checked-in `.console_out` byte for byte. Reaching the simulation time limit is a
-failure, even if partial console output matches.
-
-Use `--build-timeout` to set the GHDL and Verilator build timeout in seconds
-(default: 600). CI allows 1,800 seconds for the full-core build. Each program
-retains its 300-second simulation timeout.
-
-| Programs | Reported checks |
-| --- | ---: |
-| `test_branch_alias`, `test_misc`, `test_prefix` | 13 |
-| `test_illegal`, `test_modes`, `test_privileged`, `test_sc`, `test_trace` | 30 |
-| `test_reservation`, `test_mmu` | 24 |
-| `test_fpu`, `test_hash` | 31 |
-| `test_spr_read`, `test_decrementer`, `test_pmu`, `test_xics` | 39 |
-
-Both cores use hardware mode (`SIM=false`) with the default FPU enabled and
-the synthesis `nonrandom` provider. The surrounding SoC remains in simulation
-mode. The core's `SIM=true` configuration includes non-synthesizable diagnostic
-processes; it is not the DUT elaborated by Naja. A small GHDL wrapper selects
-hardware mode for the reference and detects `terminated_out` for both backends,
-allowing 100 ns before stopping. The bridge itself uses the same protocol as
-the unit cases.
-
-```sh
-PYTHONPATH="$PWD/build/src/nl/python/naja_wrapping" \
-  python3 -B regress/vhdl/microwatt_core_smoke.py \
-    --source build/microwatt \
-    --output build/microwatt-core-results \
-    --preview-dcache-fix --ghdl ghdl-llvm --jobs 4
-```
-
-The preview flag authorizes moving the known `nc` assignment before its read
-in an **output-directory source copy**, for both backends. The upstream checkout
-is unchanged. Without the flag, the runner rejects the affected source. The
-generated `dcache-preview.patch` and source hashes make the correction reviewable.
-The correction becomes unnecessary when the upstream source already has the
-assignment in the correct order.
-
-Use `--programs test_branch_alias` for the smallest smoke test, or select any
-subset of the programs above. `--stop-time` sets the per-program simulated time
-budget; all defaults pass within the default 2 ms. `report.json` records the
-configuration, binary and expected-console hashes, and results; build logs and
-each program's console/simulation logs remain in the output directory. CI runs
-all 16 programs in this explicitly named preview stage alongside the
-unmodified-source unit tests.
-
-This is a functional CPU-in-SoC smoke test, not comprehensive ISA validation,
-cycle-by-cycle equivalence, or elaboration of the full SoC by Naja. The RAM and
-peripheral models remain VHDL simulated by GHDL.
-
-## Interpretation and limits
-
-This checks the upstream bench's functional assertions against the exported
-netlist; it is not exhaustive equivalence or timing simulation. GHDL owns time
-and calls the zero-delay Verilated model whenever DUT inputs change. Outputs
-return to VHDL through ordinary signal assignments, before the bench's next
-sampling time.
-
-Verilator uses binary values. The bridge preserves 0/1 and weak L/H levels,
-and explicitly maps U/X/Z/W/- inputs to zero, counting those mappings in the
-report. For example, several rotator tests leave the unused `sign_ext_rs`
-control uninitialized. The original VHDL reference still runs without this
-conversion and must pass every assertion. Passing the co-simulation validates
-these tested binary results and latencies; it does not establish nine-state
-VHDL semantics, unknown propagation or runtime `is_X` behavior. Initial unknown
-register values in Verilator are likewise outside this check.
-
-Microwatt sources remain external and retain their upstream CC-BY-4.0 license.
-The runner does not modify them. Upstream references:
-
-- [VUnit setup](https://github.com/antonblanchard/microwatt/blob/f341bed306a9a7281bf65200df8cc1f0a002617d/run.py)
-- [Rotator bench](https://github.com/antonblanchard/microwatt/blob/f341bed306a9a7281bf65200df8cc1f0a002617d/rotator_tb.vhdl)
-- [Countbits bench](https://github.com/antonblanchard/microwatt/blob/f341bed306a9a7281bf65200df8cc1f0a002617d/countbits_tb.vhdl)
-- [Multiplier bench](https://github.com/antonblanchard/microwatt/blob/f341bed306a9a7281bf65200df8cc1f0a002617d/multiply_tb.vhdl)
-- [Divider bench](https://github.com/antonblanchard/microwatt/blob/f341bed306a9a7281bf65200df8cc1f0a002617d/divider_tb.vhdl)
-- [GHDL foreign interface](https://ghdl.github.io/ghdl-cosim/vhpidirect/declarations.html)
+Tests include initialized reads, read-before-write behavior, masked writes,
+nonzero/descending addresses, EOF/zero-fill, malformed files, a larger initialized
+array, changed-file cache validation, and fresh-process snapshot reload. Optional
+NVC and Icarus checks compare reference VHDL and exported Verilog behavior. Run
+`ctest -R '^VHDLMemoryInitialization$'` or
+`bazel test //regress/vhdl:memory_initialization_tests`.

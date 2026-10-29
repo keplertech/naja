@@ -912,7 +912,7 @@ TEST_F(VHDLConstructorTest, StructuredEventGuardPreservesVectorCycles) {
 }
 
 TEST_F(VHDLConstructorTest, RejectsInvalidParenthesizedClockSemantics) {
-  for (const auto* guard : {"(clk'event and d = '1')", "(clk'event and clk = '0')"}) {
+  for (const auto* guard : {"(clk'event and d = '1')"}) {
     for (const bool structured : {false, true}) {
       SCOPED_TRACE(guard);
       SCOPED_TRACE(structured);
@@ -3075,7 +3075,7 @@ TEST_F(VHDLConstructorTest, InferredMemoryBoundsWordOrderAndReadPorts) {
   }
 }
 
-TEST_F(VHDLConstructorTest, MemoryInferenceFallsBackForMultiplePartialAndLoopWrites) {
+TEST_F(VHDLConstructorTest, MemoryInferenceHandlesInitializersAndRejectsUnsupportedWritePatterns) {
   for (const auto& [writes, initializer] : std::vector<std::pair<std::string, std::string>>{
       {"ram(conv_integer(a)) <= d; ram(conv_integer(b)) <= d;", ""},
       {"ram(conv_integer(a))(3 downto 2) <= d(3 downto 2); ram(conv_integer(a))(1 downto 0) <= d(1 downto 0);", ""},
@@ -3090,8 +3090,15 @@ TEST_F(VHDLConstructorTest, MemoryInferenceFallsBackForMultiplePartialAndLoopWri
         "type words is array(0 to 3) of std_logic_vector(3 downto 0); signal ram : words" + initializer + "; "
         "begin q <= ram(conv_integer(a)); process(clk) begin if rising_edge(clk) then " +
         std::string(writes) + " end if; end process; end;");
-    EXPECT_TRUE(naja::NL::test::zeroMemoryState(design).empty());
-    EXPECT_EQ(dffBits(design).size(), 16u);
+    if (initializer.empty()) {
+      EXPECT_TRUE(naja::NL::test::zeroMemoryState(design).empty());
+      EXPECT_EQ(dffBits(design).size(), 16u);
+    } else {
+      const auto memories = naja::NL::test::zeroMemoryState(design);
+      ASSERT_EQ(memories.size(), 1u);
+      EXPECT_EQ(memories.begin()->first->getInstParameter(NLName("INIT_ENABLE"))->getValue(), "1");
+      EXPECT_TRUE(dffBits(design).empty());
+    }
     design->destroy();
   }
 }
@@ -4347,7 +4354,6 @@ end;
 TEST_F(VHDLConstructorTest, RejectsInvalidGenerateLocalDeclarationsWithoutPublishing) {
   for (const auto* body : {
       "g: if true generate signal local : bit; begin y <= local; end generate;",
-      "g: if true generate signal local : bit := '0'; begin y <= local; end generate;",
       "g: if true generate signal local : bit; begin local <= d; end generate; y <= local;",
       "g: if true generate constant n : integer := 1; begin end generate; h: if n = 1 generate y <= d; end generate;",
       "g: if true generate signal local : bit_vector(n-1 downto 0); constant n : integer := 2; begin y <= local(0); end generate;",
@@ -5835,7 +5841,7 @@ TEST_F(VHDLConstructorTest, RTLFunctionAndTypeDiagnosticsRollBackDesigns) {
     {"type items is array(integer range <>) of integer; constant n : integer := items'length;", "array attribute requires a constrained type or object"},
     {"function f(x : bit) return integer is begin return 1; end; constant n : bit := f(a);", "assignment or expression type/length mismatch"},
     {"function f(x : bit_vector) return bit is begin return x(0); end; constant n : bit := f(a);", "unconstrained function vector requires a vector actual"},
-    {"function f(x : bit) return bit is begin x := '0'; return x; end; constant n : bit := f(a);", "runtime function assignments require local variables"},
+    {"function f(x : bit) return bit is begin x := '0'; return x; end; constant n : bit := f(a);", "initializer functions may assign only local variables"},
     {"function f(x : bit) return bit is begin for x in 0 to 1 loop null; end loop; return x; end; constant n : bit := f(a);", "shadowed runtime function loop parameters are unsupported"},
     {"function f(x : bit) return bit is variable x : bit; begin return x; end; constant n : bit := f(a);", "shadowed runtime function locals are unsupported"},
     {"function f(x, x : bit) return bit is begin return x; end; constant n : bit := f(a);", "duplicate function parameter"},

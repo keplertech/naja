@@ -29,3 +29,13 @@ target_compile_definitions(najaCoreTests PRIVATE
 TARGET_LINK_LIBRARIES(najaPythonPropertyTests naja_python gmock gtest_main)
 
 GTEST_DISCOVER_TESTS(najaPythonPropertyTests)
+
+add_test(NAME VHDLSocFrontend
+  COMMAND "${NAJA_PYTHON_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/regress/vhdl/test_soc_frontend.py" -v)
+set_tests_properties(VHDLSocFrontend PROPERTIES
+  ENVIRONMENT "PYTHONPATH=${PROJECT_BINARY_DIR}/src/nl/python/naja_wrapping:$ENV{PYTHONPATH}")
+
+add_test(NAME VHDLMemoryInitialization
+  COMMAND "${NAJA_PYTHON_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/regress/vhdl/test_memory_initialization.py" -v)
+set_tests_properties(VHDLMemoryInitialization PROPERTIES
+  ENVIRONMENT "PYTHONPATH=${PROJECT_BINARY_DIR}/src/nl/python/naja_wrapping:$ENV{PYTHONPATH}")
