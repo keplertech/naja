@@ -20,6 +20,8 @@ concurrency:
 jobs:
   simulation:
     name: CPU simulation (advisory)
+    # Fork PRs run here in the upstream repository; fork-local runs skip uploads.
+    if: github.repository == 'keplertech/naja'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -82,7 +84,7 @@ jobs:
   walltime:
     name: I/O walltime (advisory)
     # Enable only after granting this repository access to CodSpeed Macro Runners.
-    if: vars.CODSPEED_WALLTIME_ENABLED == 'true'
+    if: github.repository == 'keplertech/naja' && vars.CODSPEED_WALLTIME_ENABLED == 'true'
     runs-on: codspeed-macro-x64-ryzen-9950x-ubuntu-24-04
     timeout-minutes: 60
     env:
