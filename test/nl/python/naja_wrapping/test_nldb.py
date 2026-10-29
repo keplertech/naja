@@ -56,25 +56,76 @@ endmodule
 """
 
 class SNLDBTest(unittest.TestCase):
+  def test_frontend_options_validation(self):
+    db = naja.NLDB.create(naja.NLUniverse.get())
+    for value in ([], {1: []}, {"slang": "--relax-enum-conversions"}, {"slang": [1]}):
+      with self.subTest(value=value), self.assertRaisesRegex(TypeError, "frontend_options"):
+        db.loadSystemVerilog([], frontend_options=value)
+    for value in ({"other": []}, {"slang": [""]}, {"slang": ["--top=bad\0name"]}):
+      with self.subTest(value=value), self.assertRaisesRegex(ValueError, "frontend_options"):
+        db.loadSystemVerilog([], frontend_options=value)
+
+  def test_relax_enum_conversions(self):
+    with tempfile.TemporaryDirectory() as directory:
+      path = os.path.join(directory, "source.sv")
+      flist = os.path.join(directory, "sources.f")
+      with open(path, "w", encoding="utf-8") as source:
+        source.write("module top(input logic d, output logic q);\n"
+                     "typedef enum logic { A=0, B=1 } kind_t; kind_t state;\n"
+                     "assign state=d; assign q=state; endmodule\n")
+      with open(flist, "w", encoding="utf-8") as output:
+        output.write(f'"{path}"\n')
+      for use_flist in (False, True):
+        naja.NLUniverse.get().destroy()
+        db = naja.NLDB.create(naja.NLUniverse.create())
+        kwargs = dict(flist=flist) if use_flist else {}
+        files = [] if use_flist else [path]
+        for strict in ({}, dict(frontend_options={"slang": []})):
+          with self.assertRaisesRegex(naja.SystemVerilogSyntaxError, "no implicit conversion"):
+            db.loadSystemVerilog(files, diagnostics_report_path=None, **kwargs, **strict)
+        top = db.loadSystemVerilog(files, keep_assigns=False, diagnostics_report_path=None,
+                                  frontend_options={"slang": ["--relax-enum-conversions"]}, **kwargs)
+        self.assertIsNotNone(top.getScalarTerm("d").getNet())
+        self.assertEqual(top.getScalarTerm("d").getNet(), top.getScalarTerm("q").getNet())
+
+  def test_allow_use_before_declare(self):
+    with tempfile.TemporaryDirectory() as directory:
+      path = os.path.join(directory, "source.sv")
+      flist = os.path.join(directory, "sources.f")
+      with open(path, "w", encoding="utf-8") as source:
+        source.write("module top(input logic d, output logic q);\n"
+                     "typedef struct packed { logic flag; } item_t;\n"
+                     "assign q = state.flag; item_t state;\n"
+                     "assign state.flag = d; endmodule\n")
+      with open(flist, "w", encoding="utf-8") as output:
+        output.write(f'"{path}"\n')
+      for use_flist in (False, True):
+        naja.NLUniverse.get().destroy()
+        db = naja.NLDB.create(naja.NLUniverse.create())
+        kwargs = dict(flist=flist) if use_flist else {}
+        files = [] if use_flist else [path]
+        for strict in ({}, dict(frontend_options={"slang": []})):
+          with self.assertRaisesRegex(naja.SystemVerilogSyntaxError, "used before its declaration"):
+            db.loadSystemVerilog(files, diagnostics_report_path=None, **kwargs, **strict)
+        top = db.loadSystemVerilog(files, keep_assigns=False, diagnostics_report_path=None,
+                                  frontend_options={"slang": ["--allow-use-before-declare"]}, **kwargs)
+        self.assertIsNotNone(top.getScalarTerm("d").getNet())
+        self.assertEqual(top.getScalarTerm("d").getNet(), top.getScalarTerm("q").getNet())
+
   def test_default_timescale(self):
     u = naja.NLUniverse.get()
     db = naja.NLDB.create(u)
-    for value in (1, False, []):
-      with self.assertRaisesRegex(TypeError, "default_timescale must be a str or None"):
-        db.loadSystemVerilog([], default_timescale=value)
-    with self.assertRaisesRegex(ValueError, "default_timescale must not be empty"):
-      db.loadSystemVerilog([], default_timescale="")
     with tempfile.TemporaryDirectory() as directory:
       path = os.path.join(directory, "source.sv")
       with open(path, "w", encoding="utf-8") as source:
         source.write("module leaf(output wire y); assign y = 1'b1; endmodule\n"
                      "module top(output wire y); timeunit 1ns/1ps; leaf u(y); endmodule\n")
       with self.assertRaisesRegex(naja.SystemVerilogSyntaxError, "time scale"):
-        db.loadSystemVerilog([path], default_timescale=None)
+        db.loadSystemVerilog([path], frontend_options=None)
       for value in ("invalid", "1ns/1us"):
         with self.assertRaises(naja.SystemVerilogSyntaxError):
-          db.loadSystemVerilog([path], default_timescale=value)
-      top = db.loadSystemVerilog([path], default_timescale="1ns/1ps")
+          db.loadSystemVerilog([path], frontend_options={"slang": ["--timescale=" + value]})
+      top = db.loadSystemVerilog([path], frontend_options={"slang": ["--timescale=1ns/1ps"]})
       self.assertEqual("top", top.getName())
 
   def setUp(self):

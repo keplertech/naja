@@ -184,20 +184,50 @@ to fields inside dynamically selected packed array elements. Dynamic sequential
 selections without a supported lowering, including unsupported nested memory
 selectors, raise an unsupported-construct diagnostic rather than dropping the write.
 
-Each source file is a separate compilation unit by default
-(``SystemVerilogConfig.single_unit=False``). If sources rely on macros defined
-in earlier files without including their definitions, set ``single_unit=True``.
-This enables slang's ``--single-unit`` mode: files share a compilation unit and
-preprocessor macros remain visible to later files in source order. Place macro
-definitions before their uses. The option also applies to sources supplied
-through ``flist`` and can be combined with ``top`` selection.
+Backend-specific settings use the frontend-neutral ``frontend_options`` field.
+It maps a frontend name to its ordered option tokens. The active SystemVerilog
+frontend is currently ``"slang"``; other names raise an error, even with an empty
+list. This namespace allows future frontends to define their own options without
+interpreting Slang flags or silently ignoring them. ``None`` (the default), an
+empty dictionary, or ``{"slang": []}`` adds no frontend options.
 
 .. code-block:: python
 
-   config = netlist.SystemVerilogConfig(single_unit=True)
+   config = netlist.SystemVerilogConfig(
+       frontend_options={"slang": ["--relax-enum-conversions"]})
+   top = netlist.load_system_verilog(["source.sv"], config)
+
+The Slang adapter passes each list entry as one driver argument, without shell
+parsing. Use separate entries for an option and its value; do not shell-quote
+paths containing spaces. Tokens must be nonempty strings without NUL bytes.
+They are inserted after typed configuration options and before sources/filelists.
+Slang handles repeated options and diagnoses invalid or unknown options. These
+settings apply to direct inputs and ``flist`` sources alike. They change frontend
+acceptance, without adding Naja lowering support for unsupported constructs.
+Common loader settings such as ``top``, ``flist``, ``defines``, warning suppression,
+blackboxing and diagnostic routing retain their typed fields.
+
+Strict SystemVerilog checks remain the default. For Slang, the following options
+are useful when loading sources written for more permissive tools:
+
+* ``--relax-enum-conversions`` permits implicit integral-to-enum conversions,
+  including unnamed values, using the enum base representation.
+* ``--allow-use-before-declare`` permits variable references before declarations.
+* ``--timescale=1ns/1ps`` supplies a fallback time unit and precision.
+* ``--single-unit`` shares preprocessor macros across files in input order.
+
+Each file is a separate compilation unit unless ``--single-unit`` is enabled.
+Place macro definitions before their uses. This works with top selection and
+filelists:
+
+.. code-block:: python
+
+   config = netlist.SystemVerilogConfig(
+       frontend_options={"slang": ["--single-unit"]})
    top = netlist.load_system_verilog(["defs.sv", "use.sv"], config)
 
-   config = netlist.SystemVerilogConfig(single_unit=True, flist="sources.f")
+   config = netlist.SystemVerilogConfig(
+       frontend_options={"slang": ["--single-unit"]}, flist="sources.f")
    top = netlist.load_system_verilog([], config)
 
 Direct nonblocking indexed writes from multiple clocked processes now infer one
@@ -275,11 +305,34 @@ assignments and conditions. Left-hand unknown bits remain comparison inputs.
 Runtime four-state right-hand patterns retain the frontend's two-state
 comparison limitation and emit ``case_comparison_two_state``.
 
+Automatic combinational functions can return fixed-size unpacked arrays of
+integral elements, including multiple dimensions and ascending or descending bounds.
+Explicit returns and assignments to the function's implicit result preserve
+declaration order and blocking-write semantics. Unwritten automatic locals
+use SystemVerilog default values (including X for four-state logic and zero
+for two-state bits). Calls with constant values may be evaluated by Slang after
+the function signature, locals, expressions and
+nested calls have been checked for representable types. This path preserves
+four-state constant bits and retains Slang's constant-expression restrictions
+and evaluation limits; it does not enable string/real arguments, output arguments,
+or runtime side effects. Calls depending on runtime inputs use normal function
+inlining instead. Static function/local storage in runtime array-return functions
+remains unsupported. Block-scoped locals in these runtime functions require an
+explicit declaration initializer so that repeated block entry reinitializes them.
+
 Combinational function input arguments can include fixed-size unpacked arrays
 of integral elements. Actuals may be local or package parameters, or unpacked
 variables; earlier blocking writes in a combinational block are visible to the
 call. Selected read/modify/write operations and implicit return-variable partial
 writes retain source-order semantics.
+
+Pure combinational table reads and dynamic powers of two share lowered results
+when their ordered input bits, result widths and selection shapes match within
+a design. Reassigning a procedural value before a later read selects a distinct
+expression. Power-of-two lowering combines upper exponent bits into a shared
+overflow condition; integral negative exponents and exponents outside the result
+width produce zero. Result sizing and signed exponent types remain significant
+when deciding whether results can be shared.
 
 Statically bounded ``foreach`` loops are unrolled in combinational and sequential
 blocks and function bodies. Packed and unpacked dimensions iterate in declared
@@ -382,29 +435,44 @@ packed vectors and structs, and declarations in named blocks. Later assignments
 see and can overwrite the initialized value. Combinational automatic tasks with
 output arguments use the same local replay behavior.
 
-Functions ending in an explicit ``return`` can return from earlier ``if`` or
-``case`` branches after blocking assignments. Each path returns its current
+Functions ending in an explicit ``return``, or an ``if`` or ``case`` whose
+paths all return, can return from earlier branches after blocking assignments. Each path returns its current
 local values; statements after an early return execute only on paths that fall
 through. Writes to packed-struct input members, including nested members,
 update the function's local copy without changing the caller. Nested calls,
 packed return layouts, and argument and return conversions retain their normal
 SystemVerilog widths and signedness.
 
+Automatic function arrays receive their type's default value when their
+declaration executes, including repeated block entry. Declarations in separate
+scopes retain separate storage even when their names match. Automatic integral
+function results also start at their type's default value: unwritten four-state
+bits remain X and unwritten two-state bits remain zero. Persistent static
+function state and uncovered explicit-return paths remain unsupported.
+
+Output arguments are copied back before subsequent statements read the caller's
+locals, including nested calls. Input argument conversions use the formal
+argument's width and signedness, including truncation and extension.
+Output subroutines that write outside their local scope are rejected, including
+calls whose explicit copy-out results are unused.
+
 Connected bits of inlined locals and formal arguments which have no driver emit
 an ``undriven_inlined_local`` elaboration warning with the declaration location.
-Unused replay storage does not trigger this warning. The normal warning
-suppression and diagnostics-report settings apply.
+This check runs after alias and mux cleanup, so unused replay placeholders
+(such as unrolled loop counters) do not produce warnings. A surviving read of
+an undriven local still produces the warning.
+The normal warning suppression and diagnostics-report settings apply.
 
 By default, an incremental diagnostics report is written to
 ``naja_sv_diagnostics.log``. Set ``diagnostics_report_path=None`` in
 :class:`najaeda.netlist.SystemVerilogConfig` to disable that file and retain
 console diagnostics only.
 
-Set ``SystemVerilogConfig(default_timescale="1ns/1ps")`` to supply the default
+Set ``SystemVerilogConfig(frontend_options={"slang": ["--timescale=1ns/1ps"]})``
+to supply the default
 time unit and precision for design elements that do not specify a time scale.
 Explicit source ``timeunit`` / ``timeprecision`` declarations and `` `timescale``
-directives retain their normal precedence over this fallback. The default is
-``None``, which leaves the frontend default unchanged. Slang validates the
+directives retain their normal precedence over this fallback. Omitting this option leaves the frontend default unchanged. Slang validates the
 ``<unit>/<precision>`` value during loading and reports invalid values as
 ``SystemVerilogSyntaxError``. This setting does not add simulation or delay
 support to Naja.

@@ -6,6 +6,20 @@
 This document tracks deliberate coverage exclusions and targeted fallback tests
 for `src/nl/formats/systemverilog/frontend/SNLSVConstructor.cpp`.
 
+## Automatic function replay regressions
+
+- `signedPowerOfTwoDivisionUsesSignedPrimitive` checks signed truncation and
+  initializer widths against independent arithmetic expectations.
+- `branchLocalArrayReturnsPreserveScopesAndNestedCalls` checks branch-local
+  storage with different shapes, nested lookup calls and block re-entry.
+- `functionImplicitReturnIncompleteBitsSupported` simulates partial automatic
+  results with Icarus, preserving X in unwritten four-state bits.
+- `outputFunctionInputConversionsAndCopyoutOrder` and
+  `outputFunctionAutomaticLocalTargetsSupported` check input conversions,
+  multiple outputs and subsequent caller-local reads.
+- `outputFunctionCopyoutRejectsExternalWrites` ensures an unused explicit
+  copy-out cannot hide an unsupported write to a module output.
+
 ## Targeted Fallback Coverage
 
 The test suite includes dedicated benchmarks that exercise non-happy paths that
@@ -275,3 +289,12 @@ Nested packed assignment requests (source line numbers before this change):
 | 27073–27074 | `nestedPackedWriteFailuresCoverage`, outer and inner index variants: unsupported runtime system calls must report the nested packed index resolution failure and throw. |
 | 27083–27085, 27089–27090, 27103–27106 | `nestedPackedMemberWritesPreserveOtherFields`: packed struct fields before, between, and after dynamic element selections. Four-state simulation checks untouched fields, invalid and unknown indices, reset, enable, and NBA write priority against an independent flat reference. |
 | 27086–27087 | Excluded: range steps have already returned; the remaining static steps are packed struct fields whose positive widths and in-bounds offsets Slang validates against their containing packed type. |
+
+Return replay coverage (source lines before these additions):
+
+- 13181–13182: `parseEarlyReturnConstantCaseReplayCoverage` exercises an
+  all-wildcard `casez` item and checks the selected result for all 256 inputs.
+- 13201: `rejectEarlyReturnStatementReplayCoverage` checks rejection of an
+  unsupported variable exponent after a conditional early return.
+- 13205: excluded defensive exhaustion guard; the caller requires a terminal
+  explicit return, which remains in every forked continuation.

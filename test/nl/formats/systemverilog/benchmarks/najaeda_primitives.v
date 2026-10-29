@@ -388,7 +388,7 @@ module naja_mem #(
     begin
       /* verilator lint_off SELRANGE */
       for (init_idx = 0; init_idx < DEPTH; init_idx = init_idx + 1)
-        if (INIT === '0) mem[init_idx] = {WIDTH{1'b0}};
+        if (INIT === '0) mem[init_idx] = WIDTH'(0);
         else mem[init_idx] = INIT[init_idx*WIDTH +: WIDTH];
       /* verilator lint_on SELRANGE */
     end
@@ -429,7 +429,7 @@ module naja_mem #(
       if (addr_index < DEPTH)
         RDATA[rp*WIDTH +: WIDTH] = mem[addr_index];
       else
-        RDATA[rp*WIDTH +: WIDTH] = WR_PORTS == 0 ? {WIDTH{1'bx}} : {WIDTH{1'b0}};
+        RDATA[rp*WIDTH +: WIDTH] = WR_PORTS == 0 ? WIDTH'(1'sbx) : WIDTH'(0);
     end
   end
 

@@ -25,6 +25,104 @@ class NajaEDASystemVerilogTest(unittest.TestCase):
     def tearDown(self):
         netlist.reset()
 
+    def test_lowering_efficiency_report(self):
+        with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
+            path = Path(directory) / "source.sv"
+            path.write_text("""module leaf(input logic [7:0] a,b, input s, output logic [7:0] y);
+              assign y = s ? b : a;
+            endmodule
+            module top(input logic [7:0] a,b, input s, output wire [7:0] y,z);
+              leaf u(a,b,s,y); leaf v(a,b,s,z);
+            endmodule""")
+            top = netlist.load_system_verilog(str(path))
+            report = top.get_lowering_efficiency_report(warn_threshold=None)
+            self.assertEqual(16, report["expanded_mux_bits"])
+            self.assertFalse(any(row["findings"] for row in report["models"]))
+            model = naja.NLUniverse.get().getTopDesign().getInstance("u").getModel()
+            original = next(child for child in model.getInstances() if child.getModel().isMux())
+            mux = original.getModel()
+            outputs = {bit.getBit(): original.getInstTerm(bit).getNet()
+                       for bit in mux.getTerm("Y").getBits()}
+            children = []
+            for index in range(3):
+                child = naja.SNLInstance.create(model, mux, "unused" + str(index))
+                children.append(child)
+                output = naja.SNLBusNet.create(model, 7, 0, "unused_output" + str(index))
+                for name in ("A", "B", "S"):
+                    term = mux.getTerm(name)
+                    if name == "S":
+                        child.getInstTerm(term).setNet(model.getScalarNet("s"))
+                    else:
+                        source = model.getBusNet("a" if name == "A" or index == 0 else "b")
+                        for bit in term.getBits():
+                            value = (outputs[bit.getBit()]
+                                     if index == 2 and name == "A" else source.getBit(bit.getBit()))
+                            child.getInstTerm(bit).setNet(value)
+                for bit in mux.getTerm("Y").getBits():
+                    child.getInstTerm(bit).setNet(output.getBit(bit.getBit()))
+                if index == 1:
+                    outputs = {bit.getBit(): output.getBit(bit.getBit())
+                               for bit in mux.getTerm("Y").getBits()}
+            with self.assertLogs("najaeda.stats", level="WARNING") as captured:
+                report = top.get_lowering_efficiency_report(warn_threshold=16)
+            self.assertEqual(4, len(captured.output))
+            leaf = next(row for row in report["models"] if row["model"] == "leaf")
+            self.assertEqual(2, leaf["occurrences"])
+            self.assertEqual(32, leaf["mux_bits"])
+            counts = {finding["code"]: finding["expanded_bits"] for finding in leaf["findings"]}
+            self.assertEqual({"identical_mux_inputs": 16, "duplicate_mux": 16,
+                              "repeated_mux_arm": 16, "unconsumed_mux": 48}, counts)
+            with self.assertNoLogs("najaeda.stats", level="WARNING"):
+                top.get_lowering_efficiency_report(warn_threshold=49)
+                top.get_lowering_efficiency_report(warn_threshold=None)
+            for invalid in (0, -1, True, "10"):
+                with self.assertRaises(ValueError):
+                    top.get_lowering_efficiency_report(warn_threshold=invalid)
+            # The dual common-A pattern is audited too; a select-pin use
+            # of the same intermediate prevents either rewrite.
+            for node in children[1:]:
+                for a_bit, b_bit in zip(mux.getTerm("A").getBits(), mux.getTerm("B").getBits()):
+                    a_term, b_term = node.getInstTerm(a_bit), node.getInstTerm(b_bit)
+                    av, bv = a_term.getNet(), b_term.getNet()
+                    a_term.setNet(bv)
+                    b_term.setNet(av)
+            dual = top.get_lowering_efficiency_report(warn_threshold=None)
+            self.assertEqual(16, sum(f["expanded_bits"] for row in dual["models"]
+                                     for f in row["findings"] if f["code"] == "repeated_mux_arm"))
+            children[2].getInstTerm(mux.getTerm("S")).setNet(outputs[0])
+            connected = top.get_lowering_efficiency_report(warn_threshold=None)
+            self.assertFalse(any(f["code"] == "repeated_mux_arm" for row in connected["models"]
+                                 for f in row["findings"]))
+
+    def test_lowering_efficiency_source_and_snapshot(self):
+        with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
+            path = Path(directory) / "source.sv"
+            path.write_text("""module top(input logic [1:0] a, input s, output logic [1:0] y);
+              always_comb begin
+                y = s ? a : ~a;
+              end
+            endmodule""")
+            top = netlist.load_system_verilog(str(path))
+            # Direct editing can introduce dead logic after loader cleanup.
+            model = naja.NLUniverse.get().getTopDesign()
+            mux = next(inst for inst in model.getInstances() if inst.getModel().isMux())
+            unused = naja.SNLBusNet.create(model, 1, 0, "unused")
+            for bit in mux.getModel().getTerm("Y").getBits():
+                mux.getInstTerm(bit).setNet(unused.getBit(bit.getBit()))
+            for bit in model.getTerm("y").getBits():
+                bit.setNet(model.getBusNet("a").getBit(bit.getBit()))
+            with self.assertLogs("najaeda.stats", level="WARNING") as logs:
+                report = top.get_lowering_efficiency_report(warn_threshold=1)
+            finding = report["models"][0]["findings"][0]
+            self.assertEqual("unconsumed_mux", finding["code"])
+            self.assertEqual(3, finding["source"][1])
+            self.assertIn("source.sv:3:", logs.output[0])
+            snapshot = str(Path(directory) / "snapshot")
+            netlist.dump_naja_if(snapshot)
+            netlist.reset()
+            netlist.load_naja_if(snapshot)
+            self.assertEqual(report, netlist.get_top().get_lowering_efficiency_report(warn_threshold=None))
+
     def test_source_roles_and_model_definitions(self):
         with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
             path = os.path.join(directory, "source.sv")
@@ -296,18 +394,71 @@ endmodule
         self.assertEqual(
             "naja_sv_diagnostics.log", config.diagnostics_report_path)
 
-    def test_system_verilog_default_timescale(self):
-        self.assertIsNone(netlist.SystemVerilogConfig().default_timescale)
-        for value in (1, False, []):
-            with self.assertRaisesRegex(TypeError, "default_timescale must be a str or None"):
-                netlist.SystemVerilogConfig(default_timescale=value)
-        for value in ("", "  "):
-            with self.assertRaisesRegex(ValueError, "default_timescale must not be empty"):
-                netlist.SystemVerilogConfig(default_timescale=value)
+    def test_system_verilog_relax_enum_conversions(self):
+        self.assertIsNone(netlist.SystemVerilogConfig().frontend_options)
+        for value in ([], {1: []}, {"slang": "--relax-enum-conversions"}, {"slang": [1]}):
+            with self.subTest(value=value), self.assertRaisesRegex(TypeError, "frontend_options"):
+                netlist.SystemVerilogConfig(frontend_options=value)
+        for value in ({"other": []}, {"slang": [""]}, {"slang": ["--top=bad\0name"]}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "frontend_options"):
+                netlist.SystemVerilogConfig(frontend_options=value)
         config = netlist.SystemVerilogConfig()
-        config.default_timescale = 1
-        with self.assertRaisesRegex(TypeError, "default_timescale must be a str or None"):
+        config.frontend_options = []
+        with self.assertRaisesRegex(TypeError, "frontend_options"):
             netlist.load_system_verilog([], config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "source.sv")
+            flist = os.path.join(directory, "sources.f")
+            with open(path, "w", encoding="utf-8") as source:
+                source.write("module top(input logic d, output logic q);\n"
+                             "typedef enum logic { A=0, B=1 } kind_t; kind_t state;\n"
+                             "assign state=d; assign q=state; endmodule\n")
+            with open(flist, "w", encoding="utf-8") as output:
+                output.write(f'"{path}"\n')
+            for use_flist in (False, True):
+                for relax in (False, True):
+                    netlist.reset()
+                    config = netlist.SystemVerilogConfig(
+                        flist=flist if use_flist else None,
+                        diagnostics_report_path=None, keep_assigns=False,
+                        frontend_options={"slang": ["--relax-enum-conversions"] if relax else []})
+                    files = [] if use_flist else [path]
+                    if relax:
+                        top = netlist.load_system_verilog(files, config)
+                        self.assertEqual(top.get_term("d").get_lower_net(), top.get_term("q").get_lower_net())
+                    else:
+                        with self.assertRaisesRegex(naja.SystemVerilogSyntaxError, "no implicit conversion"):
+                            netlist.load_system_verilog(files, config)
+
+    def test_system_verilog_allow_use_before_declare(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "source.sv")
+            flist = os.path.join(directory, "sources.f")
+            with open(path, "w", encoding="utf-8") as source:
+                source.write("module top(input logic d, output logic q);\n"
+                             "typedef struct packed { logic flag; } item_t;\n"
+                             "assign q = state.flag; item_t state;\n"
+                             "assign state.flag = d; endmodule\n")
+            with open(flist, "w", encoding="utf-8") as output:
+                output.write(f'"{Path(path).as_posix()}"\n')
+            for use_flist in (False, True):
+                for allow in (False, True):
+                    netlist.reset()
+                    config = netlist.SystemVerilogConfig(
+                        flist=flist if use_flist else None, keep_assigns=False,
+                        frontend_options={"slang": ["--allow-use-before-declare"] if allow else []})
+                    files = [] if use_flist else path
+                    if allow:
+                        top = netlist.load_system_verilog(files, config)
+                        self.assertIsNotNone(top.get_term("d").get_lower_net())
+                        self.assertEqual(top.get_term("d").get_lower_net(),
+                                         top.get_term("q").get_lower_net())
+                    else:
+                        with self.assertRaisesRegex(naja.SystemVerilogSyntaxError,
+                                                    "used before its declaration"):
+                            netlist.load_system_verilog(files, config)
+
+    def test_system_verilog_default_timescale(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "source.sv")
             flist = os.path.join(directory, "sources.f")
@@ -325,27 +476,14 @@ endmodule
             for use_flist in (False, True):
                 netlist.reset()
                 top = netlist.load_system_verilog([] if use_flist else path,
-                    netlist.SystemVerilogConfig(default_timescale="1ps/1ps", keep_assigns=False,
+                    netlist.SystemVerilogConfig(frontend_options={"slang": ["--timescale=1ps/1ps"]}, keep_assigns=False,
                         flist=flist if use_flist else None, top="top"))
                 self.assertTrue(top.get_term("a").get_lower_net().is_const1())
                 self.assertTrue(top.get_child_instance("u").get_term("y").get_lower_net().is_const1())
             netlist.reset()
             with self.assertRaises(naja.SystemVerilogSyntaxError):
                 netlist.load_system_verilog(path,
-                    netlist.SystemVerilogConfig(default_timescale="invalid"))
-
-    def test_system_verilog_config_single_unit_validation(self):
-        self.assertFalse(netlist.SystemVerilogConfig().single_unit)
-        for value in ("true", 1, None):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(
-                        TypeError, r"SystemVerilogConfig\.single_unit must be a bool"):
-                    netlist.SystemVerilogConfig(single_unit=value)
-        config = netlist.SystemVerilogConfig()
-        config.single_unit = "true"
-        with self.assertRaisesRegex(
-                TypeError, r"SystemVerilogConfig\.single_unit must be a bool"):
-            netlist.load_system_verilog([], config)
+                    netlist.SystemVerilogConfig(frontend_options={"slang": ["--timescale=invalid"]}))
 
     def test_load_system_verilog_cross_file_macros(self):
         with tempfile.TemporaryDirectory(prefix="sv inputs ") as directory:
@@ -365,7 +503,7 @@ endmodule
                                           top=top_name):
                             netlist.reset()
                             config = netlist.SystemVerilogConfig(
-                                single_unit=single_unit, top=top_name,
+                                frontend_options={"slang": ["--single-unit"] if single_unit else []}, top=top_name,
                                 flist=flist_path if use_flist else None,
                                 diagnostics_report_path=None,
                                 keep_assigns=False)

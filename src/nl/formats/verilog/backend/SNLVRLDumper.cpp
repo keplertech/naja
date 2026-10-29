@@ -1724,12 +1724,19 @@ void SNLVRLDumper::dumpInstanceInterface(
   }
   if (NLDB0::isMemory(instance->getModel())) {
     const auto signature = NLDB0::getMemorySignature(instance->getModel());
+    const auto effective = NLDB0::getMemorySignature(instance);
+    const auto writeSlots = std::max(size_t{1}, effective.writePorts);
     // The shared Verilog module retains controls absent from specialized models.
+    // Size tie-offs explicitly: unsized fill literals trigger replication-limit
+    // warnings in downstream tools for wide memories, even on unused controls.
     if (signature.writePorts == 0) {
-      o << ",\n  .CLK(1'b0), .RST(1'b0), .WADDR('0), .WDATA('0), .WE('0)";
+      o << ",\n  .CLK(1'b0), .RST(1'b0), .WADDR(" << writeSlots * effective.abits
+        << "'b0), .WDATA(" << writeSlots * effective.width << "'b0), .WE("
+        << writeSlots << "'b0)";
     }
     if (!signature.independentWriteClocks) {
-      o << ",\n  .WCLK('0), .WMASK('0)";
+      o << ",\n  .WCLK(" << writeSlots << "'b0), .WMASK("
+        << writeSlots * effective.width << "'b0)";
     }
   }
   o << '\n' << ")";
@@ -2201,7 +2208,8 @@ void SNLVRLDumper::dumpTermNetAssign(
     }
 }
 
-void SNLVRLDumper::dumpTermAssigns(const SNLDesign* design, std::ostream& o) {
+void SNLVRLDumper::dumpTermAssigns(
+  const SNLDesign* design, std::ostream& o, const DesignInsideAnonymousNaming& naming) {
   DetailedPerfScopedTimer timer(
     detailedPerfReport_,
     detailedPerfReport_.dumpTermAssignsDuration,
@@ -2231,8 +2239,8 @@ void SNLVRLDumper::dumpTermAssigns(const SNLDesign* design, std::ostream& o) {
             dumpTermNetAssign(
               design,
               scalarTerm->getDirection(),
-              scalarTerm->getName().getString(),
-              scalarNet->getName().getString(),
+              dumpName(scalarTerm->getName().getString()),
+              getBitNetString(scalarNet, naming),
               o);
           }
           //else: same name so already connected
@@ -2253,8 +2261,8 @@ void SNLVRLDumper::dumpTermAssigns(const SNLDesign* design, std::ostream& o) {
             dumpTermNetAssign(
               design,
               scalarTerm->getDirection(),
-              scalarTerm->getString(),
-              busNetBit->getString(),
+              dumpName(scalarTerm->getName().getString()),
+              getBitNetString(busNetBit, naming),
               o);
           }
         }
@@ -2277,8 +2285,8 @@ void SNLVRLDumper::dumpTermAssigns(const SNLDesign* design, std::ostream& o) {
             dumpTermNetAssign(
               design,
               busTerm->getDirection(),
-              busTermBit->getString(),
-              scalarNet->getString(),
+              dumpName(busTerm->getName().getString()) + "[" + std::to_string(busTermBit->getBit()) + "]",
+              getBitNetString(scalarNet, naming),
               o);
           }
         } else {
@@ -2301,8 +2309,8 @@ void SNLVRLDumper::dumpTermAssigns(const SNLDesign* design, std::ostream& o) {
             dumpTermNetAssign(
               design,
               busTerm->getDirection(),
-              busTermBit->getString(),
-              busNetBit->getString(),
+              dumpName(busTerm->getName().getString()) + "[" + std::to_string(busTermBit->getBit()) + "]",
+              getBitNetString(busNetBit, naming),
               o
             );
           }
@@ -2396,7 +2404,7 @@ void SNLVRLDumper::dumpOneDesign(const SNLDesign* design, std::ostream& o) {
   dumpParameters(design, o);
   dumpNets(design, o, naming);
   dumpUnusedWireDeclarations(o, naming);
-  dumpTermAssigns(design, o);
+  dumpTermAssigns(design, o, naming);
 
   dumpInstances(design, o, naming);
 
@@ -2858,7 +2866,7 @@ void SNLVRLDumper::dumpNajaMemModel(std::ostream& o) {
   o << "    begin\n";
   o << "      /* verilator lint_off SELRANGE */\n";
   o << "      for (init_idx = 0; init_idx < DEPTH; init_idx = init_idx + 1)\n";
-  o << "        if (INIT === '0) mem[init_idx] = {WIDTH{1'b0}};\n";
+  o << "        if (INIT === '0) mem[init_idx] = WIDTH'(0);\n";
   o << "        else mem[init_idx] = INIT[init_idx*WIDTH +: WIDTH];\n";
   o << "      /* verilator lint_on SELRANGE */\n";
   o << "    end\n";
@@ -2895,7 +2903,7 @@ void SNLVRLDumper::dumpNajaMemModel(std::ostream& o) {
   o << "      if (addr_index < DEPTH)\n";
   o << "        RDATA[rp*WIDTH +: WIDTH] = mem[addr_index];\n";
   o << "      else\n";
-  o << "        RDATA[rp*WIDTH +: WIDTH] = WR_PORTS == 0 ? {WIDTH{1'bx}} : {WIDTH{1'b0}};\n";
+  o << "        RDATA[rp*WIDTH +: WIDTH] = WR_PORTS == 0 ? WIDTH'(1'sbx) : WIDTH'(0);\n";
   o << "    end\n";
   o << "  end\n\n";
   o << "  generate\n";
