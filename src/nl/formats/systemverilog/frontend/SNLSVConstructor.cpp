@@ -13250,7 +13250,7 @@ endmodule
             const Statement* fallback = caseStmt.defaultCase;
             const Statement* exhaustiveFallback = !fallback && pending.empty() &&
               isExhaustiveConstantNormalCase(caseStmt) && !caseStmt.items.empty() ?
-              caseStmt.items.back().stmt : nullptr;
+              caseStmt.items.back().stmt.get() : nullptr;
             if (exhaustiveFallback) fallback = exhaustiveFallback;
             for (const auto& item : caseStmt.items) {
               if (item.stmt == exhaustiveFallback) continue;
