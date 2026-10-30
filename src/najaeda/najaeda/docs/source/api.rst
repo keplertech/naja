@@ -19,6 +19,38 @@ supported subset. ``Instance.dump_gate_level_verilog`` and ``GateLevelVerilogDum
 structural netlists, including after RTL elaboration; they do not reconstruct
 the original behavioral RTL. See :doc:`loading`.
 
+Lowering efficiency audit
+-------------------------
+
+``Instance.get_lowering_efficiency_report(warn_threshold=256)`` (also available
+as ``najaeda.stats.analyze_lowering_efficiency(instance, warn_threshold=256)``)
+inspects reachable model connectivity independently of the loading frontend.
+It returns a JSON-compatible dictionary with model-local and hierarchy-expanded
+mux instance/bit counts, and per-model findings grouped by code and first source
+origin (or ``None`` when unavailable). Codes are ``identical_mux_inputs``,
+``duplicate_mux``, ``repeated_mux_arm`` (adjacent selections choosing the same
+true or false value, with the inner vector feeding only the corresponding
+outer data pins), and ``unconsumed_mux``. A source is a five-element sequence
+``(file, line, column, end_line, end_column)``. Model rows include their stable
+``model_id`` and hierarchy ``occurrences``; findings contain ``instances``,
+``bits`` and ``expanded_bits``.
+
+Warnings use the ``najaeda.stats`` logger once per model/code when the expanded
+avoidable bit count reaches the threshold. Pass a positive integer to adjust
+it, or ``None`` to collect results silently. The audit does not modify the
+netlist. Categories overlap and must not be summed. Non-mux consumers are
+conservative live roots: this is an optimization audit, not comprehensive dead
+logic analysis or a correctness check. Large necessary mux networks alone do
+not produce warnings. Recursive model hierarchies are rejected. The PULP runner
+runs this audit automatically and saves ``lowering-efficiency.json``.
+
+The RTL loaders combine exclusive, complete-vector mux chains selecting
+the same true value (using OR) or false value (using AND). Shared, reordered,
+partially connected and feedback paths are retained. This preserves the
+canonical mux network's X/Z behavior; it does not extend the frontend's supported
+language semantics. Source origins from both selections are retained on the
+surviving mux and new selector logic, including across NajaIF round trips.
+
 Source information
 ------------------
 

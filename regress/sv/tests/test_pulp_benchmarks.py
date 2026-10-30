@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -25,13 +26,76 @@ class PulpBenchmarksTest(unittest.TestCase):
             with self.subTest(report=report), self.assertRaises(RuntimeError):
                 pulp.validate_diagnostics(report)
 
-    def test_archive_checksum_is_required_before_extraction(self):
+    def make_package(self, root):
+        package = root / pulp.PACKAGE
+        package.mkdir(parents=True)
+        (package / "targets.mk").write_text("sample.default.TOP := top\n")
+        (package / "source.sv").write_text("module top(input a, output y); assign y=a; endmodule\n")
+        pulp.write_manifest(package)
+        return package
+
+    def test_prepared_archive_requires_pinned_revision_and_file_hashes(self):
         with tempfile.TemporaryDirectory() as tmp:
-            archive = Path(tmp) / "wrong.tar.gz"
-            archive.write_bytes(b"not the pinned release")
-            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
-                pulp.unpack(archive, Path(tmp) / "rtl")
-            self.assertFalse((Path(tmp) / "rtl").exists())
+            root = Path(tmp)
+            package = self.make_package(root)
+            archive = root / "prepared.tar.gz"
+            with tarfile.open(archive, "w:gz") as output:
+                output.add(package, arcname=pulp.PACKAGE)
+            self.assertEqual(root / "rtl" / pulp.PACKAGE, pulp.unpack(archive, root / "rtl"))
+            (package / "source.sv").write_text("changed input")
+            with self.assertRaisesRegex(ValueError, "SHA-256 manifest mismatch"):
+                pulp.validate_package(package)
+            pulp.write_manifest(package)
+            manifest = json.loads((package / pulp.MANIFEST).read_text())
+            manifest["revision"] = "0" * 40
+            (package / pulp.MANIFEST).write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "pinned RTL revision"):
+                pulp.validate_package(package)
+
+    def test_missing_or_added_package_files_are_rejected(self):
+        for added in (False, True):
+            with self.subTest(added=added), tempfile.TemporaryDirectory() as tmp:
+                package = self.make_package(Path(tmp))
+                if added:
+                    (package / "extra.sv").write_text("unexpected source")
+                else:
+                    (package / "source.sv").unlink()
+                with self.assertRaisesRegex(ValueError, "manifest mismatch"):
+                    pulp.validate_package(package)
+
+    def test_preparation_fetches_exact_commit_and_caches_verified_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp).resolve()
+            def run(command, **kwargs):
+                if command == ["bash", "setup.sh"]:
+                    prepared = kwargs["cwd"] / "benchmarks"
+                    prepared.mkdir(parents=True)
+                    (prepared / "targets.mk").write_text("sample.default.TOP := top\n")
+                    self.assertEqual("0", kwargs["env"]["SIMULATION"])
+                    self.assertEqual("0", kwargs["env"]["KEEP_BUILD_TOOLS"])
+                    self.assertEqual(sys.executable, kwargs["env"]["PYTHON"])
+            with patch.object(pulp.sys, "platform", "linux"), \
+                 patch.object(pulp.subprocess, "run", side_effect=run) as invoked, \
+                 patch.object(pulp.subprocess, "check_output", return_value=pulp.REVISION + "\n"):
+                package = pulp.prepare(cache)
+                self.assertEqual(cache / pulp.PACKAGE, package)
+                fetch = invoked.call_args_list[1].args[0]
+                self.assertEqual(["fetch", "--depth", "1", pulp.REPOSITORY, pulp.REVISION], fetch[3:])
+                invoked.reset_mock()
+                self.assertEqual(package, pulp.prepare(cache))
+                invoked.assert_not_called()
+            (package / "targets.mk").write_text("changed inventory")
+            with self.assertRaisesRegex(ValueError, "manifest mismatch"):
+                pulp.prepare(cache)
+
+    def test_wrong_checkout_is_rejected_before_running_setup(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(pulp.sys, "platform", "linux"), \
+             patch.object(pulp.subprocess, "run") as invoked, \
+             patch.object(pulp.subprocess, "check_output", return_value="0" * 40):
+            with self.assertRaisesRegex(ValueError, "checkout mismatch"):
+                pulp.prepare(Path(tmp))
+            self.assertFalse(any(call.args[0] == ["bash", "setup.sh"] for call in invoked.call_args_list))
 
     def test_target_inventory_rejects_duplicates_and_empty_input(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,23 +150,35 @@ class PulpBenchmarksTest(unittest.TestCase):
             self.assertEqual("timeout", result["status"])
             self.assertEqual(5, result["design_stats"]["top_terms"])
 
-    def test_case_timescale_reaches_only_the_configured_worker(self):
-        for variant, expected in (("configured", "1ns/1ps"), ("default", None)):
-            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                source = root / "design" / "variants" / variant
-                source.mkdir(parents=True)
-                (source / "filelist.f").write_text("source.sv\n")
-                with patch.object(pulp, "DEFAULT_TIMESCALES", {"design.configured": "1ns/1ps"}), \
-                     patch.object(pulp, "run_command", return_value=subprocess.CompletedProcess([], 1)) as run:
-                    result = pulp.run_target(root, f"design.{variant}", "top",
-                                             root / "artifacts", root, 1)
-                command = run.call_args.args[0]
-                if expected is None:
-                    self.assertNotIn("--default-timescale", command)
-                else:
-                    self.assertEqual(expected, command[command.index("--default-timescale") + 1])
-                self.assertEqual(expected, result["default_timescale"])
+    def test_slang_args_are_case_specific_in_both_modes(self):
+        for case in ("cheshire.default", "redmule.default", "nvdla.top", "cv32e40p.default"):
+            for dump in (False, True):
+                with self.subTest(case=case, dump=dump), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    family, variant = case.split(".")
+                    source = root / family / "variants" / variant
+                    source.mkdir(parents=True)
+                    (source / "filelist.f").write_text("source.sv\n")
+                    with patch.object(pulp, "run_command", return_value=subprocess.CompletedProcess([], 1)) as run:
+                        result = pulp.run_target(root, case, "top", root / "output", root, 1,
+                                                 dump_netlist=dump)
+                    expected = {
+                        "cheshire.default": ["--allow-use-before-declare"],
+                        "redmule.default": ["--relax-enum-conversions"],
+                        "nvdla.top": ["--timescale=1ns/1ps"],
+                    }.get(case, [])
+                    self.assertEqual(expected, result["frontend_options"]["slang"])
+                    actual = [arg.removeprefix("--slang-arg=") for arg in run.call_args.args[0]
+                              if arg.startswith("--slang-arg=")]
+                    self.assertEqual(expected, actual)
+
+    def test_worker_cli_forwards_compatibility_option(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(sys, "argv", ["pulp_benchmarks.py", "--worker", "top", "--output", tmp,
+                                       "--elaboration-only", "--slang-arg=--allow-use-before-declare", "--slang-arg=--relax-enum-conversions"]), \
+             patch.object(pulp, "worker") as worker:
+            self.assertEqual(0, pulp.main())
+            worker.assert_called_once_with("top", Path(tmp).resolve(), False, {"slang": ["--allow-use-before-declare", "--relax-enum-conversions"]})
 
     def test_lint_failure_is_not_a_load_dump_pass(self):
         with tempfile.TemporaryDirectory() as tmp:

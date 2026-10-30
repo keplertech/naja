@@ -98,6 +98,106 @@ end;
 }
 }
 
+TEST_F(VHDLConstructorTest, RepeatedMuxFalseSelectionsUseAnd) {
+  auto* top = VHDLConstructor(library_).construct(R"(
+    entity top is port(a,b : in bit_vector(2 downto 0); s,t : in bit;
+                       y : out bit_vector(2 downto 0)); end;
+    architecture rtl of top is begin
+      process(a,b,s,t) begin
+        if s='1' then
+          if t='1' then y<=a; else y<=b; end if;
+        else y<=b; end if;
+      end process;
+    end;
+  )");
+  size_t muxes = 0;
+  for (auto* instance : top->getInstances()) if (NLDB0::isMux2(instance->getModel())) ++muxes;
+  EXPECT_EQ(1u, muxes);
+  for (unsigned input = 0; input < 256; ++input) {
+    std::unordered_map<SNLBitNet*, bool> values;
+    for (unsigned bit = 0; bit < 3; ++bit) {
+      values[top->getBusTerm(NLName("a"))->getBit(bit)->getNet()] = (input >> bit) & 1;
+      values[top->getBusTerm(NLName("b"))->getBit(bit)->getNet()] = (input >> (bit + 3)) & 1;
+    }
+    values[top->getScalarTerm(NLName("s"))->getNet()] = (input >> 6) & 1;
+    values[top->getScalarTerm(NLName("t"))->getNet()] = (input >> 7) & 1;
+    const unsigned expected = (input & 192) == 192 ? input & 7 : (input >> 3) & 7;
+    std::unordered_set<SNLBitNet*> visiting;
+    for (unsigned bit = 0; bit < 3; ++bit) {
+      EXPECT_EQ(bool((expected >> bit) & 1),
+        evaluateRTL(top->getBusTerm(NLName("y"))->getBit(bit)->getNet(), values, visiting));
+    }
+  }
+}
+
+TEST_F(VHDLConstructorTest, RepeatedMuxSelectionsAreCombined) {
+  auto* top = VHDLConstructor(library_).construct(R"(
+    entity top is port(a,b : in bit_vector(2 downto 0); s,t,u : in bit;
+                       y : out bit_vector(2 downto 0)); end;
+    architecture rtl of top is begin
+      process(a,b,s,t,u) is variable temp : bit_vector(2 downto 0);
+      begin
+        temp:=a;
+        if s='1' then temp:=b; end if;
+        if t='1' then temp:=b; end if;
+        if u='1' then temp:=b; end if;
+        y<=temp;
+      end process;
+    end;
+  )");
+  size_t muxes = 0;
+  for (auto* instance : top->getInstances()) if (NLDB0::isMux2(instance->getModel())) ++muxes;
+  EXPECT_EQ(1u, muxes);
+  for (unsigned input = 0; input < 512; ++input) {
+    std::unordered_map<SNLBitNet*, bool> values;
+    for (unsigned bit = 0; bit < 3; ++bit) {
+      values[top->getBusTerm(NLName("a"))->getBit(bit)->getNet()] = (input >> bit) & 1;
+      values[top->getBusTerm(NLName("b"))->getBit(bit)->getNet()] = (input >> (bit + 3)) & 1;
+    }
+    for (const auto& pin : {std::pair{"s", 6}, std::pair{"t", 7}, std::pair{"u", 8}})
+      values[top->getScalarTerm(NLName(pin.first))->getNet()] = (input >> pin.second) & 1;
+    std::unordered_set<SNLBitNet*> visiting;
+    const unsigned expected = input & 448 ? (input >> 3) & 7 : input & 7;
+    for (unsigned bit = 0; bit < 3; ++bit) {
+      EXPECT_EQ(bool((expected >> bit) & 1),
+        evaluateRTL(top->getBusTerm(NLName("y"))->getBit(bit)->getNet(), values, visiting));
+    }
+  }
+}
+
+TEST_F(VHDLConstructorTest, OverwrittenMuxResultsPreserveValues) {
+  auto* top = VHDLConstructor(library_).construct(R"(
+    entity top is port(a,b : in bit_vector(3 downto 0); s : in bit;
+                       y,z : out bit_vector(3 downto 0)); end;
+    architecture rtl of top is begin
+      process(a,b,s) is
+        variable temp : bit_vector(3 downto 0);
+      begin
+        if s = '1' then temp := a; else temp := b; end if;
+        temp := a;
+        y <= temp;
+        if s = '1' then z <= b; else z <= a; end if;
+      end process;
+    end;
+  )");
+  for (unsigned input = 0; input < 512; ++input) {
+    std::unordered_map<SNLBitNet*, bool> values;
+    for (unsigned bit = 0; bit < 4; ++bit) {
+      values[top->getBusTerm(NLName("a"))->getBit(bit)->getNet()] = (input >> bit) & 1;
+      values[top->getBusTerm(NLName("b"))->getBit(bit)->getNet()] = (input >> (bit + 4)) & 1;
+    }
+    values[top->getScalarTerm(NLName("s"))->getNet()] = (input >> 8) & 1;
+    for (const auto& value : {std::pair{"y", input & 15},
+                             std::pair{"z", input & 256 ? (input >> 4) & 15 : input & 15}}) {
+      std::unordered_set<SNLBitNet*> visiting;
+      for (unsigned bit = 0; bit < 4; ++bit) {
+        EXPECT_EQ(bool((value.second >> bit) & 1),
+          evaluateRTL(top->getBusTerm(NLName(value.first))->getBit(bit)->getNet(), values, visiting));
+      }
+    }
+  }
+}
+
 TEST_F(VHDLConstructorTest, WiringAssignmentsTraverseEquipotentials) {
   const std::vector<std::string> sources = {
     "entity wiring is port(a : in bit; y : out bit); end; "

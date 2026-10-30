@@ -48,11 +48,31 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Download pinned prepared RTL
+      - uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/pulp-cache
+          key: pulp-source-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('regress/sv/pulp_benchmarks.py') }}
+      - name: Install benchmark preparation dependencies
         run: |
-          curl -L --fail --retry 3 \
-            https://github.com/pulp-platform/eda-benchmarks/releases/download/v0.1.0/pulp-benchmarks-v0.1.0.tar.gz \
-            -o "${RUNNER_TEMP}/pulp-benchmarks-v0.1.0.tar.gz"
+          sudo apt-get update
+          sudo apt-get install -yq --no-install-recommends \
+            bash build-essential ca-certificates cmake coreutils curl findutils \
+            gawk git libxml-simple-perl openjdk-17-jre-headless perl \
+            python3-venv sed tar xz-utils
+      - name: Prepare pinned GitHub RTL
+        env:
+          JAVA: /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+        run: |
+          python3 - <<'PYCODE'
+          import os, sys, tarfile
+          from pathlib import Path
+          sys.path.insert(0, 'regress/sv')
+          import pulp_benchmarks as pulp
+          package = pulp.prepare(Path(os.environ['RUNNER_TEMP']) / 'pulp-cache')
+          archive = Path(os.environ['RUNNER_TEMP']) / 'pulp-benchmarks.tar.gz'
+          with tarfile.open(archive, 'w:gz') as output:
+              output.add(package, arcname=pulp.PACKAGE)
+          PYCODE
       - name: Select independent cases
         id: matrix
         env:
@@ -63,7 +83,7 @@ jobs:
           from pathlib import Path
           sys.path.insert(0, 'regress/sv')
           import pulp_benchmarks as pulp
-          archive = Path(os.environ['RUNNER_TEMP']) / 'pulp-benchmarks-v0.1.0.tar.gz'
+          archive = Path(os.environ['RUNNER_TEMP']) / 'pulp-benchmarks.tar.gz'
           with tempfile.TemporaryDirectory() as directory:
               inventory = pulp.targets(pulp.unpack(archive, Path(directory)))
           rows = [dict(case=name, mode='lint', tier='regression') for name in pulp.SMOKE]
@@ -80,7 +100,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: pulp-prepared-rtl
-          path: ${{ runner.temp }}/pulp-benchmarks-v0.1.0.tar.gz
+          path: ${{ runner.temp }}/pulp-benchmarks.tar.gz
           retention-days: 1
 
   runner-tests:
@@ -220,7 +240,7 @@ jobs:
             args=(--elaboration-only --timeout 600 --output build/pulp-benchmarks/elaboration)
           fi
           python3 regress/sv/pulp_benchmarks.py \
-            --archive "${RUNNER_TEMP}/pulp-benchmarks-v0.1.0.tar.gz" \
+            --archive "${RUNNER_TEMP}/pulp-benchmarks.tar.gz" \
             --case "${CASE}" "${args[@]}"
       - name: Publish PULP job summary
         if: always()
@@ -306,7 +326,7 @@ jobs:
         if: matrix.task == 'c910'
         run: |
           python3 regress/sv/pulp_benchmarks.py \
-            --archive "${RUNNER_TEMP}/pulp-benchmarks-v0.1.0.tar.gz" \
+            --archive "${RUNNER_TEMP}/pulp-benchmarks.tar.gz" \
             --case pulp_c910.default --timeout 600 --lint-runner local
       - name: Install ITA vector dependencies
         if: matrix.task == 'ita'
@@ -317,7 +337,7 @@ jobs:
         if: matrix.task == 'ita'
         run: |
           python3 regress/sv/ita_simulation.py \
-            --archive "${RUNNER_TEMP}/pulp-benchmarks-v0.1.0.tar.gz" \
+            --archive "${RUNNER_TEMP}/pulp-benchmarks.tar.gz" \
             --generator-python "${RUNNER_TEMP}/ita-vectors/bin/python" \
             --output build/pulp-benchmarks/ita \
             --seed 0 --weight-read-delay-ps 1 --timeout 1200 \

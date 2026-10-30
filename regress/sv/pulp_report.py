@@ -37,7 +37,9 @@ def render(suites, functional=None):
         inventory.update(summary.get('inventory', names))
         selected.update(names)
         passed = sum(results.get(n, {}).get('status') == 'passed' for n in names)
-        lines += [f'**{passed}/{len(names)} passed** · {cell(summary.get("mode", label))} · release {cell(summary["release"])}', '',
+        source = ('commit ' + cell(summary['revision']) if 'revision' in summary
+                  else 'release ' + cell(summary['release']))
+        lines += [f'**{passed}/{len(names)} passed** · {cell(summary.get("mode", label))} · {source}', '',
                   '| Case | Result | Load (s) | Stats (s) | Dump (s) | Lint (s) | Total (s) |',
                   '|---|---|---:|---:|---:|---:|---:|']
         for name in names:

@@ -22,6 +22,7 @@
 #include "SNLBusTermBit.h"
 #include <functional>
 #include "SNLRTLPrimitives.h"
+#include "SNLUtils.h"
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 
@@ -5155,6 +5156,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     sourceMap.annotate(design, entity->span, true);
     sourceMap.annotate(design, architecture->span);
     RTLConstructor(design, *entity, *architecture, syntax, context, overrides, build).run();
+    SNLUtils::mergeRepeatedMuxSelections(design);
     RTLSourceProperty::attach(design, signature);
     active.erase({owner, name});
     return design;

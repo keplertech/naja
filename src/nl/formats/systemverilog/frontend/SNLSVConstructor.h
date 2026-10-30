@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -129,8 +130,8 @@ class SNLSVConstructor {
       /// Preserve only the ports of modules with unsupported overlapping or
       /// dynamic writes to a memory from multiple sequential processes.
       bool blackboxMultiWriterMemories {false};
-      /// Fallback time scale (for example "1ns/1ps") for design elements without one.
-      std::optional<std::string> defaultTimeScale {};
+      /// Backend-specific option tokens. Only the active frontend (currently "slang") is accepted.
+      std::map<std::string, std::vector<std::string>> frontendOptions {};
     };
 
     SNLSVConstructor() = delete;

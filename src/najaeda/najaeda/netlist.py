@@ -12,7 +12,7 @@ import sys
 import os
 import tempfile
 from enum import Enum
-from typing import Union, List, Iterator, Optional
+from typing import Union, List, Iterator, Optional, Dict
 from dataclasses import dataclass
 
 from najaeda import naja
@@ -1270,6 +1270,16 @@ class Instance:
         if self.inst:
             self.SNLID = self.inst.getModel().getNLID()
 
+    def get_lowering_efficiency_report(self, *, warn_threshold=256):
+        """Report avoidable mux work in reachable models and optionally warn.
+
+        The audit operates on netlist connectivity for any frontend. Categories
+        overlap and represent optimization opportunities, not correctness errors.
+        Pass ``warn_threshold=None`` to collect a report without warnings.
+        """
+        from najaeda.stats import analyze_lowering_efficiency
+        return analyze_lowering_efficiency(self, warn_threshold=warn_threshold)
+
     def __eq__(self, other) -> bool:
         return self.pathIDs == other.pathIDs
 
@@ -2278,10 +2288,8 @@ class SystemVerilogConfig:
     blackbox_unknown_modules: bool = False
     # Omit the entire module body if a memory has unsupported multiple writers.
     blackbox_multi_writer_memories: bool = False
-    # Share preprocessor macros across source files in input order.
-    single_unit: bool = False
-    # Fallback for design elements without an explicit time scale.
-    default_timescale: Optional[str] = None
+    # Backend-specific option tokens; only the active frontend is accepted.
+    frontend_options: Optional[Dict[str, List[str]]] = None
 
     def __post_init__(self):
         self.validate()
@@ -2293,8 +2301,7 @@ class SystemVerilogConfig:
                 "include_source_info_in_elaborated_ast_json",
                 "keep_ast_link",
                 "blackbox_unknown_modules",
-                "blackbox_multi_writer_memories",
-                "single_unit"):
+                "blackbox_multi_writer_memories"):
             value = getattr(self, field_name)
             if not isinstance(value, bool):
                 raise TypeError(
@@ -2323,11 +2330,29 @@ class SystemVerilogConfig:
             if not self.top.strip():
                 raise ValueError("SystemVerilogConfig.top must not be empty")
 
-        if self.default_timescale is not None:
-            if not isinstance(self.default_timescale, str):
-                raise TypeError("SystemVerilogConfig.default_timescale must be a str or None")
-            if not self.default_timescale.strip():
-                raise ValueError("SystemVerilogConfig.default_timescale must not be empty")
+        if self.frontend_options is not None:
+            if not isinstance(self.frontend_options, dict):
+                raise TypeError(
+                    "SystemVerilogConfig.frontend_options must be a dict[str, list[str]] or None")
+            for frontend, arguments in self.frontend_options.items():
+                if not isinstance(frontend, str):
+                    raise TypeError(
+                        "SystemVerilogConfig.frontend_options keys must be strings")
+                if frontend != "slang":
+                    raise ValueError(
+                        "SystemVerilogConfig.frontend_options supports only "
+                        "the active frontend 'slang'")
+                if not isinstance(arguments, list):
+                    raise TypeError(
+                        "SystemVerilogConfig.frontend_options['slang'] must be a list[str]")
+                for index, argument in enumerate(arguments):
+                    if not isinstance(argument, str):
+                        raise TypeError(
+                            f"SystemVerilogConfig.frontend_options['slang'][{index}] must be a str")
+                    if not argument or "\0" in argument:
+                        raise ValueError(
+                            f"SystemVerilogConfig.frontend_options['slang'][{index}] "
+                            "must be nonempty and contain no NUL bytes")
 
         self._validate_string_list("defines", allow_whitespace=False)
         self._validate_string_list("suppress_warnings", allow_whitespace=False)
@@ -2480,8 +2505,9 @@ def load_system_verilog(
 
     :param files: a list of SystemVerilog files to load or a single file.
     :param config: the configuration to use when loading the files. Set
-        single_unit=True to share macros across files in source order,
-        including files supplied through flist (default: False).
+        frontend_options={"slang": ["--single-unit"]} to share macros across
+        files in source order, including files supplied through flist.
+        By default each file is a separate compilation unit.
     :param library: destination root library name (default "DESIGN").
     :return: the top Instance.
     :rtype: Instance
@@ -2524,15 +2550,13 @@ def load_system_verilog(
 
     effective_flist = config.flist
     temp_flist_path = None
-    if config.top is not None or config.single_unit:
+    if config.top is not None:
         # Forward frontend options through a temporary slang command file.
         with tempfile.NamedTemporaryFile(
                 "w", suffix=".f", delete=False, encoding="utf-8") as options_flist:
             temp_flist_path = options_flist.name
             if config.top is not None:
                 options_flist.write(f"--top {config.top}\n")
-            if config.single_unit:
-                options_flist.write("--single-unit\n")
             if config.flist:
                 quoted_flist = os.fspath(config.flist).replace(
                     "\\", "\\\\").replace("\"", "\\\"")
@@ -2560,7 +2584,7 @@ def load_system_verilog(
             blackbox_multi_writer_memories=config.blackbox_multi_writer_memories,
             library=library,
             suppress_warnings=config.suppress_warnings,
-            default_timescale=config.default_timescale,
+            frontend_options=config.frontend_options,
             keep_ast_link=config.keep_ast_link,
         )
     finally:

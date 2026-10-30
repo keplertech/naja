@@ -6,6 +6,33 @@
 This document tracks deliberate coverage exclusions and targeted fallback tests
 for `src/nl/formats/systemverilog/frontend/SNLSVConstructor.cpp`.
 
+## Inside, power, and function argument coverage
+
+These line numbers refer to the source before this coverage change.
+
+| Original lines | Coverage or exclusion |
+| --- | --- |
+| 15342 | `insideMultipleItemsBitVectorCoverage`: a multi-item `inside` expression in a concatenation exercises the bit-vector OR chain; all 16 input values and every output bit are checked. |
+| 17234, 17253, 17263 | Excluded: overflow reduction and mux construction use resolved nonnull bits, equal positive vector widths, and canonical DB0 primitives. Failure requires an internal primitive-construction failure. |
+| 17248–17249 | `powerOfTwoConstantStagesCoverage`: a runtime exponent with a constant low one bit exercises the direct shift stage, checking every exponent value and result bit. |
+| 28949 | `outputFunctionNonIntegralInputWidthCoverage`: a real input formal has no representable bit width; the call must diagnose materialization failure and throw. |
+| 29363–29364 | Excluded: output formal nets have already been created from validated positive-width types, so collecting their bits cannot yield an empty vector. |
+| 29923–29924 | `automaticFunctionNonIntegralArrayDefaultCoverage`: a branch-local real array reaches the automatic default-initialization rejection. The outer function expression must diagnose an unsupported RHS and throw; its internal initialization failure reason is not propagated. |
+
+## Automatic function replay regressions
+
+- `signedPowerOfTwoDivisionUsesSignedPrimitive` checks signed truncation and
+  initializer widths against independent arithmetic expectations.
+- `branchLocalArrayReturnsPreserveScopesAndNestedCalls` checks branch-local
+  storage with different shapes, nested lookup calls and block re-entry.
+- `functionImplicitReturnIncompleteBitsSupported` simulates partial automatic
+  results with Icarus, preserving X in unwritten four-state bits.
+- `outputFunctionInputConversionsAndCopyoutOrder` and
+  `outputFunctionAutomaticLocalTargetsSupported` check input conversions,
+  multiple outputs and subsequent caller-local reads.
+- `outputFunctionCopyoutRejectsExternalWrites` ensures an unused explicit
+  copy-out cannot hide an unsupported write to a module output.
+
 ## Targeted Fallback Coverage
 
 The test suite includes dedicated benchmarks that exercise non-happy paths that
@@ -275,3 +302,12 @@ Nested packed assignment requests (source line numbers before this change):
 | 27073–27074 | `nestedPackedWriteFailuresCoverage`, outer and inner index variants: unsupported runtime system calls must report the nested packed index resolution failure and throw. |
 | 27083–27085, 27089–27090, 27103–27106 | `nestedPackedMemberWritesPreserveOtherFields`: packed struct fields before, between, and after dynamic element selections. Four-state simulation checks untouched fields, invalid and unknown indices, reset, enable, and NBA write priority against an independent flat reference. |
 | 27086–27087 | Excluded: range steps have already returned; the remaining static steps are packed struct fields whose positive widths and in-bounds offsets Slang validates against their containing packed type. |
+
+Return replay coverage (source lines before these additions):
+
+- 13181–13182: `parseEarlyReturnConstantCaseReplayCoverage` exercises an
+  all-wildcard `casez` item and checks the selected result for all 256 inputs.
+- 13201: `rejectEarlyReturnStatementReplayCoverage` checks rejection of an
+  unsupported variable exponent after a conditional early return.
+- 13205: excluded defensive exhaustion guard; the caller requires a terminal
+  explicit return, which remains in every forked continuation.

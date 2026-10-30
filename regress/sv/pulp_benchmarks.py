@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load/dump the pinned, prepared PULP EDA benchmark release in isolated processes."""
+"""Prepare a pinned PULP Git revision and load/dump its RTL in isolated processes."""
 
 import argparse
 import hashlib
@@ -16,26 +16,93 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "0.1.0"
-PACKAGE = f"pulp-benchmarks-v{VERSION}"
-URL = f"https://github.com/pulp-platform/eda-benchmarks/releases/download/v{VERSION}/{PACKAGE}.tar.gz"
-SHA256 = "a27eaca9359cd2c0b646892325355e102ae563bd8f772c77f18697ff8c4ad603"
+REPOSITORY = "https://github.com/pulp-platform/eda-benchmarks.git"
+# Update this single pin when advancing the local runner and nightly inputs.
+REVISION = "b4bd97823aa93737dda0bf1f3b2bd5c6dcb47ecc"
+PACKAGE = f"pulp-benchmarks-{REVISION}"
+MANIFEST = "naja-pulp-source.json"
+DEFAULT_CACHE = ROOT / "build/pulp-benchmark-sources"
 # Keep this small enough for pull requests; the complete survey is opt-in.
 SMOKE = ("cv32e40p.default", "cvfpu.fp32_fma", "ibex.minimal", "spi_host.default",
          "nvdla.top", "snitch_cluster.minimal")
-# Some release sources mix explicit time scales with modules that omit them.
-DEFAULT_TIMESCALES = {"nvdla.top": "1ns/1ps"}
+# Case-specific Slang compatibility settings for the pinned source suite.
+SLANG_ARGS = {
+    "nvdla.top": ["--timescale=1ns/1ps"],
+    "cheshire.default": ["--allow-use-before-declare"],
+    "redmule.default": ["--relax-enum-conversions"],
+}
+
+
+def package_hashes(package):
+    hashes = {}
+    for path in sorted(package.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Prepared package must be self-contained: {path}")
+        if path.is_file() and path != package / MANIFEST:
+            with path.open("rb") as source:
+                hashes[path.relative_to(package).as_posix()] = hashlib.file_digest(source, "sha256").hexdigest()
+    return hashes
+
+
+def write_manifest(package):
+    manifest = dict(repository=REPOSITORY, revision=REVISION, simulation=False,
+                    files=package_hashes(package))
+    manifest["SPDX-FileCopyrightText"] = "2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>"
+    manifest["SPDX-License-Identifier"] = "Apache-2.0"
+    (package / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+
+
+def validate_package(package):
+    if not (package / MANIFEST).is_file():
+        raise ValueError(f"Missing pinned-source manifest for {REVISION}: {package}")
+    manifest = json.loads((package / MANIFEST).read_text())
+    if (manifest.get("repository") != REPOSITORY or manifest.get("revision") != REVISION
+            or manifest.get("simulation") is not False):
+        raise ValueError(f"Prepared package does not match pinned RTL revision {REVISION}")
+    if manifest.get("files") != package_hashes(package):
+        raise ValueError(f"Prepared package SHA-256 manifest mismatch: {package}")
+    targets(package)
+    return package
+
+
+def prepare(cache=DEFAULT_CACHE):
+    cache = cache.resolve()
+    package = cache / PACKAGE
+    if package.exists():
+        return validate_package(package)
+    if sys.platform != "linux":
+        raise RuntimeError("Preparing PULP sources requires Linux and upstream build prerequisites; "
+                           "use --archive or --package with a package prepared from the pinned revision")
+    cache.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pulp-source-", dir=cache) as temporary:
+        checkout = Path(temporary) / "checkout"
+        subprocess.run(["git", "init", str(checkout)], check=True)
+        subprocess.run(["git", "-C", str(checkout), "fetch", "--depth", "1", REPOSITORY, REVISION], check=True)
+        subprocess.run(["git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"], check=True)
+        actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+        if actual != REVISION:
+            raise ValueError(f"Benchmark checkout mismatch: expected {REVISION}, got {actual}")
+        subprocess.run(["bash", "setup.sh"], cwd=checkout, check=True,
+                       env=dict(os.environ, SIMULATION="0", KEEP_BUILD_TOOLS="0",
+                                PYTHON=sys.executable, JOBS=str(os.cpu_count() or 1)))
+        prepared = checkout / "benchmarks"
+        write_manifest(prepared)
+        validate_package(prepared)
+        try:
+            prepared.rename(package)
+        except OSError:
+            if not package.exists():
+                raise
+            validate_package(package)
+    return package
 
 
 def unpack(archive, destination):
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
-        raise ValueError(f"SHA-256 mismatch for {archive}; expected {SHA256}")
     with tarfile.open(archive) as source:
         source.extractall(destination, filter="data")
-    return destination / PACKAGE
+    return validate_package(destination / PACKAGE)
 
 
 def targets(package):
@@ -54,7 +121,7 @@ def validate_diagnostics(diagnostics):
         raise RuntimeError("Incomplete or unsupported lowering; see diagnostics.log")
 
 
-def worker(top_name, artifacts, dump_netlist, default_timescale=None):
+def worker(top_name, artifacts, dump_netlist, frontend_options=None):
     from najaeda import netlist
 
     start = time.monotonic()
@@ -62,7 +129,7 @@ def worker(top_name, artifacts, dump_netlist, default_timescale=None):
         top=top_name, flist="filelist.f",
         diagnostics_report_path=str(artifacts / "diagnostics.log"),
         blackbox_unknown_modules=False,
-        default_timescale=default_timescale,
+        frontend_options=frontend_options,
     ))
     loaded = time.monotonic()
     if top.get_name() != top_name or not top.count_terms():
@@ -72,6 +139,9 @@ def worker(top_name, artifacts, dump_netlist, default_timescale=None):
                  top_nets=top.count_nets(), top_instances=top.count_child_instances(),
                  top_bit_terms=top.count_bit_terms(), top_bit_nets=top.count_bit_nets(),
                  load_seconds=loaded - start)
+    efficiency = top.get_lowering_efficiency_report()
+    (artifacts / "lowering-efficiency.json").write_text(json.dumps(efficiency, indent=2) + "\n")
+    stats["expanded_mux_bits"] = efficiency["expanded_mux_bits"]
     stats["stats_seconds"] = time.monotonic() - loaded
     (artifacts / "design-stats.json").write_text(json.dumps(stats, indent=2) + "\n")
     if dump_netlist:
@@ -102,7 +172,7 @@ def run_target(package, name, top, artifacts, najaeda_path, timeout, lint_runner
     artifacts.mkdir(parents=True, exist_ok=True)
     # Never let stale success products from an earlier run satisfy this run.
     for filename in ("design-stats.json", "netlist.v", "najaeda_primitives.v", "naja_primitives.v",
-                     "diagnostics.log", "lint.log", "summary.json"):
+                     "diagnostics.log", "lint.log", "summary.json", "lowering-efficiency.json"):
         (artifacts / filename).unlink(missing_ok=True)
     design, variant = name.split(".")
     source_dir = package / design / "variants" / variant
@@ -110,14 +180,14 @@ def run_target(package, name, top, artifacts, najaeda_path, timeout, lint_runner
     (artifacts / "filelist.f").write_text(source_list)
     command = [sys.executable, str(Path(__file__).resolve()), "--worker", top,
                "--output", str(artifacts)]
-    default_timescale = DEFAULT_TIMESCALES.get(name)
-    if default_timescale is not None:
-        command.extend(["--default-timescale", default_timescale])
+    slang_args = SLANG_ARGS.get(name, [])
+    for arg in slang_args:
+        command.append("--slang-arg=" + arg)
     if not dump_netlist:
         command.append("--elaboration-only")
     env = dict(os.environ, PYTHONPATH=str(najaeda_path))
     record = dict(target=name, top=top, command=command, cwd=str(source_dir),
-                  default_timescale=default_timescale,
+                  frontend_options={"slang": slang_args},
                   source_count=sum(line.strip().endswith((".v", ".sv"))
                                    for line in source_list.splitlines()))
     start = time.monotonic()
@@ -186,38 +256,44 @@ def run_target(package, name, top, artifacts, najaeda_path, timeout, lint_runner
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive", type=Path, help="Use a local release archive (checksum still enforced)")
+    inputs = parser.add_mutually_exclusive_group()
+    inputs.add_argument("--archive", type=Path, help="Use a prepared archive (pinned source manifest verified)")
+    inputs.add_argument("--package", type=Path, help="Use a prepared directory (pinned source manifest verified)")
+    parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE,
+                        help="Cache prepared packages by pinned Git revision")
+    parser.add_argument("--prepare-only", action="store_true", help="Prepare/validate inputs without loading Naja")
     parser.add_argument("--output", type=Path, default=ROOT / "build/pulp-benchmarks")
     parser.add_argument("--najaeda-path", type=Path, default=ROOT / "build/test/najaeda")
-    parser.add_argument("--case", action="append", help="Release target, repeatable; defaults to smoke selection")
-    parser.add_argument("--all", action="store_true", help="Survey every release target; failures remain failures")
+    parser.add_argument("--case", action="append", help="Benchmark target, repeatable; defaults to smoke selection")
+    parser.add_argument("--all", action="store_true", help="Survey every benchmark target; failures remain failures")
     parser.add_argument("--timeout", type=int, default=600, help="Wall-clock limit per load/dump or lint stage in seconds (default: 600)")
     parser.add_argument("--lint-runner", choices=("local", "docker"),
                         help="Also lint each complete dump with Naja primitive models")
     parser.add_argument("--elaboration-only", action="store_true",
                         help="Load and validate the design without structural Verilog dumping")
     parser.add_argument("--worker", help=argparse.SUPPRESS)
-    parser.add_argument("--default-timescale", help=argparse.SUPPRESS)
+    parser.add_argument("--slang-arg", action="append", default=[], help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.worker:
-        worker(args.worker, args.output, not args.elaboration_only, args.default_timescale)
+        worker(args.worker, args.output, not args.elaboration_only, {"slang": args.slang_arg})
         return 0
     if args.timeout <= 0 or (args.all and args.case) or (args.elaboration_only and args.lint_runner):
         parser.error("--timeout must be positive; --all and --case are mutually exclusive")
     args.output.mkdir(parents=True, exist_ok=True)
-    archive = args.archive or args.output / f"{PACKAGE}.tar.gz"
-    if not archive.exists() and args.archive is None:
-        with urllib.request.urlopen(URL, timeout=60) as response:
-            archive.write_bytes(response.read())
     with tempfile.TemporaryDirectory(prefix="pulp-rtl-", dir=args.output) as tmp:
-        package = unpack(archive, Path(tmp))
+        package = (unpack(args.archive, Path(tmp)) if args.archive else
+                   validate_package(args.package.resolve()) if args.package else prepare(args.cache))
+        if args.prepare_only:
+            print(package)
+            return 0
         available = targets(package)
         selected = list(available) if args.all else list(dict.fromkeys(args.case or SMOKE))
         unknown = set(selected) - available.keys()
         if unknown:
             parser.error(f"Unknown cases: {sorted(unknown)}; available: {list(available)}")
-        summary = dict(release=VERSION, url=URL, sha256=SHA256,
+        summary = dict(release=REVISION, revision=REVISION, url=REPOSITORY,
+                       manifest_sha256=hashlib.sha256((package / MANIFEST).read_bytes()).hexdigest(),
                        selected=selected, inventory=list(available),
                        mode=("elaboration" if args.elaboration_only else
                              "load + dump + lint" if args.lint_runner else "load + dump"),

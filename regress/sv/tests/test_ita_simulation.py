@@ -82,6 +82,18 @@ class ITASimulationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Checksum mismatch'):
                 ita.fetch('unused', path, sha)
 
+    def test_upstream_read_delay_is_replaced_by_explicit_setting(self):
+        source = ("module ita_register_file_1w_multi_port_read_we(output logic [8191:0] ReadData);\n"
+                  "assign\n`ifdef VERILATOR\n  #1ps\n`endif\n ReadData = storage;\nendmodule")
+        for delay in (0, 1, 3):
+            with self.subTest(delay=delay):
+                result = ita.model_weight_read_delay(source, delay)
+                self.assertNotIn("`ifdef VERILATOR", result)
+                self.assertNotIn("#1ps", result)
+                self.assertEqual(int(delay != 0), result.count("assign #("))
+                if delay:
+                    self.assertIn(f"assign #({delay}ps) ReadData = naja_sim_read_data;", result)
+
     def test_adapter_preserves_golden_checker_and_checks_scan_results(self):
         source = '\n'.join(['ret_code = $fscanf(fd, "%d", inp[i]);'] * 10)
         source += ('\n"../../simvectors/data_S"\n'

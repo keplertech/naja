@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -1144,10 +1146,10 @@ TEST_F(SNLSVConstructorTestSimple, defaultTimeScale) {
   options.diagnosticsReportPath.reset();
   EXPECT_THROW(constructor.construct(sourcePath, options), SNLSVSyntaxError);
   for (const auto& value : {"", "invalid", "1ns/1us"}) {
-    options.defaultTimeScale = value;
+    options.frontendOptions = {{"slang", {"--timescale=" + std::string(value)}}};
     EXPECT_THROW(constructor.construct(sourcePath, options), SNLSVSyntaxError);
   }
-  options.defaultTimeScale = "1ps/1ps";
+  options.frontendOptions = {{"slang", {"--timescale=1ps/1ps"}}};
   ASSERT_NO_THROW(constructor.construct(sourcePath, options));
   library_->getDB()->mergeAssigns();
   auto top = library_->getSNLDesign(NLName("top"));
@@ -1156,6 +1158,120 @@ TEST_F(SNLSVConstructorTestSimple, defaultTimeScale) {
   ASSERT_NE(leaf, nullptr);
   EXPECT_TRUE(top->getScalarTerm(NLName("a"))->getNet()->isConstant1());
   EXPECT_TRUE(leaf->getScalarTerm(NLName("y"))->getNet()->isConstant1());
+}
+
+TEST_F(SNLSVConstructorTestSimple, allowUseBeforeDeclare) {
+  const auto outPath = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) /
+    "allow_use_before_declare";
+  std::filesystem::create_directories(outPath);
+  const auto sourcePath = outPath / "source.sv";
+  std::ofstream source(sourcePath);
+  source << "module top(input logic d, output logic q);\n"
+         << "  typedef struct packed { logic flag; } item_t;\n"
+         << "  assign q = state.flag;\n"
+         << "  item_t state;\n"
+         << "  assign state.flag = d;\nendmodule\n";
+  source.close();
+  const auto flistPath = outPath / "sources.f";
+  std::ofstream flist(flistPath);
+  flist << "\"" << sourcePath.string() << "\"\n";
+  flist.close();
+  for (bool useFlist : {false, true}) {
+    auto library = NLLibrary::create(library_->getDB(),
+      NLName(useFlist ? "FLIST" : "DIRECT"));
+    SNLSVConstructor constructor(library);
+    SNLSVConstructor::ConstructOptions options;
+    options.diagnosticsReportPath.reset();
+    EXPECT_TRUE(options.frontendOptions.empty());
+    SNLSVConstructor::Paths paths = useFlist ?
+      SNLSVConstructor::Paths {"-f", flistPath} :
+      SNLSVConstructor::Paths {sourcePath};
+    EXPECT_THROW(constructor.construct(paths, options), SNLSVSyntaxError);
+    options.frontendOptions = {{"slang", {"--allow-use-before-declare"}}};
+    ASSERT_NO_THROW(constructor.construct(paths, options));
+    library_->getDB()->mergeAssigns();
+    auto top = library->getSNLDesign(NLName("top"));
+    ASSERT_NE(top, nullptr);
+    auto inputNet = top->getScalarTerm(NLName("d"))->getNet();
+    ASSERT_NE(inputNet, nullptr);
+    EXPECT_EQ(inputNet, top->getScalarTerm(NLName("q"))->getNet());
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, frontendOptions) {
+  const auto outPath = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) / "frontend options";
+  std::filesystem::create_directories(outPath);
+  std::ofstream header(outPath / "value.svh");
+  header << "`define RESULT 1'b1\n";
+  header.close();
+  const auto sourcePath = outPath / "source.sv";
+  std::ofstream source(sourcePath);
+  source << "`include \"value.svh\"\n"
+         << "module top(output q); assign q=`RESULT; endmodule\n"
+         << "module other(output q); assign q=1'b0; endmodule\n";
+  source.close();
+  SNLSVConstructor constructor(library_);
+  SNLSVConstructor::ConstructOptions options;
+  options.diagnosticsReportPath.reset();
+  for (const auto& invalid : std::vector<std::map<std::string, std::vector<std::string>>> {
+         {{"other", {}}}, {{"slang", {""}}}, {{"slang", {std::string("bad\0token", 9)}}},
+         {{"slang", {"--not-a-real-frontend-option"}}}}) {
+    options.frontendOptions = invalid;
+    EXPECT_THROW(constructor.construct(sourcePath, options), SNLSVSyntaxError);
+  }
+  options.frontendOptions = {{"slang", {"--top", "top", "-I", outPath.string()}}};
+  ASSERT_NO_THROW(constructor.construct(sourcePath, options));
+  library_->getDB()->mergeAssigns();
+  auto top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  ASSERT_NE(top->getScalarTerm(NLName("q"))->getNet(), nullptr);
+  EXPECT_TRUE(top->getScalarTerm(NLName("q"))->getNet()->isConstant1());
+  EXPECT_EQ(library_->getSNLDesign(NLName("other")), nullptr);
+}
+
+TEST_F(SNLSVConstructorTestSimple, relaxEnumConversions) {
+  const auto outPath = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) /
+    "relax_enum_conversions";
+  std::filesystem::create_directories(outPath);
+  const auto sourcePath = outPath / "source.sv";
+  std::ofstream source(sourcePath);
+  source << "package types; typedef enum logic [2:0] { A=0, B=1 } kind_t; endpackage\n"
+         << "module leaf(input types::kind_t d, output logic [2:0] q); assign q=d; endmodule\n"
+         << "module top(output [2:0] a, b, c);\n"
+         << "  leaf x(32'd13, a); leaf y(2'b10, b); leaf z(-1, c);\nendmodule\n";
+  source.close();
+  const auto flistPath = outPath / "sources.f";
+  std::ofstream flist(flistPath);
+  flist << "\"" << sourcePath.string() << "\"\n";
+  flist.close();
+  for (bool useFlist : {false, true}) {
+    auto library = NLLibrary::create(library_->getDB(), NLName(useFlist ? "ENUM_FLIST" : "ENUM_DIRECT"));
+    SNLSVConstructor constructor(library);
+    SNLSVConstructor::ConstructOptions options;
+    options.diagnosticsReportPath.reset();
+    EXPECT_TRUE(options.frontendOptions.empty());
+    SNLSVConstructor::Paths paths = useFlist ?
+      SNLSVConstructor::Paths {"-f", flistPath} : SNLSVConstructor::Paths {sourcePath};
+    EXPECT_THROW(constructor.construct(paths, options), SNLSVSyntaxError);
+    options.frontendOptions = {{"slang", {"--relax-enum-conversions"}}};
+    ASSERT_NO_THROW(constructor.construct(paths, options));
+    library_->getDB()->mergeAssigns();
+    auto top = library->getSNLDesign(NLName("top"));
+    ASSERT_NE(top, nullptr);
+    for (const auto& [name, value] : std::vector<std::pair<std::string, unsigned>> {
+           {"x", 5}, {"y", 2}, {"z", 7}}) {
+      auto instance = top->getInstance(NLName(name));
+      ASSERT_NE(instance, nullptr);
+      auto input = instance->getModel()->getBusTerm(NLName("d"));
+      ASSERT_NE(input, nullptr);
+      for (unsigned bit = 0; bit < 3; ++bit) {
+        auto net = instance->getInstTerm(input->getBit(bit))->getNet();
+        ASSERT_NE(net, nullptr);
+        EXPECT_EQ(bool(value & (1u << bit)), net->isConstant1());
+        EXPECT_EQ(!(value & (1u << bit)), net->isConstant0());
+      }
+    }
+  }
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSimpleModule) {
@@ -3313,7 +3429,7 @@ TEST_F(
   input  logic [5:0] op,
   output logic       y
 );
-  function automatic logic is_amo(input logic [5:0] op_i);
+  function static logic is_amo(input logic [5:0] op_i);
     case (op_i) inside
       [6'd4 : 6'd17]: is_amo = 1'b1;
     endcase
@@ -6656,43 +6772,6 @@ endmodule
   EXPECT_EQ(1u, countAssignXNets(top));
 }
 
-TEST_F(
-  SNLSVConstructorTestSimple,
-  parseContinuousAssignFunctionCaseInsideNonConstantItemReturnUnsupported) {
-  SNLSVConstructor constructor(library_);
-  std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
-  outPath =
-    outPath / "continuous_assign_function_case_inside_non_constant_item_return_unsupported";
-  if (std::filesystem::exists(outPath)) {
-    std::filesystem::remove_all(outPath);
-  }
-  std::filesystem::create_directory(outPath);
-
-  const auto svPath =
-    outPath / "continuous_assign_function_case_inside_non_constant_item_return_unsupported.sv";
-  std::ofstream svFile(svPath);
-  ASSERT_TRUE(svFile.good());
-  svFile
-    << R"(module continuous_assign_function_case_inside_non_constant_item_return_unsupported(
-  input  logic [5:0] op,
-  output logic       y
-);
-  function automatic logic is_amo(input logic [5:0] op_i);
-    case (op_i) inside
-      [6'd4 : 6'd17]: return op_i[0];
-      default:        return 1'b0;
-    endcase
-  endfunction
-  assign y = is_amo(op);
-endmodule
-)";
-  svFile.close();
-
-  expectUnsupportedConstruct(
-    constructor,
-    svPath,
-    {"Unsupported RHS in continuous assign"});
-}
 
 TEST_F(
   SNLSVConstructorTestSimple,
@@ -6804,7 +6883,8 @@ static bool evaluateFunctionResultBit(
     if (auto* inputTerm = top->getTerm(NLName("a"))) {
       for (auto* bit : inputTerm->getBits()) {
         if (bit->getNet() == net) {
-          return (input >> bit->getBit()) & 1u;
+          return bit->getBit() < std::numeric_limits<unsigned>::digits &&
+            ((input >> bit->getBit()) & 1u);
         }
       }
     }
@@ -6943,12 +7023,26 @@ static bool evaluateFunctionResultBit(
           value |= uint64_t(read(bit)) << bit->getBit();
         return value;
       };
+      const auto signature = NLDB0::getDivModSignature(instance);
+      if (signature.width > 64) { ADD_FAILURE() << "test divider exceeds evaluator width"; return false; }
       const auto dividend = readBus(NLDB0::getDivModDividend(model));
       const auto divisor = readBus(NLDB0::getDivModDivisor(model));
       if (!divisor) { ADD_FAILURE() << "Zero divisor in test"; return false; }
       const auto* output = driver->getBitTerm();
       const bool quotient = output->getID() == NLDB0::getDivModQuotient(model)->getID();
-      const uint64_t value = quotient ? dividend / divisor : dividend % divisor;
+      uint64_t value;
+      if (signature.isSigned) {
+        const auto signedValue = [&](uint64_t word) {
+          if (signature.width < 64 && ((word >> (signature.width-1)) & 1))
+            word |= ~uint64_t{0} << signature.width;
+          return std::bit_cast<int64_t>(word);
+        };
+        const auto a = signedValue(dividend), b = signedValue(divisor);
+        value = a == std::numeric_limits<int64_t>::min() && b == -1 ?
+          (quotient ? dividend : 0) : uint64_t(quotient ? a / b : a % b);
+      } else {
+        value = quotient ? dividend / divisor : dividend % divisor;
+      }
       return (value >> output->getBit()) & 1u;
     }
     if (NLDB0::isFA(model)) {
@@ -6992,6 +7086,49 @@ static bool evaluateFunctionResultBit(
   }();
   (*memo)[net] = result;
   return result;
+}
+
+TEST_F(
+  SNLSVConstructorTestSimple,
+  parseContinuousAssignFunctionCaseInsideNonConstantItemReturnSupported) {
+  SNLSVConstructor constructor(library_);
+  std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
+  outPath =
+    outPath / "continuous_assign_function_case_inside_non_constant_item_return_supported";
+  if (std::filesystem::exists(outPath)) {
+    std::filesystem::remove_all(outPath);
+  }
+  std::filesystem::create_directory(outPath);
+
+  const auto svPath =
+    outPath / "continuous_assign_function_case_inside_non_constant_item_return_supported.sv";
+  std::ofstream svFile(svPath);
+  ASSERT_TRUE(svFile.good());
+  svFile
+    << R"(module continuous_assign_function_case_inside_non_constant_item_return_supported(
+  input  logic [5:0] a,
+  output logic       y
+);
+  function automatic logic is_amo(input logic [5:0] op_i);
+    case (op_i) inside
+      [6'd4 : 6'd17]: return op_i[0];
+      default:        return 1'b0;
+    endcase
+  endfunction
+  assign y = is_amo(a);
+endmodule
+)";
+  svFile.close();
+
+  ASSERT_NO_THROW(constructor.construct(svPath));
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName(
+    "continuous_assign_function_case_inside_non_constant_item_return_supported"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 64; ++input) {
+    EXPECT_EQ(input >= 4 && input <= 17 && (input & 1),
+      evaluateFunctionResultBit(top, top->getScalarTerm(NLName("y"))->getNet(), input));
+  }
 }
 
 TEST_F(SNLSVConstructorTestSimple, compactMultiplyAndShiftsPreserveSizing) {
@@ -7802,6 +7939,146 @@ endmodule
   }
 }
 
+TEST_F(SNLSVConstructorTestSimple, signedPowerOfTwoDivisionUsesSignedPrimitive) {
+  const auto path = writeSVTestFile("signed_power_division", R"(module top(
+    input logic [7:0] a, output logic [3:0] q,r,u,narrowed);
+    assign q=$signed(a[3:0])/4'sd2;
+    assign r=$signed(a[3:0])%4'sd2;
+    assign u=a[3:0]/4'd2;
+    always_comb begin
+      automatic logic[3:0] value=(1 << (5-unsigned'(a[2:0])))/2;
+      narrowed=value;
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(2u, countDivModInstances(top, 4, true));
+  EXPECT_EQ(0u, countDivModInstances(top, 4, false));
+  EXPECT_EQ(1u, countDivModInstances(top, 32, true));
+  for (unsigned input = 0; input < 256; ++input) {
+    const int value = input & 8 ? int(input & 15)-16 : int(input & 15);
+    const unsigned exponent = input & 7;
+    const unsigned narrowed = exponent < 6 ? ((1u << (5-exponent))/2) & 15 : 0;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& result : {std::pair{"q", unsigned(value/2)&15},
+                              std::pair{"r", unsigned(value%2)&15},
+                              std::pair{"u", (input&15)/2}, std::pair{"narrowed", narrowed}}) {
+      for (auto* bit : top->getTerm(NLName(result.first))->getBits()) {
+        EXPECT_EQ(bool((result.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << result.first << ":" << input;
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, branchLocalArrayReturnsPreserveScopesAndNestedCalls) {
+  const auto path = writeSVTestFile("branch_local_arrays", R"(module top(
+    input logic [4:0] a, output logic [3:0] scoped, output logic [1:0] forward_value,inverse,fresh);
+    function automatic logic [3:0] lookup(input logic [2:0] index,input int count);
+      case(count)
+        3:begin automatic logic[2:0] words[0:2];
+          words[0]=3; words[1]=5; words[2]=1; return words[index%3]; end
+        5:begin automatic logic[3:0] words[4:0];
+          for(int i=0;i<5;i++)words[i]=i+1; return words[index%5]; end
+        default:return 0;
+      endcase
+    endfunction
+    function automatic logic[1:0] map(input logic[1:0] index,input logic mode);
+      case(mode)
+        0:begin automatic logic[1:0] words[0:3];
+          words[0]=0;words[1]=1;words[2]=2;words[3]=3;return words[index];end
+        default:begin automatic logic[1:0] words[3:0];
+          words[0]=0;words[1]=2;words[2]=1;words[3]=3;return words[index];end
+      endcase
+    endfunction
+    function automatic logic[1:0] reverse_map(input logic[1:0] index,input logic mode);
+      logic[1:0] words[3:0];
+      for(int i=0;i<4;i++)words[map(2'(i),mode)]=2'(i);
+      return words[index];
+    endfunction
+    function automatic logic[1:0] new_storage(input logic[1:0] data);
+      logic[1:0] result;
+      for(int i=0;i<2;i++)begin
+        automatic bit[1:0] slots[0:1];
+        if(i==0)slots[1]=3;else slots[0]=data;
+        result=slots[1];
+      end
+      return result;
+    endfunction
+    assign scoped=lookup(a[2:0],a[4]?5:3);
+    assign forward_value=map(a[1:0],a[3]);
+    assign inverse=reverse_map(a[1:0],a[3]);
+    assign fresh=new_storage(a[1:0]);
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 32; ++input) {
+    const unsigned first[] = {3,5,1};
+    const unsigned lookup = input&16 ? (input&7)%5+1 : first[(input&7)%3];
+    const unsigned mapped = input&8 ? ((input&1)<<1)|((input>>1)&1) : input&3;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& result : {std::pair{"scoped",lookup}, std::pair{"forward_value",mapped},
+                              std::pair{"inverse",mapped},std::pair{"fresh",0u}}) {
+      for(auto* bit:top->getTerm(NLName(result.first))->getBits()) {
+        EXPECT_EQ(bool((result.second>>bit->getBit())&1),
+          evaluateFunctionResultBit(top,bit->getNet(),input,0,&memo))<<result.first<<":"<<input;
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, unrolledFunctionCountersPreserveValues) {
+  const auto path = writeSVTestFile("inlined_loop_counter", R"(module top(
+    input logic [13:0] a, output logic [11:0] y);
+    function automatic logic [11:0] f(input logic [11:0] data, input logic [1:0] mode);
+      logic [11:0] result;
+      case(mode)
+        0: for(int index=0;index<3;index++) result[index*4+:4]=data[3:0];
+        1: for(int index=0;index<2;index++) result[index*6+:6]=data[5:0];
+        default: result=data;
+      endcase
+      return result;
+    endfunction
+    assign y=f(a[11:0],a[13:12]);
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 16384; ++input) {
+    const unsigned data = input & 4095, mode = input >> 12;
+    const unsigned expected = mode == 0 ? (data & 15) * 273 :
+      mode == 1 ? (data & 63) * 65 : data;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1),
+        evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << input;
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, partialUndrivenInlinedLocalsStillWarnForSurvivingReads) {
+  const auto path = writeSVTestFile("partial_undriven_local", R"(module top(
+    input logic [1:0] a, output logic [3:0] y);
+    function automatic logic [3:0] f(input logic [1:0] data);
+      logic [3:0] value;
+      return {value[1:0],data};
+    endfunction
+    assign y=f(a);
+  endmodule)");
+  const auto reportPath = path.parent_path() / "diagnostics.txt";
+  SNLSVConstructor::ConstructOptions options;
+  options.diagnosticsReportPath = reportPath;
+  SNLSVConstructor(library_).construct(path, options);
+  const auto report = readTextFile(reportPath);
+  EXPECT_EQ(2u, countSubstring(report, "code=\"undriven_inlined_local\""));
+  EXPECT_NE(std::string::npos, report.find("partial_undriven_local.sv\" line=4"));
+}
+
 TEST_F(SNLSVConstructorTestSimple, undrivenInlinedLocalsWarnWithSourceLocations) {
   const auto path = writeSVTestFile("undriven_local", R"(module undriven_local(
   input logic [2:0] a, output logic [2:0] y, z);
@@ -8027,6 +8304,173 @@ TEST_F(SNLSVConstructorTestSimple, aesCanrightSizeAndExhaustiveTruthTable) {
       }
     }
   }
+}
+
+TEST_F(SNLSVConstructorTestSimple, functionFixedUnpackedArrayReturns) {
+  const auto path = writeSVTestFile("fixed_array_returns", R"(module top(
+    input logic [3:0] a,
+    output wire [23:0] explicit_result, implicit_result, comb_result, constant_result,
+    output wire [7:0] cube_result, output wire unknown_x, unknown_z,
+    output wire [3:0] partial_written, output wire partial_x, partial_zero);
+    typedef logic [3:0] table_t [2:3][5:3];
+    typedef logic [3:0] cube_t [1:0][2:3][4:3];
+    function automatic logic [3:0] increment(input logic [3:0] v);
+      return v + 1;
+    endfunction
+    function automatic int row_limit();
+      int n=2;
+      while (n<4) n++;
+      return n;
+    endfunction
+    function automatic table_t make_table(input logic [3:0] v);
+      table_t result;
+      for (int r=2; r<row_limit(); r++)
+        for (int c=5; c>=3; c--) result[r][c] = increment(v) + 3*(r-2) + 5-c;
+      return result;
+    endfunction
+    function automatic table_t named_table(input logic [3:0] v);
+      for (int r=2; r<row_limit(); r++)
+        for (int c=5; c>=3; c--) named_table[r][c] = v + 1 + 3*(r-2) + 5-c;
+    endfunction
+    function automatic cube_t make_cube();
+      cube_t result;
+      int count = 0;
+      while (count < 2) begin
+        for (int j=2; j<=3; j++)
+          for (int k=4; k>=3; k--) result[count][j][k] = 3*count + 2*j + k;
+        count++;
+      end
+      return result;
+    endfunction
+    function automatic table_t unknown_table(input logic unused);
+      table_t result;
+      for (int r=2; r<=3; r++)
+        for (int c=5; c>=3; c--) result[r][c] = 4'b10xz;
+      return result;
+    endfunction
+    function automatic table_t partial_table(input logic [3:0] v);
+      table_t result;
+      result[2][5] = v;
+      return result;
+    endfunction
+    typedef bit [3:0] bit_table_t [2:3][5:3];
+    function automatic bit_table_t partial_bits(input bit [3:0] v);
+      partial_bits[2][5] = v;
+    endfunction
+    table_t first, second, third, constants, unknowns;
+    table_t partial;
+    bit_table_t bit_values;
+    cube_t cube;
+    assign first = make_table(a);
+    assign second = named_table(a);
+    always_comb third = make_table(a);
+    assign constants = make_table(4'd6);
+    assign cube = make_cube();
+    assign unknowns = unknown_table(1'b0);
+    assign partial = partial_table(a);
+    assign bit_values = partial_bits(a);
+    assign explicit_result = {first[2][5],first[2][4],first[2][3],
+                              first[3][5],first[3][4],first[3][3]};
+    assign implicit_result = {second[2][5],second[2][4],second[2][3],
+                              second[3][5],second[3][4],second[3][3]};
+    assign comb_result = {third[2][5],third[2][4],third[2][3],
+                          third[3][5],third[3][4],third[3][3]};
+    assign constant_result = {constants[2][5],constants[2][4],constants[2][3],
+                              constants[3][5],constants[3][4],constants[3][3]};
+    assign cube_result = {cube[1][2][4], cube[0][3][3]};
+    assign unknown_x = unknowns[2][3][1];
+    assign unknown_z = unknowns[3][5][0];
+    assign partial_written = partial[2][5];
+    assign partial_x = partial[3][4][0];
+    assign partial_zero = bit_values[3][4][0];
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  ASSERT_NO_THROW(constructor.construct(path));
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  const auto expected = [](unsigned input) {
+    unsigned result = 0;
+    for (unsigned row = 0; row < 2; ++row) {
+      for (unsigned column = 0; column < 3; ++column) {
+        result = (result << 4) | ((input + 1 + 3*row + column) & 15);
+      }
+    }
+    return result;
+  };
+  for (unsigned input = 0; input < 16; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& output : {std::pair{"explicit_result", expected(input)},
+                              {"implicit_result", expected(input)},
+                              {"comb_result", expected(input)},
+                              {"constant_result", expected(6)}, {"cube_result", 0xb9u},
+                              {"partial_written", input}}) {
+      for (auto* bit : top->getTerm(NLName(output.first))->getBits()) {
+        SCOPED_TRACE(std::string(output.first) + " input=" + std::to_string(input));
+        EXPECT_EQ(bool((output.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo));
+      }
+    }
+  }
+  library_->getDB()->mergeAssigns();
+  EXPECT_TRUE(top->getScalarTerm(NLName("unknown_x"))->getNet()->isConstantX());
+  EXPECT_TRUE(top->getScalarTerm(NLName("unknown_z"))->getNet()->isConstantZ());
+  EXPECT_TRUE(top->getScalarTerm(NLName("partial_x"))->getNet()->isConstantX());
+  EXPECT_TRUE(top->getScalarTerm(NLName("partial_zero"))->getNet()->isConstant0());
+}
+
+TEST_F(SNLSVConstructorTestSimple, rejectStaticArrayFunctionState) {
+  for (bool staticFunction : {false, true}) {
+    const auto path = writeSVTestFile("static_array_function_state", std::string(R"(module top(
+    input logic a, output logic y);
+    typedef logic pair_t [2];
+    function )") + (staticFunction ? "static" : "automatic") + R"( pair_t retain(input logic v);
+      static pair_t result;
+      result[0] = v;
+      return result;
+    endfunction
+    pair_t values;
+    assign values = retain(a);
+    assign y = values[1];
+  endmodule)");
+    SNLSVConstructor constructor(library_);
+    expectUnsupportedConstruct(constructor, path, {"Unsupported RHS in continuous assign", "Call"});
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, rejectConstantFunctionUnsupportedSignatures) {
+  for (const std::string body : {
+      "function automatic logic [3:0] inner(input string s); return s.len(); endfunction\n"
+      "function automatic logic [3:0] outer(); return inner(\"abc\"); endfunction\n",
+      "typedef logic [3:0] words_t [2];\n"
+      "function automatic words_t inner(input string s); words_t r; r[0]=0; r[1]=1; return r; endfunction\n"
+      "function automatic logic [3:0] outer(); words_t r; r=inner(\"abc\"); return r[0]; endfunction\n",
+      "function automatic logic [3:0] outer(input real v=1.5); return int'(v); endfunction\n"}) {
+    const auto path = writeSVTestFile("unsupported_constant_call",
+      "module top(output wire [3:0] y);\n" + body + "assign y = outer(); endmodule\n");
+    SNLSVConstructor constructor(library_);
+    expectUnsupportedConstruct(constructor, path, {"Unsupported RHS in continuous assign", "Call"});
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, rejectRepeatedUninitializedArrayFunctionLocal) {
+  const auto path = writeSVTestFile("array_function_block_lifetime", R"(module top(
+    input logic a, output logic [1:0] y);
+    typedef logic pair_t [2];
+    function automatic pair_t compute(input logic v);
+      pair_t result;
+      for (int i=0; i<2; i++) begin
+        logic temporary;
+        if (i==0) temporary=v;
+        result[i]=temporary;
+      end
+      return result;
+    endfunction
+    pair_t values;
+    assign values=compute(a);
+    assign y={values[1],values[0]};
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path, {"Unsupported RHS in continuous assign", "Call"});
 }
 
 TEST_F(SNLSVConstructorTestSimple, functionUnpackedArrayArguments) {
@@ -8446,7 +8890,7 @@ TEST_F(SNLSVConstructorTestSimple, functionImplicitReturnCaseAssignments) {
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, functionImplicitReturnIncompleteBitsUnsupported) {
+TEST_F(SNLSVConstructorTestSimple, functionImplicitReturnIncompleteBitsSupported) {
   for (const bool comb : {false, true}) {
     for (const unsigned shape : {0u, 1u, 2u}) {
       const std::string name = "incomplete_return_" + std::to_string(comb) +
@@ -8460,8 +8904,35 @@ TEST_F(SNLSVConstructorTestSimple, functionImplicitReturnIncompleteBitsUnsupport
         "  endfunction\n" + (comb ? "  always_comb y = incomplete(a);\n"
                                                 : "  assign y = incomplete(a);\n") + "endmodule\n");
       SNLSVConstructor constructor(library_);
-      expectUnsupportedConstruct(constructor, path,
-        {comb ? "Unsupported combinational block" : "Unsupported RHS in continuous assign"});
+      ASSERT_NO_THROW(constructor.construct(path));
+      auto* top = library_->getSNLDesign(NLName(name));
+      ASSERT_NE(nullptr, top);
+      const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+      if (std::system("command -v iverilog >/dev/null 2>&1") ||
+          std::system("command -v vvp >/dev/null 2>&1")) {
+        GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+      }
+      const auto tbPath = dumped.parent_path() / "tb.sv";
+      std::ofstream tb(tbPath);
+      tb << "module tb; reg [3:0] a; wire [3:0] y; reg [3:0] expected; integer i;\n"
+         << name << " dut(a,y); initial begin for(i=0;i<16;i=i+1) begin a=i; expected='x;\n"
+         << (shape == 0 ? "if(a[0]) expected=a;\n"
+             : shape == 1 ? "expected[2:0]=a[2:0];\n" : "expected[a[1:0]]=a[0];\n")
+         << "#1; if(y !== expected) $fatal(1,\"partial return mismatch a=%h y=%h expected=%h\",a,y,expected);\n"
+         << "end $finish; end endmodule\n";
+      tb.close();
+      const auto quote = [](const std::filesystem::path& path) {
+        std::string result = "'";
+        for (char c : path.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+        return result + "'";
+      };
+      const auto executable = dumped.parent_path() / "sim.vvp";
+      const auto compile = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+        " " + quote(dumped) +
+        (std::filesystem::exists(dumped.parent_path() / "naja_primitives.v")
+          ? " " + quote(dumped.parent_path() / "naja_primitives.v") : "");
+      ASSERT_EQ(0, std::system(compile.c_str()));
+      ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
     }
   }
 }
@@ -9186,12 +9657,12 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseContinuousAssignConfigRangeCheckFunctionNonConstantDefaultWhenNoRulesUnsupported) {
+  parseContinuousAssignConfigRangeCheckFunctionNonConstantDefaultWhenNoRulesSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath =
     outPath /
-    "continuous_assign_config_range_check_function_non_constant_default_when_no_rules_unsupported";
+    "continuous_assign_config_range_check_function_non_constant_default_when_no_rules_supported";
   if (std::filesystem::exists(outPath)) {
     std::filesystem::remove_all(outPath);
   }
@@ -9199,7 +9670,7 @@ TEST_F(
 
   const auto svPath =
     outPath /
-    "continuous_assign_config_range_check_function_non_constant_default_when_no_rules_unsupported.sv";
+    "continuous_assign_config_range_check_function_non_constant_default_when_no_rules_supported.sv";
   std::ofstream svFile(svPath);
   ASSERT_TRUE(svFile.good());
   svFile
@@ -9231,8 +9702,8 @@ TEST_F(
   endfunction
 endpackage
 
-module continuous_assign_config_range_check_function_non_constant_default_when_no_rules_unsupported(
-  input logic [63:0] addr,
+module continuous_assign_config_range_check_function_non_constant_default_when_no_rules_supported(
+  input logic [63:0] a,
   output logic inside_o
 );
   localparam cfg_pkg::cfg_t Cfg = '{
@@ -9241,16 +9712,20 @@ module continuous_assign_config_range_check_function_non_constant_default_when_n
     NonIdempotentLength: '{64'h0000000000000100, 64'h0000000000000080}
   };
 
-  assign inside_o = cfg_pkg::is_inside_nonidempotent_regions(Cfg, addr);
+  assign inside_o = cfg_pkg::is_inside_nonidempotent_regions(Cfg, a);
 endmodule
 )";
   svFile.close();
 
-  expectUnsupportedConstruct(
-    constructor,
-    svPath,
-    {"Unsupported RHS in continuous assign in module "
-     "'continuous_assign_config_range_check_function_non_constant_default_when_no_rules_unsupported'"});
+  ASSERT_NO_THROW(constructor.construct(svPath));
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName(
+    "continuous_assign_config_range_check_function_non_constant_default_when_no_rules_supported"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 64; ++input) {
+    EXPECT_EQ(bool(input & 1), evaluateFunctionResultBit(top,
+      top->getScalarTerm(NLName("inside_o"))->getNet(), input));
+  }
 }
 
 TEST_F(
@@ -10364,6 +10839,54 @@ TEST_F(SNLSVConstructorTestSimple, parsePackedStructAndEnumPortsInferRangeFromWi
   EXPECT_TRUE(std::filesystem::exists(dumpedVerilog));
 }
 
+
+TEST_F(SNLSVConstructorTestSimple, parseEarlyReturnConstantCaseReplayCoverage) {
+  const auto path = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) /
+    "early_return_constant_case_replay" / "top.sv";
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream(path) << R"(module top(input logic [7:0] a, output wire [7:0] y);
+    function automatic logic [7:0] f(input logic [7:0] value);
+      logic [7:0] result;
+      result = value;
+      casez (value[0])
+        1'b?: return result;
+        default: return 8'd1;
+      endcase
+      return 8'd2;
+    endfunction
+    assign y = f(a);
+  endmodule)";
+  SNLSVConstructor constructor(library_);
+  constructor.construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  auto* output = top->getBusNet(NLName("y"));
+  ASSERT_NE(nullptr, output);
+  for (unsigned input = 0; input < 256; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (unsigned bit = 0; bit < 8; ++bit) {
+      EXPECT_EQ(bool((input >> bit) & 1),
+        evaluateFunctionResultBit(top, output->getBit(bit), input, 0, &memo));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, rejectEarlyReturnStatementReplayCoverage) {
+  const auto path = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) /
+    "early_return_statement_replay_failure" / "top.sv";
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream(path) << R"(module top(input logic [7:0] a, output wire [7:0] y);
+    function automatic logic [7:0] f(input logic [7:0] value);
+      logic [7:0] result;
+      if (value[0]) return value;
+      result = value ** value;
+      return result;
+    endfunction
+    assign y = f(a);
+  endmodule)";
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path, {"Unsupported RHS in continuous assign", "Call width=8"});
+}
 
 TEST_F(SNLSVConstructorTestSimple, parseNestedEarlyReturnFunctionPriority) {
   const auto outPath = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) /
@@ -16487,12 +17010,14 @@ TEST_F(
   const auto svPath = writeSVTestFile(
     "always_comb_automatic_variable_dynamic_element_select_uses_replay_value",
     R"(module always_comb_automatic_variable_dynamic_element_select_uses_replay_value(
-  input  logic [2:0] sel,
-  input  logic [7:0] flat,
+  input  logic [10:0] a,
   output logic       q_initializer,
   output logic       q_assignment,
-  output logic       q_reassignment
+  output logic       q_reassignment,
+  output logic       q_changed
 );
+  wire [2:0] sel = a[2:0];
+  wire [7:0] flat = a[10:3];
   always_comb begin
     automatic logic [7:0] initializer_tbl = flat;
     automatic logic [7:0] assignment_tbl;
@@ -16502,6 +17027,8 @@ TEST_F(
     q_initializer = initializer_tbl[sel];
     q_assignment = assignment_tbl[sel];
     q_reassignment = reassignment_tbl[sel];
+    reassignment_tbl = ~flat;
+    q_changed = reassignment_tbl[sel];
   end
 endmodule
 )");
@@ -16511,10 +17038,19 @@ endmodule
   auto* top = library_->getSNLDesign(
     NLName("always_comb_automatic_variable_dynamic_element_select_uses_replay_value"));
   ASSERT_NE(top, nullptr);
-  EXPECT_EQ(3u, countTableSelectInstances(
+  // Identical replay values share one read; a reassignment needs its own.
+  EXPECT_EQ(2u, countTableSelectInstances(
     top,
     NLDB0::TableSelectSignature {1, 8, 3}));
 
+  for (unsigned input = 0; input < 2048; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    const bool selected = (input >> (3 + (input & 7))) & 1u;
+    for (const auto* name : {"q_initializer", "q_assignment", "q_reassignment", "q_changed"}) {
+      EXPECT_EQ(name == std::string("q_changed") ? !selected : selected,
+        evaluateFunctionResultBit(top, top->getScalarTerm(NLName(name))->getNet(), input, 0, &memo));
+    }
+  }
   const auto noDrivers = collectNoDrivenInternalInputTerms(top, "");
   EXPECT_TRUE(noDrivers.empty()) << formatStringVector(noDrivers);
 }
@@ -16709,7 +17245,7 @@ TEST_F(
   input  logic [3:0] a,
   output logic       q
 );
-  function automatic logic bad_fn(input logic [3:0] op_i);
+  function static logic bad_fn(input logic [3:0] op_i);
     case (op_i) inside
       4'b1???: bad_fn = 1'b1;
     endcase
@@ -17165,7 +17701,7 @@ TEST_F(
   input  logic [3:0] a,
   output logic       y
 );
-  function automatic logic bad_fn(input logic [3:0] op_i);
+  function static logic bad_fn(input logic [3:0] op_i);
     case (op_i) inside
       4'b1???: bad_fn = 1'b1;
     endcase
@@ -26736,6 +27272,458 @@ endmodule
   EXPECT_NE(top->getNet(NLName("y")), nullptr);
 }
 
+TEST_F(SNLSVConstructorTestSimple, unusedPackedReplayCleanupPreservesOutputs) {
+  const auto path = writeSVTestFile("unused_packed_replay", R"(module top(
+    input logic [9:0] a, output logic [4:0] instruction, output logic [2:0] status);
+    typedef struct packed {logic [3:0] result; logic use_imm;} decoded_t;
+    typedef struct packed {logic mie, mpie, mpp;} status_t;
+    decoded_t decoded;
+    status_t next_status;
+    always_comb begin
+      case (a[9:8])
+        0: begin decoded.result=a[3:0]; decoded.use_imm=1; end
+        1: begin decoded.result=a[7:4]; decoded.use_imm=0; end
+        default: begin decoded.result=0; decoded.use_imm=0; end
+      endcase
+      instruction=decoded;
+      next_status=a[2:0];
+      case (1'b1)
+        a[3]: case (a[6:5])
+          3: if(a[4]) begin end else begin
+            next_status.mpie=a[2]; next_status.mie=0; next_status.mpp=1;
+          end
+          default: ;
+        endcase
+        default: ;
+      endcase
+      status=next_status;
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 1024; ++input) {
+    const unsigned selector = input >> 8;
+    const unsigned expectedInstruction = selector == 0 ? ((input & 15) << 1) | 1 :
+      selector == 1 ? ((input >> 4) & 15) << 1 : 0;
+    const unsigned expectedStatus = (input & 8) && ((input >> 5) & 3) == 3 && !(input & 16) ?
+      ((input & 4) ? 2 : 0) | 1 : input & 7;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& value : {std::pair{"instruction", expectedInstruction},
+                             std::pair{"status", expectedStatus}}) {
+      for (auto* bit : top->getTerm(NLName(value.first))->getBits()) {
+        EXPECT_EQ(bool((value.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << value.first << ":" << input;
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveFourStateValues) {
+  const auto path = writeSVTestFile("repeated_mux_four_state", R"(module top(
+    input logic [2:0] a,b, input logic s,t,u,
+    output logic [2:0] y,z,shared, output logic [1:0] dual);
+    assign y=u ? b : (t ? b : (s ? b : a));
+    assign dual=u ? (t ? (s ? b[1:0] : a[1:0]) : a[1:0]) : a[1:0];
+    assign shared=s ? a : b;
+    assign z=t ? a : shared;
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(4u, countMux2Instances(top));
+  const auto dumped = dumpTopAndGetVerilogPath(top, "repeated_mux_four_state_dump");
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1")) {
+    GTEST_SKIP() << "Icarus Verilog required for four-state verification";
+  }
+  const auto tbPath = dumped.parent_path() / "tb.sv";
+  std::ofstream tb(tbPath);
+  tb << R"(module tb;
+reg [2:0] a,b; reg s,t,u;
+wire [2:0] y,z,shared; wire [1:0] dual;
+top dut(a,b,s,t,u,y,z,shared,dual);
+function logic value(input integer i);
+case(i) 0:value=0; 1:value=1; 2:value=1'bx; 3:value=1'bz; endcase
+endfunction
+integer i,j,k,bitn;
+initial begin
+  for(i=0;i<64;i=i+1) for(j=0;j<64;j=j+1) for(k=0;k<64;k=k+1) begin
+    for(bitn=0;bitn<3;bitn=bitn+1) begin
+      a[bitn]=value((i>>(bitn*2))&3); b[bitn]=value((j>>(bitn*2))&3);
+    end
+    s=value(k&3); t=value((k>>2)&3); u=value((k>>4)&3); #1;
+    if(y !== (u?b:(t?b:(s?b:a))) ||
+       dual !== (u?(t?(s?b[1:0]:a[1:0]):a[1:0]):a[1:0]) ||
+       shared !== (s?a:b) || z !== (t?a:(s?a:b)))
+      $fatal(1,"four-state repeated selection mismatch i=%d j=%d k=%d",i,j,k);
+  end
+  $display("REPEATED_MUX_FOUR_STATE_PASS"); $finish;
+end
+endmodule
+)";
+  tb.close();
+  const auto quote = [](const std::filesystem::path& file) {
+    std::string result = "'";
+    for (char c : file.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+    return result + "'";
+  };
+  const auto executable = dumped.parent_path() / "simulation.vvp";
+  const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+    " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+  ASSERT_EQ(0, std::system(command.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+}
+
+TEST_F(SNLSVConstructorTestSimple, repeatedMuxFalseSelectionsUseAnd) {
+  const auto path = writeSVTestFile("repeated_false_mux", R"(module top(
+    input logic [7:0] a, output logic [2:0] y);
+    assign y=a[7] ? (a[6] ? a[2:0] : a[5:3]) : a[5:3];
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(1u, countMux2Instances(top));
+  for (unsigned input = 0; input < 256; ++input) {
+    const unsigned expected = (input & 192) == 192 ? input & 7 : (input >> 3) & 7;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1),
+        evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveSharedValues) {
+  const auto path = writeSVTestFile("repeated_mux_selections", R"(module top(
+    input logic [8:0] a, output logic [2:0] y,z,shared);
+    always_comb begin
+      y=a[2:0];
+      if(a[6]) y=a[5:3];
+      if(a[7]) y=a[5:3];
+      if(a[8]) y=a[5:3];
+    end
+    assign shared=a[6] ? a[2:0] : a[5:3];
+    assign z=a[7] ? a[2:0] : shared;
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(3u, countMux2Instances(top));
+  EXPECT_EQ(3u, countMux2Instances(top, 3));
+  for (unsigned input = 0; input < 512; ++input) {
+    const unsigned a = input & 7, b = (input >> 3) & 7;
+    const unsigned shared = input & 64 ? a : b;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& value : {std::pair{"y", input & 448 ? b : a},
+                             std::pair{"shared", shared}, std::pair{"z", input & 128 ? a : shared}}) {
+      for (auto* bit : top->getTerm(NLName(value.first))->getBits()) {
+        EXPECT_EQ(bool((value.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << value.first << ":" << input;
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, overwrittenMuxResultsPreserveValues) {
+  const auto path = writeSVTestFile("unused_mux_result", R"(module top(
+    input logic [8:0] a, output logic [3:0] y,z);
+    always_comb begin
+      y = a[8] ? a[3:0] : a[7:4];
+      y = a[3:0];
+      z = a[8] ? a[7:4] : a[3:0];
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 512; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& value : {std::pair{"y", input & 15},
+                             std::pair{"z", input & 256 ? (input >> 4) & 15 : input & 15}}) {
+      for (auto* bit : top->getTerm(NLName(value.first))->getBits()) {
+        EXPECT_EQ(bool((value.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << input;
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, compactReplayCaseAndMuxesPreserveValues) {
+  const auto path = writeSVTestFile("compact_replay", R"(module top(
+    input logic [7:0] a,
+    output logic [1:0] hi, chi,
+    output logic [3:0] lo, clo,
+    output logic [5:0] choice, priority_choice,
+    output logic [7:0] padded, duplicate);
+    always_comb begin
+      {hi,lo} = a[5:0];
+      if (a[7]) {hi,lo} = a[5:0] >> 1;
+      else if (a[6]) {hi,lo} = a[5:0] << 1;
+    end
+    always_comb begin
+      {chi,clo} = a[5:0];
+      if (a[6]) {chi,clo} += 6'd3;
+    end
+    always_comb begin
+      case (a[7:6])
+        0: choice = a[5:0];
+        1: choice = a[5:0];
+        2: choice = a[5:0];
+        default: choice = 0;
+      endcase
+      casez (a[7:6])
+        2'b?0: priority_choice = a[5:0];
+        2'b0?: priority_choice = ~a[5:0];
+        2'b11: priority_choice = a[5:0];
+        default: priority_choice = 0;
+      endcase
+    end
+    assign padded = a[7] ? 8'd2 : 8'd1;
+    assign duplicate = a[7] ? 8'd2 : 8'd1;
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 256; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    const unsigned data = input & 63;
+    const unsigned shifted = input & 128 ? data >> 1 : input & 64 ? (data << 1) & 63 : data;
+    const unsigned compound = (data + (input & 64 ? 3 : 0)) & 63;
+    const unsigned selector = input >> 6;
+    const auto check = [&](const char* name, unsigned expected) {
+      for (auto* bit : top->getTerm(NLName(name))->getBits()) {
+        EXPECT_EQ(bool((expected >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << name << ":" << input;
+      }
+    };
+    check("hi", shifted >> 4); check("lo", shifted & 15);
+    check("chi", compound >> 4); check("clo", compound & 15);
+    check("choice", selector == 3 ? 0 : data);
+    check("priority_choice", selector == 1 ? (~data & 63) : data);
+    check("padded", input & 128 ? 2 : 1);
+    check("duplicate", input & 128 ? 2 : 1);
+  }
+  for (int bit = 0; bit < 8; ++bit) {
+    EXPECT_EQ(top->getBusTerm(NLName("padded"))->getBit(bit)->getNet(),
+              top->getBusTerm(NLName("duplicate"))->getBit(bit)->getNet());
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, concatenatedReplayDoesNotBuildSiblingCopies) {
+  const auto path = writeSVTestFile("concat_replay_size", R"(module top(
+    input logic [7:0] a, output logic [1:0] hi, output logic [3:0] lo);
+    always_comb begin
+      {hi,lo} = a[5:0];
+      if (a[7]) {hi,lo} = a[5:0] >> 1;
+      else if (a[6]) {hi,lo} = a[5:0] << 1;
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(4u, countMux2Instances(top));
+  size_t selectedBits = 0;
+  for (auto* inst : top->getInstances()) {
+    if (NLDB0::isMux2(inst->getModel())) selectedBits += getPrimitiveWidth(inst);
+  }
+  EXPECT_EQ(12u, selectedBits);
+}
+
+TEST_F(SNLSVConstructorTestSimple, separateEqualCaseArmsUseOneMux) {
+  const auto path = writeSVTestFile("equal_arms", R"(module top(
+    input logic [7:0] a, output logic [5:0] y);
+    always_comb case (a[7:6])
+      0: y = a[5:0];
+      1: y = a[5:0];
+      2: y = a[5:0];
+      default: y = 0;
+    endcase
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(1u, countMux2Instances(top));
+  EXPECT_EQ(1u, countMux2Instances(top, 6));
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialEqualCaseArmsUseOneMux) {
+  const auto path = writeSVTestFile("sequential_equal_arms", R"(module top(
+    input logic clk, input logic [7:0] a, output logic [5:0] y);
+    always_ff @(posedge clk) case (a[7:6])
+      0: y <= a[5:0];
+      1: y <= a[5:0];
+      2: y <= a[5:0];
+      default: y <= 0;
+    endcase
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(1u, countMux2Instances(top));
+  EXPECT_EQ(1u, countMux2Instances(top, 6));
+}
+
+TEST_F(SNLSVConstructorTestSimple, powerOfTwoBoundedNetworkAndSharing) {
+  const auto path = writeSVTestFile("power_network", R"(module power_network(
+    input logic [31:0] a,
+    output logic [31:0] wide, duplicate, changed,
+    output logic [6:0] odd,
+    output logic [7:0] unsigned_small, signed_small,
+    output logic scalar);
+    assign wide = 32'd2 ** a;
+    assign duplicate = 32'd2 ** a;
+    assign changed = 32'd2 ** (a + 32'd1);
+    assign odd = 7'd2 ** a;
+    assign unsigned_small = 8'd2 ** a[1:0];
+    assign signed_small = 8'd2 ** $signed(a[1:0]);
+    assign scalar = 1'b0 | (1'b1 & (2 ** a));
+  endmodule
+)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("power_network"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_LE(countMux2Instances(top), 24u);
+  auto* wide = top->getBusTerm(NLName("wide"));
+  auto* duplicate = top->getBusTerm(NLName("duplicate"));
+  for (int bit = 0; bit < 32; ++bit) {
+    EXPECT_EQ(wide->getBit(bit)->getNet(), duplicate->getBit(bit)->getNet());
+  }
+  std::vector<unsigned> inputs {0x80000000u, 0xffffffffu, 0x10000u, 0x100u};
+  for (unsigned input = 0; input < 80; ++input) inputs.push_back(input);
+  for (auto input : inputs) {
+    SCOPED_TRACE(input);
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    const auto check = [&](const char* name, uint32_t expected) {
+      for (auto* bit : top->getTerm(NLName(name))->getBits()) {
+        EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << name << ":" << bit->getBit();
+      }
+    };
+    check("wide", input < 32 ? uint32_t{1} << input : 0);
+    check("duplicate", input < 32 ? uint32_t{1} << input : 0);
+    const uint32_t next = input + uint32_t{1};
+    check("changed", next < 32 ? uint32_t{1} << next : 0);
+    check("odd", input < 7 ? uint32_t{1} << input : 0);
+    check("unsigned_small", uint32_t{1} << (input & 3));
+    check("signed_small", (input & 2) ? 0 : uint32_t{1} << (input & 1));
+    EXPECT_EQ(input == 0, evaluateFunctionResultBit(top,
+      top->getScalarTerm(NLName("scalar"))->getNet(), input, 0, &memo));
+  }
+  dumpTopAndGetVerilogPath(top, "power_network_dump");
+}
+
+TEST_F(SNLSVConstructorTestSimple, powerOfTwoConstantStagesCoverage) {
+  const auto path = writeSVTestFile("power_constant_stages", R"(module top(
+    input logic [1:0] a, output logic [7:0] y);
+    assign y = 8'd2 ** {a, 1'b1};
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  for (unsigned input = 0; input < 4; ++input) {
+    SCOPED_TRACE(input);
+    const unsigned expected = 1u << (2 * input + 1);
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, insideMultipleItemsBitVectorCoverage) {
+  const auto path = writeSVTestFile("inside_multiple_items", R"(module top(
+    input logic [3:0] a, output logic [2:0] y);
+    assign y = {2'b00, a inside {4'd1, [4'd4:4'd6], 4'd11}};
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  for (unsigned input = 0; input < 16; ++input) {
+    SCOPED_TRACE(input);
+    const unsigned expected = input == 1 || (input >= 4 && input <= 6) || input == 11;
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, outputFunctionNonIntegralInputWidthCoverage) {
+  const auto path = writeSVTestFile("output_call_real_input", R"(module top(
+    input logic a, output logic y);
+    function automatic void copy(input real unused_value, input logic value,
+                                 output logic result);
+      result = value;
+    endfunction
+    always_comb copy(1.5, a, y);
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"unable to materialize output function input argument"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, automaticFunctionNonIntegralArrayDefaultCoverage) {
+  const auto path = writeSVTestFile("function_real_array", R"(module top(
+    input logic a, output logic [3:0] y);
+    function automatic logic [3:0] value(input logic select);
+      if (select) return 4'd3;
+      begin
+        real words[0:1];
+        return int'(words[0]);
+      end
+    endfunction
+    assign y = value(a);
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"Unsupported RHS in continuous assign", "Call width=4"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, tableReadSharingPreservesInputsAndContents) {
+  const auto path = writeSVTestFile("shared_tables", R"(module shared_tables(
+    input logic [3:0] a,
+    output logic [7:0] first, duplicate, other_address, other_table);
+    function automatic logic [7:0] lookup(input logic [1:0] index);
+      localparam logic [0:3][7:0] words = {8'd3, 8'd5, 8'd9, 8'd13};
+      return words[index];
+    endfunction
+    function automatic logic [7:0] alternate(input logic [1:0] index);
+      localparam logic [0:3][7:0] words = {8'd17, 8'd19, 8'd23, 8'd29};
+      return words[index];
+    endfunction
+    assign first = lookup(a[1:0]);
+    assign duplicate = lookup(a[1:0]);
+    assign other_address = lookup(a[3:2]);
+    assign other_table = alternate(a[1:0]);
+  endmodule
+)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("shared_tables"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(3u, countPrimitiveInstances(top, NLDB0::isMemory));
+  const unsigned firstValues[] = {3, 5, 9, 13};
+  const unsigned otherValues[] = {17, 19, 23, 29};
+  for (unsigned input = 0; input < 16; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& [name, expected] : std::vector<std::pair<const char*, unsigned>> {
+           {"first", firstValues[input & 3]}, {"duplicate", firstValues[input & 3]},
+           {"other_address", firstValues[input >> 2]}, {"other_table", otherValues[input & 3]}}) {
+      for (auto* bit : top->getBusTerm(NLName(name))->getBusBits()) {
+        EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo));
+      }
+    }
+  }
+}
+
 TEST_F(SNLSVConstructorTestSimple, parseContinuousScalarPowerDynamicCasesSupported) {
   SNLSVConstructor constructor(library_);
   const auto svPath = writeSVTestFile(
@@ -30685,9 +31673,14 @@ endmodule
     }
   }
   EXPECT_EQ(16u, dffCount);
-  EXPECT_EQ(1u, countMux2Instances(top));
-  EXPECT_EQ(1u, countMux2Instances(top, 16));
-  EXPECT_EQ(0u, countMux2Instances(top, 1));
+  // Only differing constant bits require selection; equal padding is wired.
+  size_t selectedBits = 0;
+  for (auto* inst : top->getInstances()) {
+    if (NLDB0::isMux2(inst->getModel())) selectedBits += getPrimitiveWidth(inst);
+  }
+  // Repeated differing spans also share their identical select expression.
+  EXPECT_EQ(4u, selectedBits);
+  EXPECT_EQ(0u, countMux2Instances(top, 16));
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSequentialRHSWideUnknownConstantLocalparamFallbackSupported) {
@@ -40127,7 +41120,7 @@ endmodule
     {"unsupported foreach dimension without compile-time-known bounds"});
 }
 
-TEST_F(SNLSVConstructorTestSimple, outputFunctionAutomaticLocalTargetsUnsupported) {
+TEST_F(SNLSVConstructorTestSimple, outputFunctionAutomaticLocalTargetsSupported) {
   for (bool nested : {false, true}) {
     SCOPED_TRACE(nested);
     const auto name = std::string("output_function_automatic_local_") + (nested ? "nested" : "block");
@@ -40142,8 +41135,71 @@ TEST_F(SNLSVConstructorTestSimple, outputFunctionAutomaticLocalTargetsUnsupporte
         "always_comb begin automatic logic [3:0] tmp; copy(a, tmp); y = tmp; end\n")) +
       "endmodule\n");
     SNLSVConstructor constructor(library_);
-    expectUnsupportedConstruct(constructor, path,
-      {nested ? "unable to resolve always_comb RHS bits for Call" : "unsupported statement kind"});
+    ASSERT_NO_THROW(constructor.construct(path));
+    auto* top = library_->getSNLDesign(NLName(name));
+    ASSERT_NE(nullptr, top);
+    for (unsigned input = 0; input < 16; ++input) {
+      for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+        EXPECT_EQ(bool((input >> bit->getBit()) & 1u),
+          evaluateFunctionResultBit(top, bit->getNet(), input));
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, outputFunctionCopyoutRejectsExternalWrites) {
+  const auto path = writeSVTestFile("output_call_external_write", R"(
+module output_call_external_write(input logic a, output logic y, hidden);
+  function automatic void copy(input logic value, output logic result);
+    hidden = value;
+    result = value;
+  endfunction
+  always_comb begin
+    automatic logic unused_result;
+    copy(a, unused_result);
+    y = a;
+  end
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"output subroutine writes outside its local scope"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, outputFunctionInputConversionsAndCopyoutOrder) {
+  const auto path = writeSVTestFile("output_argument_conversions", R"(
+module output_argument_conversions(input logic [4:0] a, output logic [3:0] y, z);
+  function automatic void copy(input logic signed [2:0] narrow,
+                               input logic signed [6:0] wide,
+                               output logic [3:0] first, second);
+    first = narrow;
+    second = wide + first;
+  endfunction
+  always_comb begin
+    automatic logic [3:0] left, right;
+    copy(a, $signed(a), left, right);
+    y = left ^ right;
+    copy(32'd6, 2'sb11, left, right);
+    z = left ^ right;
+  end
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  ASSERT_NO_THROW(constructor.construct(path));
+  auto* top = library_->getSNLDesign(NLName("output_argument_conversions"));
+  ASSERT_NE(nullptr, top);
+  for (unsigned input = 0; input < 32; ++input) {
+    const int small = (input & 4u) ? int(input & 7u) - 8 : int(input & 7u);
+    const int wide = (input & 16u) ? int(input) - 32 : int(input);
+    const unsigned expected = (unsigned(small) ^ unsigned(wide + (unsigned(small) & 15u))) & 15u;
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input)) << input;
+    }
+    for (auto* bit : top->getTerm(NLName("z"))->getBits()) {
+      EXPECT_EQ(bool((3u >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input));
+    }
   }
 }
 

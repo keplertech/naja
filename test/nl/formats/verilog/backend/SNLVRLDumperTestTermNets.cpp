@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #include "SNLVRLDumper.h"
 
@@ -269,3 +270,27 @@ TEST_F(SNLVRLDumperTestTermNets, testError4) {
   dumper.setSingleFile(true);
   EXPECT_THROW(dumper.dumpDesign(top_, outPath), SNLVRLDumperException);
 } 
+
+TEST_F(SNLVRLDumperTestTermNets, anonymousPortConnectionsUseEmittedNames) {
+  auto* bus = SNLBusNet::create(top_, 1, 0);
+  auto* scalar = SNLScalarNet::create(top_);
+  SNLBusTerm::create(top_, SNLTerm::Direction::Input, 1, 0, NLName("input_word"))->setNet(bus);
+  SNLBusTerm::create(top_, SNLTerm::Direction::Output, 1, 0, NLName("output_word"))->setNet(bus);
+  SNLScalarTerm::create(top_, SNLTerm::Direction::Output, NLName("bit_out"))->setNet(bus->getBit(0));
+  SNLScalarTerm::create(top_, SNLTerm::Direction::Input, NLName("input.flag"))->setNet(scalar);
+  SNLBusTerm::create(top_, SNLTerm::Direction::Output, 0, 0, NLName("scalar_out"))->getBit(0)->setNet(scalar);
+  SNLScalarTerm::create(top_, SNLTerm::Direction::Output, NLName("flag_out"))->setNet(scalar);
+  SNLVRLDumper dumper;
+  std::ostringstream output;
+  dumper.dumpDesign(top_, output);
+  const auto text = output.str();
+  const auto busName = "net_" + std::to_string(bus->getID());
+  const auto scalarName = "net_" + std::to_string(scalar->getID());
+  EXPECT_EQ(std::string::npos, text.find("<net:"));
+  EXPECT_NE(std::string::npos, text.find("assign " + busName + "[1] = input_word[1];"));
+  EXPECT_NE(std::string::npos, text.find("assign output_word[0] = " + busName + "[0];"));
+  EXPECT_NE(std::string::npos, text.find("assign bit_out = " + busName + "[0];"));
+  EXPECT_NE(std::string::npos, text.find("assign " + scalarName + " = \\input.flag ;"));
+  EXPECT_NE(std::string::npos, text.find("assign scalar_out[0] = " + scalarName + ";"));
+  EXPECT_NE(std::string::npos, text.find("assign flag_out = " + scalarName + ";"));
+}
