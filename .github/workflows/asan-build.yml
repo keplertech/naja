@@ -41,5 +41,6 @@ jobs:
       env:
         PYTHONMALLOC: malloc
       # Execute tests defined by the CMake configuration.
+      # Python-launched tests cannot load the ASan extension into ordinary Python.
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest --parallel $(nproc) -VV -E ".*[p|P]ython.*" -C ${{env.BUILD_TYPE}}
+      run: ctest --parallel $(nproc) -VV -E ".*[pP]ython.*|^VHDL(SocFrontend|MemoryInitialization)$" -C ${{env.BUILD_TYPE}}
