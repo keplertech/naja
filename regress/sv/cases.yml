@@ -81,22 +81,22 @@ cases:
       rtl_infos_as_attributes: true
     # Structural integration signatures are intentionally tied to the pinned
     # CVA6 commit above. Update these counts only after reviewing the cone diff.
-    # Nested packed writes use vector select/update primitives instead of
-    # per-bit decoding and muxes: 42 fewer internal nodes and 73 fewer edges.
-    # Reviewed node changes are confined to the AXI adapter; root, register,
-    # and port occurrences and the individual-bit probes are unchanged.
+    # Repeated mux selections in the AXI adapter/shim replace 46 mux nodes
+    # with 33 OR and 5 AND nodes: 8 fewer internal nodes and 18 fewer edges.
+    # Root/port occurrences, register hierarchy/model/source identities,
+    # boundary counts and individual-bit probes are unchanged.
     logic_cones:
       - term: noc_req_o
         direction: fanin
         expected:
-          nodes: 1592
-          edges: 2244
+          nodes: 1584
+          edges: 2226
           leaves: 19
           roots: 471
           registers: 16
           ports: 3
           blackboxes: 0
-          internal: 1102
+          internal: 1094
       - term: noc_req_o
         bit: 468
         direction: fanin
