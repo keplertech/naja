@@ -39,3 +39,6 @@ add_test(NAME VHDLMemoryInitialization
   COMMAND "${NAJA_PYTHON_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/regress/vhdl/test_memory_initialization.py" -v)
 set_tests_properties(VHDLMemoryInitialization PROPERTIES
   ENVIRONMENT "PYTHONPATH=${PROJECT_BINARY_DIR}/src/nl/python/naja_wrapping:$ENV{PYTHONPATH}")
+
+set_tests_properties(naja-python-tests VHDLSocFrontend VHDLMemoryInitialization
+  PROPERTIES LABELS python)
