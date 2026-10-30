@@ -522,7 +522,7 @@ namespace {
             inputs.push_back(wdata->getBit(static_cast<NLID::Bit>(port * signature.width + bit)));
             inputs.push_back(masks->getBit(static_cast<NLID::Bit>(port * signature.width + bit)));
           }
-          inputs.push_back(we->getBitAtPosition(port));
+          inputs.push_back(we->getBit(static_cast<NLID::Bit>(port)));
           auto* clock = clocks->getBit(static_cast<NLID::Bit>(port));
           SNLDesignModeling::setTermRole(clock, SNLDesignModeling::SNLTermRole::Clock);
           for (size_t bit = 0; bit < signature.width; ++bit)

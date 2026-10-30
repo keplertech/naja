@@ -9611,7 +9611,8 @@ endmodule
             memory.writePorts[i].dataNet,
             static_cast<NLID::Bit>(signature.width - 1),
             0);
-          if (auto* termBit = weTerm->getBitAtPosition(i)) {
+          // Port i's enable is WE[i], matching its WADDR/WDATA slices.
+          if (auto* termBit = weTerm->getBit(static_cast<NLID::Bit>(i))) {
             if (auto* instTerm = inst->getInstTerm(termBit)) {
               instTerm->setNet(memory.writePorts[i].weNet);
             }

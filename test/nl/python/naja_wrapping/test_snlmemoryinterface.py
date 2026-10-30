@@ -103,7 +103,7 @@ class SNLMemoryInterfaceTest(unittest.TestCase):
       self.assertBits(port['address'], model, 'WADDR', range(p*2, p*2+2))
       self.assertBits(port['data'], model, 'WDATA', range(p*3, p*3+3))
       self.assertBits(port['mask'], model, 'WMASK', range(p*3, p*3+3))
-      self.assertBits(port['enables'], model, 'WE', [1-p])
+      self.assertBits(port['enables'], model, 'WE', [p])
 
   def testInstanceOverridesAndDisconnectedPorts(self):
     original = self.writable()

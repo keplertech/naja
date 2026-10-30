@@ -204,7 +204,7 @@ inline MemoryState nextMemoryState(const MemoryState& current,
       return value;
     };
     for (size_t port = 0; port < signature.writePorts; ++port) {
-      if (!read(NLDB0::getMemoryWriteEnable(model), signature.writePorts - 1 - port, 1)) continue;
+      if (!read(NLDB0::getMemoryWriteEnable(model), port, 1)) continue;
       const auto address = read(NLDB0::getMemoryWriteAddress(model), port * signature.abits, signature.abits);
       if (address < signature.depth) {
         const auto data = read(NLDB0::getMemoryWriteData(model), port * signature.width, signature.width);

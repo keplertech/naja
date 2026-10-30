@@ -410,12 +410,10 @@ naja::NL::SNLDesignModeling::MemoryInterface buildDB0MemoryInterface(
               wdata->getBit(static_cast<naja::NL::NLID::Bit>(
                   port * signature.width + bit))));
     }
-    // LCOV_EXCL_START
+    // Port i's enable is WE[i], the same index layout as its WADDR/WDATA slices.
     writePort.enables.push_back(
         static_cast<naja::NL::SNLBitTerm*>(
-            signature.independentWriteClocks ? we->getBitAtPosition(port)
-              : we->getBit(static_cast<naja::NL::NLID::Bit>(port))));
-    // LCOV_EXCL_STOP
+            we->getBit(static_cast<naja::NL::NLID::Bit>(port))));
     memInterface.writePorts.push_back(std::move(writePort));
   }
 

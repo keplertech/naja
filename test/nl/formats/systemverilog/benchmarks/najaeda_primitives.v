@@ -402,10 +402,10 @@ module naja_mem #(
     reg [ABITS-1:0] addr_value;
     begin
       for (wp = 0; wp < WR_PORTS; wp = wp + 1) begin
-        allow_write = WE[WR_PORTS-1-wp];
+        allow_write = WE[wp];
         addr_value = WADDR[wp*ABITS +: ABITS];
         for (later = wp + 1; later < WR_PORTS; later = later + 1) begin
-          if (WE[WR_PORTS-1-later] && WADDR[later*ABITS +: ABITS] == addr_value)
+          if (WE[later] && WADDR[later*ABITS +: ABITS] == addr_value)
             allow_write = 1'b0;
         end
         addr_index = integer'(addr_value);
@@ -440,7 +440,7 @@ module naja_mem #(
       for (port = 0; port < WR_PORTS; port = port + 1) begin : write_port
         for (bit_index = 0; bit_index < WIDTH; bit_index = bit_index + 1) begin : write_bit
           always @(posedge WCLK[port]) begin
-            if (WE[WR_PORTS-1-port] && WMASK[port*WIDTH+bit_index] &&
+            if (WE[port] && WMASK[port*WIDTH+bit_index] &&
                 WADDR[port*ABITS +: ABITS] < DEPTH)
               mem[WADDR[port*ABITS +: ABITS]][bit_index] <= WDATA[port*WIDTH+bit_index];
           end

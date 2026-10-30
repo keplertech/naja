@@ -518,10 +518,10 @@ TEST_F(SNLVRLDumperTestParameters, testMemoryPrimitiveFileDump) {
   EXPECT_NE(std::string::npos, primitiveDump.find("reg [WIDTH-1:0] mem [0:DEPTH-1];"));
   EXPECT_NE(std::string::npos, primitiveDump.find("integer addr_index;"));
   EXPECT_NE(std::string::npos, primitiveDump.find("task automatic write_ports;"));
-  EXPECT_NE(std::string::npos, primitiveDump.find("allow_write = WE[WR_PORTS-1-wp];"));
+  EXPECT_NE(std::string::npos, primitiveDump.find("allow_write = WE[wp];"));
   EXPECT_NE(
     std::string::npos,
-    primitiveDump.find("if (WE[WR_PORTS-1-later] && WADDR[later*ABITS +: ABITS] == addr_value)"));
+    primitiveDump.find("if (WE[later] && WADDR[later*ABITS +: ABITS] == addr_value)"));
   EXPECT_NE(std::string::npos, primitiveDump.find("if (allow_write && addr_index < DEPTH)"));
   EXPECT_NE(
     std::string::npos,
