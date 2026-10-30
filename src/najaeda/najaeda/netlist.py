@@ -2340,7 +2340,8 @@ class SystemVerilogConfig:
                         "SystemVerilogConfig.frontend_options keys must be strings")
                 if frontend != "slang":
                     raise ValueError(
-                        "SystemVerilogConfig.frontend_options supports only the active frontend 'slang'")
+                        "SystemVerilogConfig.frontend_options supports only "
+                        "the active frontend 'slang'")
                 if not isinstance(arguments, list):
                     raise TypeError(
                         "SystemVerilogConfig.frontend_options['slang'] must be a list[str]")
