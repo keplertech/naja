@@ -18,6 +18,11 @@ using ::testing::ElementsAre;
 #include "SNLBusTermBit.h"
 #include "SNLDesignModeling.h"
 #include "SNLUtils.h"
+#include "SNLBusNet.h"
+#include "SNLBusNetBit.h"
+#include "SNLScalarNet.h"
+#include "SNLInstTerm.h"
+#include "SNLRTLInfos.h"
 using namespace naja::NL;
 
 class SNLUtilsTest: public ::testing::Test {
@@ -167,4 +172,144 @@ TEST_F(SNLUtilsTest, testPrepareForConcurrentAccessMemory) {
   ASSERT_NE(memory, nullptr);
 
   EXPECT_NO_THROW(SNLUtils::prepareForConcurrentAccess(memory));
+}
+
+namespace {
+struct RepeatedMuxFixture {
+  SNLDesign* design;
+  SNLDesign* model;
+  SNLBusNet *a, *b, *temporary, *output;
+  SNLScalarNet *s, *t;
+  SNLInstance *inner, *outer;
+};
+
+RepeatedMuxFixture makeRepeatedMuxFixture(NLLibrary* library, bool reverseOrder = false) {
+  RepeatedMuxFixture f {};
+  f.design = SNLDesign::create(library);
+  f.model = NLDB0::getOrCreateMux2(3);
+  f.a = SNLBusNet::create(f.design, 2, 0, NLName("a"));
+  f.b = SNLBusNet::create(f.design, 2, 0, NLName("b"));
+  f.temporary = SNLBusNet::create(f.design, 2, 0, NLName("temporary"));
+  f.output = SNLBusNet::create(f.design, 2, 0, NLName("output"));
+  f.s = SNLScalarNet::create(f.design, NLName("s"));
+  f.t = SNLScalarNet::create(f.design, NLName("t"));
+  if (reverseOrder) f.outer = SNLInstance::create(f.design, f.model, NLName("outer"));
+  f.inner = SNLInstance::create(f.design, f.model, NLName("inner"));
+  if (!reverseOrder) f.outer = SNLInstance::create(f.design, f.model, NLName("outer"));
+  for (auto* instance : {f.inner, f.outer}) {
+    instance->setTermNet(NLDB0::getMux2InputA(f.model), instance == f.inner ? f.a : f.temporary);
+    instance->setTermNet(NLDB0::getMux2InputB(f.model), f.b);
+    instance->setTermNet(NLDB0::getMux2Select(f.model), instance == f.inner ? f.s : f.t);
+    instance->setTermNet(NLDB0::getMux2Output(f.model), instance == f.inner ? f.temporary : f.output);
+  }
+  SNLBusTerm::create(f.design, SNLTerm::Direction::Output, 2, 0, NLName("y"))->setNet(f.output);
+  return f;
+}
+}
+
+TEST_F(SNLUtilsTest, mergeRepeatedMuxSelectionsPreservesPinsAndOrigins) {
+  auto f = makeRepeatedMuxFixture(db_->getLibrary(NLName("MYLIB")));
+  const SNLSourceReference first {{NLName("source.sv"), 11, 11, 2, 8},
+    NLName("slang"), NLName("systemverilog"), NLName("rtl")};
+  const SNLSourceReference second {{NLName("source.sv"), 23, 23, 2, 8},
+    NLName("slang"), NLName("systemverilog"), NLName("rtl")};
+  SNLRTLInfos::create(f.inner)->addSourceOrigin(first);
+  SNLRTLInfos::create(f.outer)->addSourceOrigin(second);
+  EXPECT_EQ(0u, SNLUtils::mergeRepeatedMuxSelections(nullptr));
+  EXPECT_EQ(1u, SNLUtils::mergeRepeatedMuxSelections(f.design));
+  EXPECT_EQ(nullptr, f.design->getInstance(NLName("inner")));
+  EXPECT_EQ(f.outer, f.design->getInstance(NLName("outer")));
+  for (NLID::Bit bit = 0; bit < 3; ++bit) {
+    EXPECT_EQ(f.a->getBit(bit), f.outer->getInstTerm(NLDB0::getMux2InputA(f.model)->getBit(bit))->getNet());
+    EXPECT_EQ(f.b->getBit(bit), f.outer->getInstTerm(NLDB0::getMux2InputB(f.model)->getBit(bit))->getNet());
+    EXPECT_EQ(f.output->getBit(bit), f.outer->getInstTerm(NLDB0::getMux2Output(f.model)->getBit(bit))->getNet());
+  }
+  EXPECT_THAT(f.outer->getRTLInfos()->getSourceOrigins(), ElementsAre(second, first));
+  auto* select = f.outer->getInstTerm(NLDB0::getMux2Select(f.model))->getNet();
+  SNLInstance* gate = nullptr;
+  for (auto* term : select->getInstTerms())
+    if (term->getDirection() == SNLTerm::Direction::Output) gate = term->getInstance();
+  ASSERT_NE(nullptr, gate);
+  EXPECT_EQ("or", NLDB0::getGateName(gate->getModel()));
+  EXPECT_EQ(f.s, gate->getInstTerm(NLDB0::getGateNTerms(gate->getModel())->getBit(0))->getNet());
+  EXPECT_EQ(f.t, gate->getInstTerm(NLDB0::getGateNTerms(gate->getModel())->getBit(1))->getNet());
+  EXPECT_THAT(gate->getRTLInfos()->getSourceOrigins(), ElementsAre(second, first));
+  EXPECT_THAT(select->getRTLInfos()->getSourceOrigins(), ElementsAre(second, first));
+  EXPECT_EQ(0u, SNLUtils::mergeRepeatedMuxSelections(f.design));
+}
+
+TEST_F(SNLUtilsTest, mergeRepeatedMuxSelectionsRetainsNonExclusiveAndDifferentValues) {
+  for (const auto* variation : {"port", "data_use", "select_use", "other_driver", "other_consumer",
+                               "permutation", "partial", "different", "feedback", "disconnected"}) {
+    SCOPED_TRACE(variation);
+    auto f = makeRepeatedMuxFixture(db_->getLibrary(NLName("MYLIB")));
+    const std::string kind(variation);
+    auto* a = NLDB0::getMux2InputA(f.model);
+    if (kind == "port") {
+      SNLScalarTerm::create(f.design, SNLTerm::Direction::Output)->setNet(f.temporary->getBit(0));
+    } else if (kind == "data_use" || kind == "select_use") {
+      f.outer->getInstTerm(kind == "data_use" ? static_cast<SNLBitTerm*>(NLDB0::getMux2InputB(f.model)->getBit(0)) :
+        static_cast<SNLBitTerm*>(NLDB0::getMux2Select(f.model)))->setNet(f.temporary->getBit(0));
+    } else if (kind == "other_driver") {
+      auto* driver = SNLInstance::create(f.design, NLDB0::getAssign());
+      driver->setTermNet(NLDB0::getAssignInput(), f.s);
+      driver->setTermNet(NLDB0::getAssignOutput(), f.temporary->getBit(0));
+    } else if (kind == "other_consumer") {
+      auto* consumer = SNLInstance::create(f.design, NLDB0::getAssign());
+      consumer->setTermNet(NLDB0::getAssignInput(), f.temporary->getBit(1));
+      consumer->setTermNet(NLDB0::getAssignOutput(), SNLScalarNet::create(f.design));
+    } else if (kind == "permutation") {
+      f.outer->getInstTerm(a->getBit(0))->setNet(f.temporary->getBit(1));
+      f.outer->getInstTerm(a->getBit(1))->setNet(f.temporary->getBit(0));
+    } else if (kind == "partial") {
+      f.outer->getInstTerm(a->getBit(2))->setNet(f.a->getBit(2));
+    } else if (kind == "different") {
+      f.outer->getInstTerm(NLDB0::getMux2InputB(f.model)->getBit(2))->setNet(f.a->getBit(2));
+    } else if (kind == "feedback") {
+      f.inner->getInstTerm(a->getBit(0))->setNet(f.output->getBit(0));
+    } else {
+      f.inner->getInstTerm(a->getBit(2))->setNet(nullptr);
+    }
+    EXPECT_EQ(0u, SNLUtils::mergeRepeatedMuxSelections(f.design));
+    EXPECT_EQ(f.inner, f.design->getInstance(NLName("inner")));
+  }
+}
+
+TEST_F(SNLUtilsTest, mergeRepeatedMuxSelectionsHandlesChainsAndEqualSelectors) {
+  auto reversed = makeRepeatedMuxFixture(db_->getLibrary(NLName("MYLIB")), true);
+  EXPECT_EQ(1u, SNLUtils::mergeRepeatedMuxSelections(reversed.design));
+  auto f = makeRepeatedMuxFixture(db_->getLibrary(NLName("MYLIB")));
+  f.outer->setTermNet(NLDB0::getMux2Select(f.model), f.s);
+  EXPECT_EQ(1u, SNLUtils::mergeRepeatedMuxSelections(f.design));
+  EXPECT_EQ(f.s, f.outer->getInstTerm(NLDB0::getMux2Select(f.model))->getNet());
+  EXPECT_EQ(1u, f.design->getInstances().size());
+  auto* third = SNLInstance::create(f.design, f.model);
+  third->setTermNet(NLDB0::getMux2InputA(f.model), f.output);
+  third->setTermNet(NLDB0::getMux2InputB(f.model), f.b);
+  third->setTermNet(NLDB0::getMux2Select(f.model), f.t);
+  auto* output = SNLBusNet::create(f.design, 2, 0);
+  third->setTermNet(NLDB0::getMux2Output(f.model), output);
+  f.design->getBusTerm(NLName("y"))->setNet(output);
+  EXPECT_EQ(1u, SNLUtils::mergeRepeatedMuxSelections(f.design));
+}
+
+TEST_F(SNLUtilsTest, mergeRepeatedMuxSelectionsHandlesCommonFalseValue) {
+  auto f = makeRepeatedMuxFixture(db_->getLibrary(NLName("MYLIB")));
+  auto* a = NLDB0::getMux2InputA(f.model);
+  auto* b = NLDB0::getMux2InputB(f.model);
+  f.inner->setTermNet(a, f.b);
+  f.inner->setTermNet(b, f.a);
+  f.outer->setTermNet(a, f.b);
+  f.outer->setTermNet(b, f.temporary);
+  EXPECT_EQ(1u, SNLUtils::mergeRepeatedMuxSelections(f.design));
+  auto* select = f.outer->getInstTerm(NLDB0::getMux2Select(f.model))->getNet();
+  SNLInstance* gate = nullptr;
+  for (auto* term : select->getInstTerms())
+    if (term->getDirection() == SNLTerm::Direction::Output) gate = term->getInstance();
+  ASSERT_NE(nullptr, gate);
+  EXPECT_EQ("and", NLDB0::getGateName(gate->getModel()));
+  for (NLID::Bit bit = 0; bit < 3; ++bit) {
+    EXPECT_EQ(f.b->getBit(bit), f.outer->getInstTerm(a->getBit(bit))->getNet());
+    EXPECT_EQ(f.a->getBit(bit), f.outer->getInstTerm(b->getBit(bit))->getNet());
+  }
 }

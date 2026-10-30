@@ -304,7 +304,8 @@ class SNLVRLDumper {
     /**
      * Special method to dump assign representations of nets connected to terms
      */
-    void dumpTermAssigns(const SNLDesign* design, std::ostream& o);
+    void dumpTermAssigns(const SNLDesign* design, std::ostream& o,
+                         const DesignInsideAnonymousNaming& naming);
     void dumpInterface(const SNLDesign* design, std::ostream& o, DesignInsideAnonymousNaming& naming);
     using BitNetVector = std::vector<SNLBitNet*>;
     using InstTermVector = std::vector<const SNLInstTerm*>;

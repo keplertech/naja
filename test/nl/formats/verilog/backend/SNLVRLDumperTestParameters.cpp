@@ -373,8 +373,8 @@ TEST_F(SNLVRLDumperTestParameters, testMemoryInstanceDump) {
   EXPECT_NE(std::string::npos, dumped.find(".ABITS(4)"));
   EXPECT_NE(std::string::npos, dumped.find(".RD_PORTS(2)"));
   EXPECT_NE(std::string::npos, dumped.find(".WR_PORTS(2)"));
-  EXPECT_NE(std::string::npos, dumped.find(".WCLK('0)"));
-  EXPECT_NE(std::string::npos, dumped.find(".WMASK('0)"));
+  EXPECT_NE(std::string::npos, dumped.find(".WCLK(2'b0)"));
+  EXPECT_NE(std::string::npos, dumped.find(".WMASK(16'b0)"));
   EXPECT_NE(std::string::npos, dumped.find(".RST_ENABLE(1)"));
   EXPECT_NE(std::string::npos, dumped.find(".RST_ASYNC(1)"));
   EXPECT_EQ(std::string::npos, dumped.find("\"TRUE\""));
@@ -386,6 +386,46 @@ TEST_F(SNLVRLDumperTestParameters, testMemoryInstanceDump) {
   EXPECT_EQ(std::string::npos, dumped.find("module naja_mem #("));
   EXPECT_EQ(std::string::npos, dumped.find("reg [WIDTH-1:0] mem [0:DEPTH-1];"));
   EXPECT_EQ(std::string::npos, dumped.find("if (allow_write && addr_index < DEPTH)"));
+}
+
+TEST_F(SNLVRLDumperTestParameters, testWideMemoryControlTieOffs) {
+  for (size_t writePorts : {size_t{0}, size_t{3}}) {
+    SCOPED_TRACE(writePorts);
+    NLDB0::MemorySignature signature;
+    signature.width = writePorts ? 3073 : 9217;
+    signature.depth = 2;
+    signature.abits = 1;
+    signature.readPorts = 1;
+    signature.writePorts = writePorts;
+    auto* memory = NLDB0::getOrCreateMemory(signature);
+    ASSERT_NE(memory, nullptr);
+    auto* instance = SNLInstance::create(top_, memory, NLName("memory"));
+    const auto directory = std::filesystem::path(SNL_VRL_DUMPER_TEST_PATH) /
+      ("wide_memory_controls_" + std::to_string(writePorts));
+    std::filesystem::create_directories(directory);
+    SNLVRLDumper dumper;
+    dumper.setSingleFile(true);
+    dumper.dumpDesign(top_, directory);
+    const auto dumped = readTextFile(directory / "top.v");
+    const auto primitive = readTextFile(directory / "naja_primitives.v");
+    EXPECT_NE(std::string::npos, primitive.find("mem[init_idx] = WIDTH'(0);"));
+    EXPECT_NE(std::string::npos, primitive.find("WR_PORTS == 0 ? WIDTH'(1'sbx) : WIDTH'(0)"));
+    EXPECT_NE(std::string::npos, dumped.find(writePorts ? ".WMASK(9219'b0)" : ".WMASK(9217'b0)"));
+    EXPECT_NE(std::string::npos, dumped.find(writePorts ? ".WCLK(3'b0)" : ".WCLK(1'b0)"));
+    EXPECT_EQ(std::string::npos, dumped.find("('0)"));
+    if (!writePorts) {
+      EXPECT_NE(std::string::npos, dumped.find(".WADDR(1'b0)"));
+      EXPECT_NE(std::string::npos, dumped.find(".WDATA(9217'b0)"));
+      EXPECT_NE(std::string::npos, dumped.find(".WE(1'b0)"));
+    }
+    // The generic module's effective widths follow instance overrides.
+    SNLInstParameter::create(instance, memory->getParameter(NLName("WIDTH")), "4097");
+    std::ostringstream overridden;
+    dumper.dumpDesign(top_, overridden);
+    EXPECT_NE(std::string::npos, overridden.str().find(
+      writePorts ? ".WMASK(12291'b0)" : ".WMASK(4097'b0)"));
+    instance->destroy();
+  }
 }
 
 TEST_F(SNLVRLDumperTestParameters, testIndependentMemoryControlConnectivity) {
@@ -410,8 +450,8 @@ TEST_F(SNLVRLDumperTestParameters, testIndependentMemoryControlConnectivity) {
   const auto dumped = out.str();
   EXPECT_NE(std::string::npos, dumped.find(".WCLK(clocks)"));
   EXPECT_NE(std::string::npos, dumped.find(".WMASK(masks)"));
-  EXPECT_EQ(std::string::npos, dumped.find(".WCLK('0)"));
-  EXPECT_EQ(std::string::npos, dumped.find(".WMASK('0)"));
+  EXPECT_EQ(std::string::npos, dumped.find(".WCLK(2'b0)"));
+  EXPECT_EQ(std::string::npos, dumped.find(".WMASK(8'b0)"));
 }
 
 TEST_F(SNLVRLDumperTestParameters, testZeroMemoryInitUsesModelDefault) {
@@ -489,8 +529,8 @@ TEST_F(SNLVRLDumperTestParameters, testMemoryPrimitiveFileDump) {
 
   const auto topDump = readTextFile(outPath / "top.v");
   EXPECT_NE(std::string::npos, topDump.find("naja_mem #("));
-  EXPECT_NE(std::string::npos, topDump.find(".WCLK('0)"));
-  EXPECT_NE(std::string::npos, topDump.find(".WMASK('0)"));
+  EXPECT_NE(std::string::npos, topDump.find(".WCLK(2'b0)"));
+  EXPECT_NE(std::string::npos, topDump.find(".WMASK(16'b0)"));
   EXPECT_EQ(std::string::npos, topDump.find("module naja_mem #("));
 
   const auto primitivePath = outPath / "naja_primitives.v";
@@ -518,10 +558,10 @@ TEST_F(SNLVRLDumperTestParameters, testMemoryPrimitiveFileDump) {
   EXPECT_NE(std::string::npos, primitiveDump.find("reg [WIDTH-1:0] mem [0:DEPTH-1];"));
   EXPECT_NE(std::string::npos, primitiveDump.find("integer addr_index;"));
   EXPECT_NE(std::string::npos, primitiveDump.find("task automatic write_ports;"));
-  EXPECT_NE(std::string::npos, primitiveDump.find("allow_write = WE[WR_PORTS-1-wp];"));
+  EXPECT_NE(std::string::npos, primitiveDump.find("allow_write = WE[wp];"));
   EXPECT_NE(
     std::string::npos,
-    primitiveDump.find("if (WE[WR_PORTS-1-later] && WADDR[later*ABITS +: ABITS] == addr_value)"));
+    primitiveDump.find("if (WE[later] && WADDR[later*ABITS +: ABITS] == addr_value)"));
   EXPECT_NE(std::string::npos, primitiveDump.find("if (allow_write && addr_index < DEPTH)"));
   EXPECT_NE(
     std::string::npos,

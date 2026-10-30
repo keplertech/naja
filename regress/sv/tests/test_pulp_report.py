@@ -12,6 +12,10 @@ from pulp_report import render, collect_artifacts
 
 
 class PulpReportTest(unittest.TestCase):
+    def test_pinned_source_commit_is_identified(self):
+        summary = dict(revision='abc123', selected=[], inventory=[], results=[])
+        self.assertIn('commit abc123', render([('Survey', summary)]))
+
     def test_collect_parallel_artifacts_preserves_modes_and_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

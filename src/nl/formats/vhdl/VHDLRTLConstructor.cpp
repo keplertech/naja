@@ -23,6 +23,7 @@
 #include <functional>
 #include <fstream>
 #include "SNLRTLPrimitives.h"
+#include "SNLUtils.h"
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 
@@ -5682,6 +5683,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     sourceMap.annotate(design, architecture->span);
     RTLConstructor constructor(design, *entity, *architecture, syntax, context, overrides, build);
     constructor.run();
+    SNLUtils::mergeRepeatedMuxSelections(design);
     RTLSourceProperty::attach(design, signature, constructor.getInitializationFiles());
     active.erase({owner, name});
     return design;

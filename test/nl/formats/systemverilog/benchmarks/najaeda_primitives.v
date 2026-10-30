@@ -388,7 +388,7 @@ module naja_mem #(
     begin
       /* verilator lint_off SELRANGE */
       for (init_idx = 0; init_idx < DEPTH; init_idx = init_idx + 1)
-        if (INIT === '0) mem[init_idx] = {WIDTH{1'b0}};
+        if (INIT === '0) mem[init_idx] = WIDTH'(0);
         else mem[init_idx] = INIT[init_idx*WIDTH +: WIDTH];
       /* verilator lint_on SELRANGE */
     end
@@ -402,10 +402,10 @@ module naja_mem #(
     reg [ABITS-1:0] addr_value;
     begin
       for (wp = 0; wp < WR_PORTS; wp = wp + 1) begin
-        allow_write = WE[WR_PORTS-1-wp];
+        allow_write = WE[wp];
         addr_value = WADDR[wp*ABITS +: ABITS];
         for (later = wp + 1; later < WR_PORTS; later = later + 1) begin
-          if (WE[WR_PORTS-1-later] && WADDR[later*ABITS +: ABITS] == addr_value)
+          if (WE[later] && WADDR[later*ABITS +: ABITS] == addr_value)
             allow_write = 1'b0;
         end
         addr_index = integer'(addr_value);
@@ -429,7 +429,7 @@ module naja_mem #(
       if (addr_index < DEPTH)
         RDATA[rp*WIDTH +: WIDTH] = mem[addr_index];
       else
-        RDATA[rp*WIDTH +: WIDTH] = WR_PORTS == 0 ? {WIDTH{1'bx}} : {WIDTH{1'b0}};
+        RDATA[rp*WIDTH +: WIDTH] = WR_PORTS == 0 ? WIDTH'(1'sbx) : WIDTH'(0);
     end
   end
 
@@ -440,7 +440,7 @@ module naja_mem #(
       for (port = 0; port < WR_PORTS; port = port + 1) begin : write_port
         for (bit_index = 0; bit_index < WIDTH; bit_index = bit_index + 1) begin : write_bit
           always @(posedge WCLK[port]) begin
-            if (WE[WR_PORTS-1-port] && WMASK[port*WIDTH+bit_index] &&
+            if (WE[port] && WMASK[port*WIDTH+bit_index] &&
                 WADDR[port*ABITS +: ABITS] < DEPTH)
               mem[WADDR[port*ABITS +: ABITS]][bit_index] <= WDATA[port*WIDTH+bit_index];
           end

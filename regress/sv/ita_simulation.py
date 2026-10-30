@@ -85,8 +85,11 @@ def model_weight_read_delay(source, delay_ps):
         raise ValueError("ITA weight buffer read port shape changed")
     if "naja_sim_read_data" in module:
         raise ValueError("ITA weight read delay already applied")
+    # The pinned benchmark adds a Verilator-only read delay. Replace it with
+    # this experiment's setting so RTL and dump use exactly the same delay.
+    body = re.sub(r"\n`ifdef VERILATOR\n\s*#1ps\n`endif\n", "\n", body)
     if delay_ps == 0:
-        return source
+        return source[:match.start()] + header + ");" + body + source[match.end():]
     body = re.sub(r"\bReadData\b", "naja_sim_read_data", body)
     prefix = ("\n  timeunit 1ns; timeprecision 1ps;\n"
               f"  wire {port[1]} naja_sim_read_data;\n"
@@ -95,7 +98,7 @@ def model_weight_read_delay(source, delay_ps):
 
 
 def attach_memory(netlist):
-    # This adapter is specific to the checksum-pinned ita.default variant.
+    # This adapter is specific to the source-pinned ita.default variant.
     # Reject shape changes instead of silently simulating the wrong memory.
     pattern = r"module tc_sram_blackbox\(.*?endmodule //tc_sram_blackbox"
     matches = list(re.finditer(pattern, netlist, re.S))
@@ -167,6 +170,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=pulp.ROOT / "build/ita-simulation")
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--cache", type=Path, default=pulp.DEFAULT_CACHE,
+                        help="Cache prepared PULP packages by the shared Git revision pin")
     parser.add_argument("--najaeda-path", type=Path, default=pulp.ROOT / "build/test/najaeda")
     parser.add_argument("--generator-python", default=sys.executable,
                         help="Python with numpy and onnx installed")
@@ -202,9 +207,9 @@ def main():
             archive.extractall(out / "upstream", filter="data")
         upstream = out / "upstream" / f"ITA-{ITA_REV}"
         memory = fetch(MEM_URL, out / "tc_sram.sv", MEM_SHA)
-        archive = args.archive.resolve() if args.archive else fetch(
-            pulp.URL, out / f"{pulp.PACKAGE}.tar.gz", pulp.SHA256)
-        package = pulp.unpack(archive, out / "prepared")
+        package = (pulp.unpack(args.archive.resolve(), out / "prepared") if args.archive
+                   else pulp.prepare(args.cache))
+        summary["benchmark_revision"] = pulp.REVISION
         source = package / "ita/variants/default"
         generate = execute([args.generator_python, upstream / "testGenerator.py",
                             "--seed", args.seed, "-H", 1, "-S", 64, "-E", 64,

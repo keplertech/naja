@@ -5,10 +5,154 @@ SPDX-License-Identifier: Apache-2.0
 
 # PULP EDA benchmark frontend survey
 
+## Ara automatic-function lowering follow-up (2026-10-29)
+
+The pinned `ara.default` benchmark now **passes loading and structural Verilog
+dumping**, with no frontend compatibility flags. The original 19 unsupported
+lowering errors are cleared. Loading takes **219.37 seconds**, the efficiency
+audit 18.33 seconds and dumping 5.56 seconds (248.03 seconds for the runner).
+The top has 9 ports / 1,396 port bits; the structural dump is 100,163,430 bytes.
+Artifacts are under `build/pulp-ara-final/`. The dump matches the preceding successful run
+byte for byte after excluding its timestamp banner.
+
+The fixes preserve signed division through the existing signed primitive,
+replay terminal conditional/case returns with scoped automatic arrays, keep
+same-named declarations in different lexical scopes separate, initialize
+automatic arrays and implicit results to their language-defined defaults,
+and preserve output-call copy-outs to locals read by later statements.
+Subroutine input materialization uses formal widths for argument conversions.
+Calls with unsupported external writes are validated even when their explicit
+copy-out results are unused.
+Constant case matches are exposed to replay pruning so fixed parameter branches
+do not expand every table implementation.
+
+Synthetic regressions cover different array shapes and directions, nested
+lookup calls, repeated block entry, signed arithmetic, partial/dynamic result
+writes including four-state X defaults, and multi-output argument conversions.
+CMake validation passes 1,352 frontend tests, 85 dumper tests, 257 VHDL tests,
+32 high-level SV Python tests, 42 raw database tests, 100 runner tests and the
+cross-process determinism contract including fresh snapshot reloads. Sphinx
+builds successfully. Bazel remains blocked by the local Apple SDK's undeclared
+`SDKSettings.json` input; build-path parity is not established by these results.
+
+Remaining findings: 1,751 Slang warnings and 115 existing two-state
+case-comparison warnings remain. The efficiency mechanism detects **744 expanded
+duplicate mux bits** (456 in one repeated lane model and 288 in the sequencer).
+There are no findings in its identical-input, repeated-arm or unconsumed-mux
+categories. Full-design structural lint and functional equivalence have not
+been established by this load/dump run.
+
+## Cheshire inlined-local diagnostic follow-up (2026-10-29)
+
+The reported `repData64` loop-counter warning is a false positive, not a
+missing functional driver. After lowering cleanup, its 32-bit placeholder has
+zero instance-terminal connections and zero port connections. The warning
+previously ran before unused replay muxes were removed. Checking surviving
+connectivity after alias and mux cleanup reduces **32
+`undriven_inlined_local` warnings to zero** on the pinned Cheshire benchmark.
+Loading still completes without unsupported-element errors; other diagnostics,
+including the existing two-state case-comparison warnings, remain.
+
+Deleted anonymous aliases are also removed from the inlined-net tracker before
+their addresses can be reused. Connected undriven locals retain declaration
+locations and console deduplication; a focused partial-read regression warns
+only for the two bits actually read. An independent synthetic loop/case helper
+checks all 16,384 binary inputs against expected values. Full validation passes
+1,348 frontend tests, focused Python loader tests, cross-process determinism
+and Sphinx. Source Bazel validation remains blocked by the local Apple SDK
+configuration. Before/after connectivity audits are under
+`build/cheshire-inlined-local-before/` and
+`build/cheshire-inlined-local-after/`.
+
+## Repeated mux selection cleanup (2026-10-29)
+
+The second remaining efficiency issue is resolved. Both RTL loaders use the
+shared SNL pass to combine complete, exclusive mux chains choosing the same
+true value via OR, and the dual common-false-value pattern via AND. It rejects
+shared outputs, additional pin uses, partial/reordered vectors, disconnected
+inputs, extra drivers and direct feedback. The surviving mux keeps its output
+identity and receives both source origins; new selector gates/nets retain those
+origins too. No primitive capability or language scheduling semantics change.
+
+On the pinned RedMulE benchmark, expanded mux bits decrease from **2,978,881
+to 2,946,665** (32,216 fewer), and expanded mux instances from **368,302 to
+346,687**. The common-true rewrite removes the previously identified 21,585 mux
+bits; supporting the opposite polarity removes another 10,631. The audit now
+reports zero findings in all four implemented categories. This is not a proof
+that no other lowering inefficiencies exist. Load takes 44.58 seconds, auditing
+8.00 seconds and dumping 1.03 seconds in this run. Artifacts are under
+`build/pulp-redmule-repeated-mux-final/`.
+
+Synthetic verification exercises both polarities, longer chains, shared values,
+reversed creation order, malformed/non-exclusive connections, source metadata,
+and both HDL frontends. Source-versus-dump simulations exhaust X/Z data and
+selectors. The cross-process contract covers live state, dump artifacts and
+fresh-process NajaIF reloads with the new selector logic. Source Bazel tests
+remain blocked by the local Apple SDK's undeclared `SDKSettings.json` input.
+Full-design RedMulE lint and the other outstanding frontend limitations remain
+separate tasks.
+
+## Unconsumed mux cleanup (2026-10-29)
+
+The first remaining efficiency issue is resolved: the shared SNL cleanup removes
+canonical mux cones with no path through muxes to a design terminal or a
+non-mux consumer. SystemVerilog applies it after alias collapse; VHDL applies
+it when finishing each newly lowered model. Ports, register inputs, black-box
+connections, and other non-mux consumers keep their mux cones. Nets and all
+non-mux instances remain; unobserved named temporaries can therefore remain
+without drivers. Producer lookup avoids quadratic scans of high-fanout inputs.
+
+On the pinned RedMulE benchmark, the audit's **19,502 expanded unconsumed mux
+bits fall to zero**. Expanded mux bits decrease from **2,998,383 to 2,978,881**;
+expanded mux instances decrease from **372,945 to 368,302**. Repeated-selection
+candidates remain a separate optimization task. Artifacts are under
+`build/pulp-redmule-unused-mux-final/`.
+
+Validation passes 227 core tests, 255 VHDL frontend tests, 1,343 SystemVerilog
+frontend tests, 85 dumper tests, and focused Python loader tests. Synthetic
+source-versus-dump simulation covers binary inputs and X/Z data/selects.
+Cross-process determinism covers mux cleanup, hierarchy sharing and NajaIF
+round trips. Bazel validation remains blocked by the local Apple SDK's
+undeclared absolute `SDKSettings.json` input. This step does not establish
+completion of full-design RedMulE lint or address the other remaining frontend
+limitations.
+
+## RedMulE lowering efficiency follow-up (2026-10-29)
+
+At the pinned public PULP revision
+`b4bd97823aa93737dda0bf1f3b2bd5c6dcb47ecc`, the additional lowering fixes
+reduce expanded mux bits from **3,382,510 to 2,998,383** (11.36%) and mux
+instances from **386,844 to 372,945**. Load takes 40.61 seconds, the independent
+efficiency audit 6.67 seconds, and dumping 0.81 seconds on this machine.
+
+Simple concatenated assignments now replay only actual value and selector
+dependencies; compound concatenations retain whole-value dependencies. Generic
+mux construction wires identical operand bits directly and shares exact pure
+expressions. Adjacent equal case-arm results share one selection, preserving
+priority and independently merging replay locals. This applies to procedural
+replay and the older sequential path. Synthetic examples reduce concatenation
+selection from 24 to 12 mux bits, three equal case arms from 18 to 6, and a
+padded constant selection from 8 to 2. Known-selector comparisons and four-state
+data simulations pass; existing two-state case-comparison limitations remain.
+
+The frontend-independent Python audit reports source-grouped optimization
+opportunities, with configurable warnings, and runs automatically in the PULP
+runner. It still identifies approximately 19,500 expanded unconsumed mux bits
+outside the corrected patterns, predominantly in converter logic. This audit
+is deliberately conservative, and its overlapping categories must not be added.
+Artifacts are under `build/pulp-redmule-compact-replay-final/`.
+
+Validation passes 1,341 C++ frontend tests, 85 dumper tests, 32 high-level Python
+SystemVerilog tests, 42 raw loader tests, 100 runner tests, cross-process
+determinism, Sphinx, and standalone source-versus-dump simulations. Full RedMulE
+Verilator lint still exceeds a 120-second check. Source Bazel validation is
+blocked locally by an Apple SDK/toolchain undeclared-absolute-input error in
+`SDKSettings.json`; CMake success does not establish Bazel validation.
+
 ## NVDLA regular regression (2026-10-20)
 
 `nvdla.top` joins the regular load/dump/lint regression tier. The runner sets
-`default_timescale="1ns/1ps"` for this variant, preserving explicit source time
+`frontend_options={"slang": ["--timescale=1ns/1ps"]}` for this variant, preserving explicit source time
 scales and leaving the pinned release sources unchanged. The sequential
 lowering fix resolves selected-target arithmetic through the ordinary RHS
 lowering path, avoiding a whole-register increment shortcut that required

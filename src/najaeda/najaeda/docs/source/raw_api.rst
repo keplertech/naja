@@ -656,13 +656,26 @@ RTL subset. The normal high-level equivalents are ``netlist.load_gate_level_veri
 ``SNLDesign.dumpGateLevelVerilog`` export structural netlists rather than reconstructing
 the original behavioral RTL.
 
-``NLDB.loadSystemVerilog(..., default_timescale="1ns/1ps")`` sets a fallback
-time unit and precision for design elements without an explicit time scale.
-The optional argument accepts a nonempty string or ``None`` (the default,
-preserving frontend defaults). Explicit source declarations take precedence;
-invalid time scales raise ``SystemVerilogSyntaxError`` during loading. Experts
-using the raw loader can set this directly; high-level callers have the same
-setting in ``netlist.SystemVerilogConfig.default_timescale``.
+``NLDB.loadSystemVerilog(..., frontend_options={"slang": ["--relax-enum-conversions"]})``
+passes backend-specific options through a frontend-neutral mapping. The high-level
+counterpart is ``netlist.SystemVerilogConfig.frontend_options``. The default is
+``None``; an empty dictionary or ``{"slang": []}`` adds no options. Currently only
+the active frontend ``"slang"`` is accepted; unknown or inactive frontend names
+raise an error rather than being silently ignored. Future adapters can define
+their own option tokens in their own namespace.
+
+For Slang each nonempty string is one ordered driver argument, without shell
+parsing or quoting, and must contain no NUL bytes. Arguments follow typed options
+and precede sources/filelists; Slang diagnoses unknown options and handles
+repeated options. Use separate tokens for an option and its value, including
+paths containing spaces. The example permits integral-to-enum conversions using
+the enum base representation, including unnamed values. Other useful Slang
+options are ``--allow-use-before-declare``, ``--timescale=1ns/1ps`` and
+``--single-unit``. Strict frontend defaults remain in effect when no options are
+supplied. These settings do not add unsupported Naja lowering capabilities.
+Experts can pass them directly without creating a command file solely for
+additional frontend settings. Common loader settings retain their typed APIs;
+see :doc:`loading` for configuration examples.
 
 ``NLDB.loadSystemVerilog`` writes incremental frontend diagnostics to
 ``naja_sv_diagnostics.log`` by default. Pass ``diagnostics_report_path=None``
@@ -675,8 +688,8 @@ can inspect the inferred primitive through ``SNLInstance.getModel()``:
 ``MULTI_CLOCK=1`` selects independent write clocks and masks, with ``WCLK``
 (one bit per write action) and ``WMASK`` (``WR_PORTS * WIDTH`` bits).
 ``WADDR``/``WDATA``/``WMASK`` use port 0 in the least-significant slice;
-``WE`` uses port 0 in its most-significant bit, matching the existing memory
-interface. ``CLK`` and ``RST`` are tied off for this variant.
+write port i uses ``WE[i]``, with port 0 at bit 0, consistent with that
+least-significant slice convention. ``CLK`` and ``RST`` are tied off for this variant.
 In C++, ``SNLDesignModeling::MemoryInterface.clock`` is null for this variant;
 clients must use each ``MemoryWritePort.clock`` instead of assuming one clock.
 A write port with a null clock inherits the common interface clock. ``RADDR``/``RDATA``

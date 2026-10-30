@@ -410,3 +410,143 @@ def dump_constants(design, analyzed_models):
     for ins in design.getInstances():
         model = ins.getModel()
         dump_constants(model, analyzed_models)
+
+
+def analyze_lowering_efficiency(instance, *, warn_threshold=256):
+    """Audit reachable models for avoidable mux work, independent of frontend.
+
+    Return JSON-compatible counts and source groups. Counts are estimates and
+    categories overlap; they must not be added. ``warn_threshold`` is the
+    expanded bit count per category/model; None disables logging warnings.
+    Non-mux consumers are conservatively treated as live roots.
+    """
+    if warn_threshold is not None and (isinstance(warn_threshold, bool)
+                                      or not isinstance(warn_threshold, int)
+                                      or warn_threshold < 1):
+        raise ValueError("warn_threshold must be a positive integer or None")
+    from najaeda import naja
+
+    top = instance._Instance__get_snl_model()
+    models, order, visiting = {}, [], set()
+
+    def visit(model):
+        key = model.getNLID().toTuple()
+        if key in visiting:
+            raise ValueError("Recursive model hierarchy cannot be audited")
+        if key in models:
+            return
+        visiting.add(key)
+        for child in model.getInstances():
+            if not child.getModel().isPrimitive():
+                visit(child.getModel())
+        visiting.remove(key)
+        models[key] = model
+        order.append(key)
+
+    visit(top)
+    occurrences = {key: 0 for key in order}
+    occurrences[top.getNLID().toTuple()] = 1
+    for key in reversed(order):
+        for child in models[key].getInstances():
+            ck = child.getModel().getNLID().toTuple()
+            if ck in occurrences:
+                occurrences[ck] += occurrences[key]
+
+    def net_key(net):
+        return net.getNLID().toTuple() if net is not None else None
+
+    result = {"models": [], "mux_instances": 0, "mux_bits": 0,
+              "expanded_mux_instances": 0, "expanded_mux_bits": 0}
+    for key in reversed(order):
+        model = models[key]
+        muxes, roots = [], set()
+        for term in model.getBitTerms():
+            roots.add(net_key(term.getNet()))
+        for child in model.getInstances():
+            primitive = child.getModel()
+            terms = {term.getName(): term for term in primitive.getTerms()}
+            if primitive.isMux() and all(name in terms for name in ("A", "B", "S", "Y")):
+                pins = {name: tuple(net_key(child.getInstTerm(bit).getNet())
+                                    for bit in terms[name].getBits())
+                        for name in ("A", "B", "S", "Y")}
+                # Ignore incomplete/unrecognized mux signatures.
+                if len(pins["A"]) == len(pins["B"]) == len(pins["Y"]) and len(pins["S"]) == 1:
+                    muxes.append((child, pins))
+                    continue
+            for term in child.getInstTerms():
+                if term.getDirection() != naja.SNLTerm.Direction.Output:
+                    roots.add(net_key(term.getNet()))
+        producers, consumers = {}, {}
+        for index, (_, pins) in enumerate(muxes):
+            for pin in ("A", "B", "S"):
+                for position, input_net in enumerate(pins[pin]):
+                    consumers.setdefault(input_net, set()).add((index, pin, position))
+            for output in pins["Y"]:
+                if output is not None:
+                    producers.setdefault(output, []).append(index)
+        live, pending = set(), list(roots)
+        while pending:
+            for index in producers.get(pending.pop(), ()):
+                if index in live:
+                    continue
+                live.add(index)
+                pins = muxes[index][1]
+                pending.extend(pins["A"] + pins["B"] + pins["S"])
+        by_output = {pins["Y"]: pins for _, pins in muxes}
+        groups, seen = {}, set()
+        for index, (child, pins) in enumerate(muxes):
+            signature = (pins["A"], pins["B"], pins["S"])
+            outputs = set(pins["Y"])
+            repeated_arm = False
+            for data_pin, common_pin in (("A", "B"), ("B", "A")):
+                inner = by_output.get(pins[data_pin])
+                if (inner is not None and inner is not pins
+                        and inner[common_pin] == pins[common_pin]
+                        and all(net not in roots and len(producers.get(net, ())) == 1
+                                and consumers.get(net) == {(index, data_pin, position)}
+                                for position, net in enumerate(inner["Y"]))
+                        and all(bit is not None and bit not in outputs
+                                for vector in (inner["A"], inner["B"], inner["S"], pins["S"])
+                                for bit in vector)
+                        and all(bit is not None for vector in signature for bit in vector)):
+                    repeated_arm = True
+                    break
+            metrics = {"repeated_mux_arm": len(pins["Y"]) if repeated_arm else 0,
+                       "identical_mux_inputs": sum(a is not None and a == b
+                                                   for a, b in zip(pins["A"], pins["B"])),
+                       "duplicate_mux": len(pins["Y"]) if signature in seen else 0,
+                       "unconsumed_mux": len(pins["Y"]) if index not in live else 0}
+            # Disconnected inputs cannot establish equivalent logic.
+            if all(bit is not None for vector in signature for bit in vector):
+                seen.add(signature)
+            origins = child.getSourceOrigins()
+            source = tuple(origins[0][0]) if origins else None
+            for code, bits in metrics.items():
+                if bits:
+                    group = groups.setdefault((code, source), {"code": code, "source": source,
+                                                              "instances": 0, "bits": 0})
+                    group["instances"] += 1
+                    group["bits"] += bits
+        count = occurrences[key]
+        row = {"model": model.getName(), "model_id": list(key), "occurrences": count,
+               "mux_instances": len(muxes), "mux_bits": sum(len(p["Y"]) for _, p in muxes),
+               "findings": list(groups.values())}
+        totals = {}
+        for finding in row["findings"]:
+            finding["expanded_bits"] = finding["bits"] * count
+            totals[finding["code"]] = totals.get(finding["code"], 0) + finding["expanded_bits"]
+        if warn_threshold is not None:
+            for code, bits in totals.items():
+                if bits >= warn_threshold:
+                    source = next((group["source"] for group in row["findings"]
+                                   if group["code"] == code and group["source"]), None)
+                    location = ":".join(map(str, source[:3])) if source else "source unavailable"
+                    logger.warning("Lowering efficiency [%s]: model %s, %d expanded mux bits "
+                                   "(%d hierarchy occurrences), %s; inspect report source groups",
+                                   code, model.getName(), bits, count, location)
+        result["models"].append(row)
+        result["mux_instances"] += row["mux_instances"]
+        result["mux_bits"] += row["mux_bits"]
+        result["expanded_mux_instances"] += row["mux_instances"] * count
+        result["expanded_mux_bits"] += row["mux_bits"] * count
+    return result

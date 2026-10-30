@@ -616,13 +616,13 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
   int keep_ast_link = 0;  // Default: false
   int blackbox_unknown_modules = 0;  // Default: false
   int blackbox_multi_writer_memories = 0;  // Default: false
-  PyObject* default_timescale = nullptr;  // Optional: fallback time scale
+  PyObject* frontend_options = nullptr;  // Optional: backend-specific option tokens
 
   static const char* const kwords[] = {
     "files", "keep_assigns", "elaborated_ast_json_path",
     "pretty_print_elaborated_ast_json", "include_source_info_in_elaborated_ast_json", "flist",
     "diagnostics_report_path", "defines", "suppress_warnings", "keep_ast_link",
-    "blackbox_unknown_modules", "library", "blackbox_multi_writer_memories", "default_timescale",
+    "blackbox_unknown_modules", "library", "blackbox_multi_writer_memories", "frontend_options",
     nullptr
   };
 
@@ -633,7 +633,7 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
     &pretty_print_elaborated_ast_json,
     &include_source_info_in_elaborated_ast_json, &flist, &diagnostics_report_path,
     &defines, &suppress_warnings, &keep_ast_link, &blackbox_unknown_modules, &libraryObject,
-    &blackbox_multi_writer_memories, &default_timescale)) {
+    &blackbox_multi_writer_memories, &frontend_options)) {
     return nullptr;
   }
 
@@ -654,20 +654,48 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
   options.keepASTLink = keep_ast_link;
   options.blackboxUnknownModules = blackbox_unknown_modules;
   options.blackboxMultiWriterMemories = blackbox_multi_writer_memories;
-  if (default_timescale != nullptr && default_timescale != Py_None) {
-    if (not PyUnicode_Check(default_timescale)) {
+  if (frontend_options != nullptr && frontend_options != Py_None) {
+    if (!PyDict_Check(frontend_options)) {
       PyErr_SetString(PyExc_TypeError,
-        "NLDB.loadSystemVerilog: default_timescale must be a str or None");
+        "NLDB.loadSystemVerilog: frontend_options must be a dict[str, list[str]] or None");
       return nullptr;
     }
-    const char* value = PyUnicode_AsUTF8(default_timescale);
-    if (value == nullptr) return nullptr;
-    if (PyUnicode_GetLength(default_timescale) == 0) {
-      PyErr_SetString(PyExc_ValueError,
-        "NLDB.loadSystemVerilog: default_timescale must not be empty");
-      return nullptr;
+    PyObject* key = nullptr;
+    PyObject* arguments = nullptr;
+    Py_ssize_t position = 0;
+    while (PyDict_Next(frontend_options, &position, &key, &arguments)) {
+      if (!PyUnicode_Check(key)) {
+        PyErr_SetString(PyExc_TypeError, "NLDB.loadSystemVerilog: frontend_options keys must be strings");
+        return nullptr;
+      }
+      if (PyUnicode_CompareWithASCIIString(key, "slang") != 0) {
+        PyErr_SetString(PyExc_ValueError,
+          "NLDB.loadSystemVerilog: frontend_options supports only the active frontend 'slang'");
+        return nullptr;
+      }
+      if (!PyList_Check(arguments)) {
+        PyErr_SetString(PyExc_TypeError, "NLDB.loadSystemVerilog: frontend_options['slang'] must be a list[str]");
+        return nullptr;
+      }
+      auto& tokens = options.frontendOptions["slang"];
+      for (Py_ssize_t i = 0; i < PyList_Size(arguments); ++i) {
+        PyObject* item = PyList_GetItem(arguments, i);
+        if (!PyUnicode_Check(item)) {
+          PyErr_Format(PyExc_TypeError, "NLDB.loadSystemVerilog: frontend_options['slang'][%zd] must be a str", i);
+          return nullptr;
+        }
+        Py_ssize_t length = 0;
+        const char* value = PyUnicode_AsUTF8AndSize(item, &length);
+        if (!value) return nullptr;
+        std::string argument(value, length);
+        if (argument.empty() || argument.find('\0') != std::string::npos) {
+          PyErr_Format(PyExc_ValueError,
+            "NLDB.loadSystemVerilog: frontend_options['slang'][%zd] must be nonempty and contain no NUL bytes", i);
+          return nullptr;
+        }
+        tokens.push_back(std::move(argument));
+      }
     }
-    options.defaultTimeScale = value;
   }
 
   if (elaborated_ast_json_path != nullptr &&
@@ -1028,7 +1056,7 @@ PyMethodDef PyNLDB_Methods[] = {
     "(default naja_sv_diagnostics.log; None disables the report file)\n"
     "  defines (list[str], optional): SystemVerilog preprocessor defines passed as -D<name>[=<value>]\n"
     "  suppress_warnings (list[str], optional): frontend warning names to suppress\n"
-    "  default_timescale (str | None, optional): fallback time scale, e.g. 1ns/1ps (default None)\n"
+    "  frontend_options (dict[str, list[str]] | None, optional): backend-specific option tokens (currently slang; default None)\n"
     "  blackbox_multi_writer_memories (bool, optional): blackbox entire modules with unsupported multi-writer memories (default False)\n"
     "  keep_ast_link (bool, optional): retain live frontend AST to SNL object links when supported "
     "(default False)."},

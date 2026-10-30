@@ -329,6 +329,219 @@ class NajaEDADeterminismTest(unittest.TestCase):
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 
+    def test_systemverilog_inlined_loop_counters(self):
+        self.check_determinism("sv", """
+module leaf(input logic [11:0] a, input logic [1:0] mode,
+            output logic [11:0] y);
+  function automatic logic [11:0] f(input logic [11:0] data, input logic [1:0] sel);
+    logic [11:0] result;
+    case(sel)
+      0: for(int index=0;index<3;index++) result[index*4+:4]=data[3:0];
+      1: for(int index=0;index<2;index++) result[index*6+:6]=data[5:0];
+      default: result=data;
+    endcase
+    return result;
+  endfunction
+  assign y=f(a,mode);
+endmodule
+module top(input logic [11:0] a, input logic [1:0] mode,
+           output logic [11:0] y,z);
+  leaf u(a,mode,y); leaf v(a,mode,z);
+endmodule
+""")
+
+    def test_systemverilog_repeated_mux_selections(self):
+        self.check_determinism("sv", """
+module leaf(input logic [2:0] a,b, input logic s,t,u,
+            output logic [2:0] y,z,shared,dual);
+  always_comb begin
+    y=a; if(s)y=b; if(t)y=b; if(u)y=b;
+  end
+  assign shared=s ? a : b;
+  assign z=t ? a : shared;
+  assign dual=u ? (t ? a : b) : b;
+endmodule
+module top(input logic [2:0] a,b, input logic s,t,u,
+           output logic [2:0] y0,y1,z0,z1,q0,q1,r0,r1);
+  leaf x(a,b,s,t,u,y0,z0,q0,r0);
+  leaf y(a,b,s,t,u,y1,z1,q1,r1);
+endmodule
+""")
+
+    def test_systemverilog_overwritten_mux_results(self):
+        self.check_determinism("sv", """
+module leaf(input logic [3:0] a,b, input logic s,
+            output logic [3:0] y,z);
+  always_comb begin
+    y=s?a:b;
+    y=a;
+    z=s?b:a;
+  end
+endmodule
+module top(input logic [3:0] a,b, input logic s,
+           output logic [3:0] y0,y1,z0,z1);
+  leaf x(a,b,s,y0,z0);
+  leaf y(a,b,s,y1,z1);
+endmodule
+""")
+
+    def test_systemverilog_compact_case_and_concat_replay(self):
+        self.check_determinism("sv", """
+module top(input logic [7:0] a, output logic [1:0] hi,
+           output logic [3:0] lo, output logic [5:0] choice,
+           output wire [7:0] first, second);
+  always_comb begin
+    {hi,lo} = a[5:0];
+    if(a[7]) {hi,lo} = a[5:0] >> 1;
+    else if(a[6]) {hi,lo} = a[5:0] << 1;
+    case(a[7:6])
+      0: choice=a[5:0]; 1: choice=a[5:0]; 2: choice=a[5:0];
+      default: choice=0;
+    endcase
+  end
+  assign first=a[7] ? 8'd2 : 8'd1;
+  assign second=a[7] ? 8'd2 : 8'd1;
+endmodule
+""")
+
+    def test_systemverilog_shared_power_and_table_expressions(self):
+        self.check_determinism("sv", """
+module leaf(input logic [31:0] exponent, input logic [1:0] index,
+            output logic [31:0] first, duplicate, adjusted,
+            output logic [7:0] left, right);
+  function automatic logic [7:0] lookup(input logic [1:0] i);
+    localparam logic [0:3][7:0] words = {8'd3, 8'd5, 8'd9, 8'd13};
+    return words[i];
+  endfunction
+  assign first = 32'd2 ** exponent;
+  assign duplicate = 32'd2 ** exponent;
+  assign adjusted = 32'd2 ** (exponent + 32'd1);
+  assign left = lookup(index);
+  assign right = lookup(index);
+endmodule
+module top(input logic [31:0] exponent, input logic [1:0] index,
+           output logic [31:0] first, duplicate, adjusted,
+           output logic [7:0] left, right,
+           output logic [31:0] second, third, fourth,
+           output logic [7:0] a, b);
+  leaf x(exponent, index, first, duplicate, adjusted, left, right);
+  leaf y(exponent, index, second, third, fourth, a, b);
+endmodule
+""")
+
+    def test_systemverilog_function_input_copy_returns(self):
+        from test_najaeda_function_replay import SYSTEMVERILOG as function_source
+        self.check_determinism("sv", function_source)
+
+    def test_systemverilog_function_case_returns(self):
+        from test_najaeda_function_replay import wide_case_fixture
+        source, _ = wide_case_fixture()
+        self.check_determinism("sv", source)
+
+    def test_systemverilog_scoped_tables_and_copyouts(self):
+        self.check_determinism("sv", """
+module top(input logic [4:0] a, output logic [3:0] y,
+           output logic [2:0] partial, output logic signed [4:0] quotient);
+  function automatic logic [3:0] lookup(input logic [4:0] value);
+    case (value[4])
+      0: begin
+        logic [2:0] words [0:2];
+        words = '{3'd2, 3'd5, 3'd7};
+        return words[value[2:0] % 3];
+      end
+      default: begin
+        logic [3:0] words [4:0];
+        words = '{4'd1, 4'd6, 4'd9, 4'd11, 4'd14};
+        return words[value[2:0] % 5];
+      end
+    endcase
+  endfunction
+  function automatic void copy(input logic [2:0] v,
+                               output logic [3:0] first, second);
+    first = v;
+    second = first + 1;
+  endfunction
+  function automatic logic [2:0] update(input logic [4:0] v);
+    update[v[1:0]] = v[2];
+  endfunction
+  always_comb begin
+    automatic logic [3:0] left, right;
+    copy(a, left, right);
+    y = lookup(a) ^ left ^ right;
+  end
+  assign partial = update(a);
+  assign quotient = $signed(a) / 2;
+endmodule
+""")
+
+    def test_systemverilog_fixed_array_function_returns(self):
+        self.check_determinism("sv", """
+module top(input logic [3:0] a, output wire [23:0] y, z,
+           output wire [7:0] constant_y, output wire unknown_x, unknown_z,
+           output wire partial_x, partial_zero, output wire [3:0] partial_written);
+  typedef logic [3:0] table_t [2:3][5:3];
+  typedef logic [3:0] cube_t [1:0][2:3][4:3];
+  function automatic int row_limit();
+    int n=2;
+    while (n<4) n++;
+    return n;
+  endfunction
+  function automatic table_t make_table(input logic [3:0] v);
+    table_t result;
+    for (int r=2; r<row_limit(); r++)
+      for (int c=5; c>=3; c--) result[r][c] = v + 1 + 3*(r-2) + 5-c;
+    return result;
+  endfunction
+  function automatic table_t named_table(input logic [3:0] v);
+    for (int r=2; r<row_limit(); r++)
+      for (int c=5; c>=3; c--) named_table[r][c] = v + 1 + 3*(r-2) + 5-c;
+  endfunction
+  function automatic cube_t make_cube();
+    cube_t result;
+    int i=0;
+    while (i<2) begin
+      for (int j=2; j<=3; j++)
+        for (int k=4; k>=3; k--) result[i][j][k] = 3*i + 2*j + k;
+      i++;
+    end
+    return result;
+  endfunction
+  function automatic table_t unknown_table(input logic unused);
+    table_t result;
+    for (int r=2; r<=3; r++)
+      for (int c=5; c>=3; c--) result[r][c] = 4'b10xz;
+    return result;
+  endfunction
+  function automatic table_t partial_table(input logic [3:0] v);
+    table_t result;
+    result[2][5] = v;
+    return result;
+  endfunction
+  typedef bit [3:0] bit_table_t [2:3][5:3];
+  function automatic bit_table_t partial_bits(input bit [3:0] v);
+    partial_bits[2][5] = v;
+  endfunction
+  table_t first, second, constants;
+  table_t partial;
+  bit_table_t bit_values;
+  cube_t cube;
+  assign first=make_table(a);
+  always_comb second=named_table(a);
+  assign cube=make_cube();
+  assign constants=unknown_table(1'b0);
+  assign partial=partial_table(a);
+  assign bit_values=partial_bits(a);
+  assign y={first[2][5],first[2][4],first[2][3],first[3][5],first[3][4],first[3][3]};
+  assign z={second[2][5],second[2][4],second[2][3],second[3][5],second[3][4],second[3][3]};
+  assign constant_y={cube[1][2][4],cube[0][3][3]};
+  assign unknown_x=constants[2][3][1];
+  assign unknown_z=constants[3][5][0];
+  assign partial_written=partial[2][5];
+  assign partial_x=partial[3][4][0];
+  assign partial_zero=bit_values[3][4][0];
+endmodule
+""")
+
     def test_systemverilog_indexed_vector_updates(self):
         self.check_determinism("sv", """
 module top(input logic [3:0] index, input logic [3:0] data,
@@ -465,6 +678,51 @@ module top(input logic [10:0] a, output wire [10:0] y);
   relay grouped(lanes);
   endpoint wider(wide);
 endmodule
+""")
+
+    def test_vhdl_repeated_mux_selections(self):
+        self.check_determinism("vhd", """
+entity leaf is port(a,b : in bit_vector(2 downto 0); s,t,u : in bit;
+                    y,dual : out bit_vector(2 downto 0)); end;
+architecture rtl of leaf is begin
+  process(a,b,s,t,u) is variable temp : bit_vector(2 downto 0);
+  begin
+    temp:=a;
+    if s='1' then temp:=b; end if;
+    if t='1' then temp:=b; end if;
+    if u='1' then temp:=b; end if;
+    y<=temp;
+    if u='1' then
+      if t='1' then dual<=a; else dual<=b; end if;
+    else dual<=b; end if;
+  end process;
+end;
+entity top is port(a,b : in bit_vector(2 downto 0); s,t,u : in bit;
+                   y0,y1,q0,q1 : out bit_vector(2 downto 0)); end;
+architecture rtl of top is begin
+  x: entity work.leaf port map(a,b,s,t,u,y0,q0);
+  y: entity work.leaf port map(a,b,s,t,u,y1,q1);
+end;
+""")
+
+    def test_vhdl_overwritten_mux_results(self):
+        self.check_determinism("vhd", """
+entity leaf is port(a,b : in bit_vector(3 downto 0); s : in bit;
+                    y,z : out bit_vector(3 downto 0)); end;
+architecture rtl of leaf is begin
+  process(a,b,s) is variable temp : bit_vector(3 downto 0);
+  begin
+    if s='1' then temp:=a; else temp:=b; end if;
+    temp:=a; y<=temp;
+    if s='1' then z<=b; else z<=a; end if;
+  end process;
+end;
+entity top is port(a,b : in bit_vector(3 downto 0); s : in bit;
+                   y0,y1,z0,z1 : out bit_vector(3 downto 0)); end;
+architecture rtl of top is begin
+  x: entity work.leaf port map(a,b,s,y0,z0);
+  y: entity work.leaf port map(a,b,s,y1,z1);
+end;
 """)
 
     def test_vhdl_constant_ports(self):

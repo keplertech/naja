@@ -598,16 +598,35 @@ python3 regress/sv/sv_regress.py clean
 
 ## PULP prepared EDA benchmarks
 
-`pulp_benchmarks.py` complements the repository-checkout cases with the
-[self-contained PULP release](https://github.com/pulp-platform/eda-benchmarks/releases/tag/v0.1.0).
-It pins v0.1.0 and verifies the release archive's SHA-256 before extraction.
-No RTL is vendored, generated, patched, or substituted. Each target uses the
-release's `targets.mk` top and its variant-local `filelist.f`, including the
-supplied wrappers, include directories, defines, and memory stubs.
+`pulp_benchmarks.py` uses a fixed Git commit of
+[PULP EDA benchmarks](https://github.com/pulp-platform/eda-benchmarks).
+`REVISION` in `pulp_benchmarks.py` is the single source pin shared by the local
+runner, nightly survey, and ITA simulation input package. Update that constant
+when advancing the benchmark suite; publication of a release is not required.
+The runner checks out that exact commit and runs upstream `setup.sh` with
+`SIMULATION=0 KEEP_BUILD_TOOLS=0`. It applies no Naja-owned RTL patches.
+Exports are cached under `build/pulp-benchmark-sources/` by revision, with a
+manifest recording the repository, commit and every exported file's SHA-256.
+Cached directories and supplied archives are verified before use. Each target
+uses the export's `targets.mk` top and variant-local `filelist.f`, including
+upstream wrappers, include directories, defines and memory stubs.
+
+Preparing an export requires Linux and upstream's build prerequisites:
+
+```sh
+sudo apt-get install bash build-essential ca-certificates cmake coreutils curl \
+  findutils gawk git libxml-simple-perl openjdk-17-jre-headless perl \
+  python3-venv sed tar xz-utils
+python3 regress/sv/pulp_benchmarks.py --prepare-only
+```
+
+Other platforms can reuse a Linux-prepared export with `--package <directory>`
+or `--archive <tar.gz>`. These must contain the runner's pinned-source manifest;
+the former v0.1.0 release archive is no longer an input to this runner.
 
 ```sh
 # PR tier: CV32E40P, FP32 FMA, minimal Ibex, SPI host, NVDLA, and minimal Snitch cluster.
-# Downloads the pinned release unless --archive supplies a local copy.
+# Prepares/caches the pinned Git revision unless a prepared input is supplied.
 python3 regress/sv/pulp_benchmarks.py --lint-runner local
 
 # Complete, bounded survey; known failures deliberately return nonzero.
@@ -616,7 +635,7 @@ python3 regress/sv/pulp_benchmarks.py --all --timeout 90
 # Individual cases and custom build/package locations are supported.
 python3 regress/sv/pulp_benchmarks.py \
   --case ibex.full --timeout 600 \
-  --archive /tmp/pulp-benchmarks-v0.1.0.tar.gz \
+  --archive /tmp/pulp-benchmarks.tar.gz \
   --najaeda-path build/test/najaeda --output build/pulp-full-ibex
 ```
 
@@ -630,7 +649,15 @@ defaulting to 600 seconds (10 minutes).
 Lint uses `--verilate-jobs 0` to use the CPUs available to Verilator for internal
 compilation. Missing lint tools fail; they do not silently skip.
 
-The `PULP SV Regress` workflow builds Naja using the canonical Linux Release
+The `PULP SV Regress` workflow prepares the pinned Git revision once, caches its
+verified export, and shares a prepared archive across independent jobs. The
+nightly survey uses this same source pin. Case-specific options go through
+`SystemVerilogConfig.frontend_options`: Cheshire uses
+`{"slang": ["--allow-use-before-declare"]}`, and RedMulE uses
+`{"slang": ["--relax-enum-conversions"]}` for its integral-to-enum port connections.
+Other cases retain these strict defaults. The runner records the complete
+`frontend_options` mapping in each case's JSON result and applies it in load/dump
+and elaboration-only modes. Naja is built using the canonical Linux Release
 configuration, runs the small tier and lints each complete generated netlist
 with the matching `naja_primitives.v` emitted by Naja beside each dump.
 Both local and Docker lint use these generated models, including parameterized
@@ -678,7 +705,7 @@ No complete-check case is duplicated between regular and survey jobs.
 The regular smoke set includes `nvdla.top` alongside CV32E40P, FP32 FMA,
 minimal Ibex, SPI host, and `snitch_cluster.minimal`. The Snitch cluster check
 loads, dumps, and lints the complete design on every regular run.
-NVDLA uses `default_timescale="1ns/1ps"` for
+NVDLA uses `frontend_options={"slang": ["--timescale=1ns/1ps"]}` for
 modules without an explicit time scale; source time scales still take precedence.
 The runner records this fallback in each case's `summary.json`.
 
@@ -738,7 +765,7 @@ sources, archives, and compiled simulator objects are excluded.
 python3 -m venv /tmp/ita-vectors
 /tmp/ita-vectors/bin/pip install numpy onnx
 python3 regress/sv/ita_simulation.py \
-  --archive /tmp/pulp-benchmarks-v0.1.0.tar.gz \
+  --archive /tmp/pulp-benchmarks.tar.gz \
   --generator-python /tmp/ita-vectors/bin/python \
   --najaeda-path build/test/najaeda
 ```
@@ -860,3 +887,17 @@ experimental ITA upstream scoreboard and RTL/netlist trace comparison as
 separate results. The workflow supplies `build/pulp-benchmarks/ita/summary.json`
 for its ITA job. Setting `GITHUB_STEP_SUMMARY` appends the report to the GitHub
 job page.
+
+
+### Lowering efficiency audit
+
+Every prepared-PULP load also saves `lowering-efficiency.json`. This audits
+netlist connectivity independently of the frontend and reports local and
+hierarchy-expanded mux counts, identical input bits, duplicate muxes, repeated
+selection arms, and unconsumed mux cones, grouped by model and source origin.
+The runner logs a warning per model/category at 256 expanded avoidable bits.
+These findings do not fail elaboration or replace structural lint; categories
+can overlap and must not be added. Necessary large mux networks alone do not
+trigger a warning. Non-mux consumers are conservatively considered live roots.
+The same audit is available as `top.get_lowering_efficiency_report()`; pass
+`warn_threshold=None` for a silent report or a positive integer to tune warnings.
