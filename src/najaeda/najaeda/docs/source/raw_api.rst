@@ -688,8 +688,8 @@ can inspect the inferred primitive through ``SNLInstance.getModel()``:
 ``MULTI_CLOCK=1`` selects independent write clocks and masks, with ``WCLK``
 (one bit per write action) and ``WMASK`` (``WR_PORTS * WIDTH`` bits).
 ``WADDR``/``WDATA``/``WMASK`` use port 0 in the least-significant slice;
-``WE`` uses port 0 in its most-significant bit, matching the existing memory
-interface. ``CLK`` and ``RST`` are tied off for this variant.
+write port i uses ``WE[i]``, with port 0 at bit 0, consistent with that
+least-significant slice convention. ``CLK`` and ``RST`` are tied off for this variant.
 In C++, ``SNLDesignModeling::MemoryInterface.clock`` is null for this variant;
 clients must use each ``MemoryWritePort.clock`` instead of assuming one clock.
 A write port with a null clock inherits the common interface clock. ``RADDR``/``RDATA``

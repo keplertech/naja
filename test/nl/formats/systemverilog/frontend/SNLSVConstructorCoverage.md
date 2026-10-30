@@ -6,6 +6,19 @@
 This document tracks deliberate coverage exclusions and targeted fallback tests
 for `src/nl/formats/systemverilog/frontend/SNLSVConstructor.cpp`.
 
+## Inside, power, and function argument coverage
+
+These line numbers refer to the source before this coverage change.
+
+| Original lines | Coverage or exclusion |
+| --- | --- |
+| 15342 | `insideMultipleItemsBitVectorCoverage`: a multi-item `inside` expression in a concatenation exercises the bit-vector OR chain; all 16 input values and every output bit are checked. |
+| 17234, 17253, 17263 | Excluded: overflow reduction and mux construction use resolved nonnull bits, equal positive vector widths, and canonical DB0 primitives. Failure requires an internal primitive-construction failure. |
+| 17248–17249 | `powerOfTwoConstantStagesCoverage`: a runtime exponent with a constant low one bit exercises the direct shift stage, checking every exponent value and result bit. |
+| 28949 | `outputFunctionNonIntegralInputWidthCoverage`: a real input formal has no representable bit width; the call must diagnose materialization failure and throw. |
+| 29363–29364 | Excluded: output formal nets have already been created from validated positive-width types, so collecting their bits cannot yield an empty vector. |
+| 29923–29924 | `automaticFunctionNonIntegralArrayDefaultCoverage`: a branch-local real array reaches the automatic default-initialization rejection. The outer function expression must diagnose an unsupported RHS and throw; its internal initialization failure reason is not propagated. |
+
 ## Automatic function replay regressions
 
 - `signedPowerOfTwoDivisionUsesSignedPrimitive` checks signed truncation and

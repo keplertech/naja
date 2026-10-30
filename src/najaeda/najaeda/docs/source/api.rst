@@ -44,13 +44,7 @@ logic analysis or a correctness check. Large necessary mux networks alone do
 not produce warnings. Recursive model hierarchies are rejected. The PULP runner
 runs this audit automatically and saves ``lowering-efficiency.json``.
 
-SystemVerilog and VHDL RTL loading remove unconsumed canonical mux cones after
-lowering. Port connections and every non-mux consumer (including storage and
-black boxes) keep their mux cones. Other instances and nets are retained; a
-named internal temporary may therefore remain without a driver when none of
-its values are consumed. Direct editing and snapshot loading do not run this
-cleanup automatically, so the audit can still identify newly unused muxes.
-The RTL loaders also combine exclusive, complete-vector mux chains selecting
+The RTL loaders combine exclusive, complete-vector mux chains selecting
 the same true value (using OR) or false value (using AND). Shared, reordered,
 partially connected and feedback paths are retained. This preserves the
 canonical mux network's X/Z behavior; it does not extend the frontend's supported

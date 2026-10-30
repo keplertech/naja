@@ -8031,7 +8031,7 @@ TEST_F(SNLSVConstructorTestSimple, branchLocalArrayReturnsPreserveScopesAndNeste
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, unrolledFunctionCountersDoNotWarnAfterReplayCleanup) {
+TEST_F(SNLSVConstructorTestSimple, unrolledFunctionCountersPreserveValues) {
   const auto path = writeSVTestFile("inlined_loop_counter", R"(module top(
     input logic [13:0] a, output logic [11:0] y);
     function automatic logic [11:0] f(input logic [11:0] data, input logic [1:0] mode);
@@ -8045,11 +8045,7 @@ TEST_F(SNLSVConstructorTestSimple, unrolledFunctionCountersDoNotWarnAfterReplayC
     endfunction
     assign y=f(a[11:0],a[13:12]);
   endmodule)");
-  const auto reportPath = path.parent_path() / "diagnostics.txt";
-  SNLSVConstructor::ConstructOptions options;
-  options.diagnosticsReportPath = reportPath;
-  SNLSVConstructor(library_).construct(path, options);
-  EXPECT_EQ(0u, countSubstring(readTextFile(reportPath), "code=\"undriven_inlined_local\""));
+  SNLSVConstructor(library_).construct(path);
   library_->getDB()->mergeAssigns();
   auto* top = library_->getSNLDesign(NLName("top"));
   ASSERT_NE(top, nullptr);
@@ -27432,7 +27428,7 @@ TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveSharedValues) {
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, overwrittenMuxResultsAreRemoved) {
+TEST_F(SNLSVConstructorTestSimple, overwrittenMuxResultsPreserveValues) {
   const auto path = writeSVTestFile("unused_mux_result", R"(module top(
     input logic [8:0] a, output logic [3:0] y,z);
     always_comb begin
@@ -27445,8 +27441,6 @@ TEST_F(SNLSVConstructorTestSimple, overwrittenMuxResultsAreRemoved) {
   library_->getDB()->mergeAssigns();
   auto* top = library_->getSNLDesign(NLName("top"));
   ASSERT_NE(top, nullptr);
-  EXPECT_EQ(1u, countMux2Instances(top));
-  EXPECT_EQ(1u, countMux2Instances(top, 4));
   for (unsigned input = 0; input < 512; ++input) {
     std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
     for (const auto& value : {std::pair{"y", input & 15},
@@ -27623,6 +27617,73 @@ TEST_F(SNLSVConstructorTestSimple, powerOfTwoBoundedNetworkAndSharing) {
       top->getScalarTerm(NLName("scalar"))->getNet(), input, 0, &memo));
   }
   dumpTopAndGetVerilogPath(top, "power_network_dump");
+}
+
+TEST_F(SNLSVConstructorTestSimple, powerOfTwoConstantStagesCoverage) {
+  const auto path = writeSVTestFile("power_constant_stages", R"(module top(
+    input logic [1:0] a, output logic [7:0] y);
+    assign y = 8'd2 ** {a, 1'b1};
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  for (unsigned input = 0; input < 4; ++input) {
+    SCOPED_TRACE(input);
+    const unsigned expected = 1u << (2 * input + 1);
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, insideMultipleItemsBitVectorCoverage) {
+  const auto path = writeSVTestFile("inside_multiple_items", R"(module top(
+    input logic [3:0] a, output logic [2:0] y);
+    assign y = {2'b00, a inside {4'd1, [4'd4:4'd6], 4'd11}};
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  for (unsigned input = 0; input < 16; ++input) {
+    SCOPED_TRACE(input);
+    const unsigned expected = input == 1 || (input >= 4 && input <= 6) || input == 11;
+    for (auto* bit : top->getTerm(NLName("y"))->getBits()) {
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1u),
+        evaluateFunctionResultBit(top, bit->getNet(), input));
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, outputFunctionNonIntegralInputWidthCoverage) {
+  const auto path = writeSVTestFile("output_call_real_input", R"(module top(
+    input logic a, output logic y);
+    function automatic void copy(input real unused_value, input logic value,
+                                 output logic result);
+      result = value;
+    endfunction
+    always_comb copy(1.5, a, y);
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"unable to materialize output function input argument"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, automaticFunctionNonIntegralArrayDefaultCoverage) {
+  const auto path = writeSVTestFile("function_real_array", R"(module top(
+    input logic a, output logic [3:0] y);
+    function automatic logic [3:0] value(input logic select);
+      if (select) return 4'd3;
+      begin
+        real words[0:1];
+        return int'(words[0]);
+      end
+    endfunction
+    assign y = value(a);
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"Unsupported RHS in continuous assign", "Call width=4"});
 }
 
 TEST_F(SNLSVConstructorTestSimple, tableReadSharingPreservesInputsAndContents) {

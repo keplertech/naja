@@ -12,6 +12,18 @@ venv
 .venv-sv-regress
 .vscode
 __pycache__
+
+# Coverage and simulator build artifacts
+*.gcov
+*.gcda
+*.gcno
+obj_dir/
+
+# Loader reports and file lists generated in the repository root
+/*_diagnostics_najaeda.txt
+/*_elaborated_ast_najaeda.json
+/*_najaeda.f
+
 src/apps/naja_edit/examples/**/*.log
 src/apps/naja_edit/examples/**/*.png
 src/apps/naja_edit/examples/adder/*.v

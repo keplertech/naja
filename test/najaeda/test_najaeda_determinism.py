@@ -327,7 +327,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 
-    def test_systemverilog_inlined_loop_counter_cleanup(self):
+    def test_systemverilog_inlined_loop_counters(self):
         self.check_determinism("sv", """
 module leaf(input logic [11:0] a, input logic [1:0] mode,
             output logic [11:0] y);
@@ -366,7 +366,7 @@ module top(input logic [2:0] a,b, input logic s,t,u,
 endmodule
 """)
 
-    def test_systemverilog_unused_mux_cleanup(self):
+    def test_systemverilog_overwritten_mux_results(self):
         self.check_determinism("sv", """
 module leaf(input logic [3:0] a,b, input logic s,
             output logic [3:0] y,z);
@@ -703,7 +703,7 @@ architecture rtl of top is begin
 end;
 """)
 
-    def test_vhdl_unused_mux_cleanup(self):
+    def test_vhdl_overwritten_mux_results(self):
         self.check_determinism("vhd", """
 entity leaf is port(a,b : in bit_vector(3 downto 0); s : in bit;
                     y,z : out bit_vector(3 downto 0)); end;

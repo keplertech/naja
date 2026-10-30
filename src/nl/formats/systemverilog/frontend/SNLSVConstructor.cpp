@@ -1543,7 +1543,6 @@ class SNLSVConstructorImpl {
           loweredDesigns.insert(design);
         }
         for (auto* design : loweredDesigns) {
-          SNLUtils::removeUnconsumedMuxes(design);
           SNLUtils::mergeRepeatedMuxSelections(design);
           warnUndrivenInlinedCallNets(design);
         }
@@ -4553,8 +4552,7 @@ endmodule
         auto symbol = found->second.find(net);
         if (symbol == found->second.end()) continue;
         for (auto* bit : collectBits(net)) {
-          // Run after alias and mux cleanup: replay placeholders may feed
-          // discarded intermediate selections rather than a surviving use.
+          // Check remaining connections after alias cleanup and mux-chain simplification.
           if (bit->isConstant() || bit->getComponents().empty()) continue;
           bool driven = false;
           for (auto* term : bit->getInstTerms()) {
@@ -17231,7 +17229,7 @@ endmodule
       auto* overflow = overflowBits.empty() ? const0
         : reduceBitsToTruthBit(design, overflowBits, sourceRange);
       if (!overflow) {
-        return false;
+        return false; // LCOV_EXCL_LINE: validated exponent bits and canonical OR primitive.
       }
       std::vector<SNLBitNet*> stageBits(targetWidth, const0);
       if (overflow != const1) {
@@ -17250,7 +17248,7 @@ endmodule
             std::vector<SNLBitNet*> nextBits;
             if (!createMux2Instance(design, shiftBits[stageIndex], stageBits, shiftedBits,
                                     nextBits, sourceRange, nullptr, true)) {
-              return false;
+              return false; // LCOV_EXCL_LINE: nonnull selector and equal, positive vector widths.
             }
             stageBits = std::move(nextBits);
           }
@@ -17260,7 +17258,7 @@ endmodule
           std::vector<SNLBitNet*> guardedBits;
           if (!createMux2Instance(design, overflow, stageBits, zeroBits,
                                   guardedBits, sourceRange, nullptr, true)) {
-            return false;
+            return false; // LCOV_EXCL_LINE: nonnull overflow bit and equal, positive vector widths.
           }
           stageBits = std::move(guardedBits);
         }
@@ -29360,8 +29358,11 @@ endmodule
         }
         auto outputBits = collectBits(outputActual.formalNet);
         if (outputBits.empty()) {
+          // Output formals have already materialized positive-width typed nets.
+          // LCOV_EXCL_START
           failureReason = "output function formal net has no bits";
           return false;
+          // LCOV_EXCL_STOP
         }
         const auto* actualRoot = getTrackedAlwaysCombLHS(outputActual.actual);
         const slang::ast::ValueSymbol* actualSymbol = nullptr;

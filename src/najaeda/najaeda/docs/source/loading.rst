@@ -458,9 +458,8 @@ calls whose explicit copy-out results are unused.
 
 Connected bits of inlined locals and formal arguments which have no driver emit
 an ``undriven_inlined_local`` elaboration warning with the declaration location.
-This check runs after alias and mux cleanup, so unused replay placeholders
-(such as unrolled loop counters) do not produce warnings. A surviving read of
-an undriven local still produces the warning.
+This check runs after alias cleanup and mux-chain simplification. Connected
+intermediate logic can also cause an undriven local to produce the warning.
 The normal warning suppression and diagnostics-report settings apply.
 
 By default, an incremental diagnostics report is written to

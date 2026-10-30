@@ -37,10 +37,6 @@ class SNLUtils {
     using SortedDesigns = std::vector<DesignLevel>;
     static void getDesignsSortedByHierarchicalLevel(const SNLDesign* top, SortedDesigns& sortedDesigns);
     static InstanceCount countReachableInstances(const SNLDesign* top);
-    /// Remove canonical mux instances with no path through muxes to a design
-    /// terminal or non-mux consumer. Other instances and all nets are retained.
-    /// Operates on this model only; returns the number of removed instances.
-    static size_t removeUnconsumedMuxes(SNLDesign* design);
     /// Combine mux(t, mux(s, a, b), b) into mux(s | t, a, b) when
     /// the inner mux has no other connections. Also combines the dual common-A
     /// pattern using AND. Preserves four-state values.

@@ -174,67 +174,6 @@ TEST_F(SNLUtilsTest, testPrepareForConcurrentAccessMemory) {
   EXPECT_NO_THROW(SNLUtils::prepareForConcurrentAccess(memory));
 }
 
-TEST_F(SNLUtilsTest, removeUnconsumedMuxConesPreservesExternalAndStateUses) {
-  auto* library = db_->getLibrary(NLName("MYLIB"));
-  auto* top = SNLDesign::create(library, NLName("top"));
-  auto* a = SNLBusNet::create(top, 1, 0, NLName("a"));
-  auto* b = SNLBusNet::create(top, 1, 0, NLName("b"));
-  auto* select = SNLScalarNet::create(top, NLName("select"));
-  auto* model = NLDB0::getOrCreateMux2(2);
-  const auto makeMux = [&](const char* name, SNLNet* input, SNLNet* output,
-                           SNLBitNet* selector) {
-    auto* instance = SNLInstance::create(top, model, NLName(name));
-    instance->setTermNet(NLDB0::getMux2InputA(model), input);
-    instance->setTermNet(NLDB0::getMux2InputB(model), b);
-    instance->setTermNet(NLDB0::getMux2Select(model), selector);
-    instance->setTermNet(NLDB0::getMux2Output(model), output);
-    return instance;
-  };
-  auto* dead0 = SNLBusNet::create(top, 1, 0, NLName("dead0"));
-  auto* dead1 = SNLBusNet::create(top, 1, 0, NLName("dead1"));
-  auto* dead2 = SNLBusNet::create(top, 1, 0, NLName("dead2"));
-  makeMux("dead0", a, dead0, select);
-  makeMux("dead1", dead0, dead1, select);
-  makeMux("dead2", a, dead2, dead0->getBit(0));
-  // A disconnected pure combinational cycle is also unobservable.
-  auto* cycle0 = SNLBusNet::create(top, 1, 0, NLName("cycle0"));
-  auto* cycle1 = SNLBusNet::create(top, 1, 0, NLName("cycle1"));
-  makeMux("cycle0", cycle1, cycle0, select);
-  makeMux("cycle1", cycle0, cycle1, select);
-
-  auto* selectValue = SNLBusNet::create(top, 1, 0, NLName("select_value"));
-  auto* output = SNLBusNet::create(top, 1, 0, NLName("output"));
-  auto* liveSelect = makeMux("live_select", a, selectValue, select);
-  auto* liveOutput = makeMux("live_output", a, output, selectValue->getBit(1));
-  // Any observed output bit keeps the whole mux and its select cone.
-  SNLScalarTerm::create(top, SNLTerm::Direction::Output, NLName("y"))->setNet(output->getBit(0));
-
-  auto* stateData = SNLBusNet::create(top, 1, 0, NLName("state_data"));
-  auto* liveState = makeMux("live_state", a, stateData, select);
-  auto* flop = SNLInstance::create(top, NLDB0::getDFF(), NLName("flop"));
-  flop->setTermNet(NLDB0::getDFFData(), stateData->getBit(0));
-  auto* external = SNLBusNet::create(top, 1, 0, NLName("external"));
-  auto* liveInout = makeMux("live_inout", a, external, select);
-  auto* blackbox = SNLDesign::create(library, SNLDesign::Type::UserBlackBox, NLName("box"));
-  auto* io = SNLScalarTerm::create(blackbox, SNLTerm::Direction::InOut, NLName("io"));
-  SNLInstance::create(top, blackbox, NLName("box"))->setTermNet(io, external->getBit(1));
-  auto* inputValue = SNLBusNet::create(top, 1, 0, NLName("input_value"));
-  auto* liveInput = makeMux("live_input", a, inputValue, select);
-  SNLScalarTerm::create(top, SNLTerm::Direction::Input, NLName("i"))->setNet(inputValue->getBit(0));
-
-  const auto nets = top->getNets().size();
-  EXPECT_EQ(0u, SNLUtils::removeUnconsumedMuxes(nullptr));
-  EXPECT_EQ(5u, SNLUtils::removeUnconsumedMuxes(top));
-  EXPECT_EQ(nets, top->getNets().size());
-  EXPECT_EQ(liveSelect, top->getInstance(NLName("live_select")));
-  EXPECT_EQ(liveOutput, top->getInstance(NLName("live_output")));
-  EXPECT_EQ(liveState, top->getInstance(NLName("live_state")));
-  EXPECT_EQ(liveInout, top->getInstance(NLName("live_inout")));
-  EXPECT_EQ(liveInput, top->getInstance(NLName("live_input")));
-  EXPECT_EQ(stateData->getBit(0), flop->getInstTerm(NLDB0::getDFFData())->getNet());
-  EXPECT_EQ(0u, SNLUtils::removeUnconsumedMuxes(top));
-}
-
 namespace {
 struct RepeatedMuxFixture {
   SNLDesign* design;

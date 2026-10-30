@@ -5156,7 +5156,6 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     sourceMap.annotate(design, entity->span, true);
     sourceMap.annotate(design, architecture->span);
     RTLConstructor(design, *entity, *architecture, syntax, context, overrides, build).run();
-    SNLUtils::removeUnconsumedMuxes(design);
     SNLUtils::mergeRepeatedMuxSelections(design);
     RTLSourceProperty::attach(design, signature);
     active.erase({owner, name});

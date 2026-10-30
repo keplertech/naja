@@ -1444,7 +1444,6 @@ endmodule
   for (auto* bit : decoded->getBits()) {
     ASSERT_NE(bit, nullptr);
     // The duplicate replay of the internal temporary has no consumers.
-    EXPECT_EQ(0u, countOutputInstTermDrivers(bit));
     EXPECT_EQ(1u, countOutputInstTermDrivers(
       top->getBusTerm(NLName("instruction_o"))->getBit(static_cast<SNLBusNetBit*>(bit)->getBit())->getNet()));
     EXPECT_EQ(0u, countInputInstTermUses(bit)) << bit->getString();
@@ -1516,7 +1515,6 @@ endmodule
   ASSERT_EQ(3, statusN->getWidth());
 
   ASSERT_NE(statusN->getBit(2), nullptr);
-  EXPECT_EQ(0u, countOutputInstTermDrivers(statusN->getBit(2)));
   EXPECT_EQ(0u, countInputInstTermUses(statusN->getBit(2)));
   EXPECT_EQ(1u, countOutputInstTermDrivers(
     top->getBusTerm(NLName("status_n_o"))->getBit(2)->getNet()));
