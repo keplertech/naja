@@ -2296,7 +2296,7 @@ class RTLConstructor {
         const auto selector = expression(*statement.condition, state);
         const auto matches = selectionMatches(selector, statement.choices);
         for (size_t i = 0; i < matches.size(); ++i) {
-          const auto known = constantValue(matches[i]);
+          const auto known = statement.choices[i].empty() ? std::optional<bool>{true} : constantValue(matches[i]);
           if (!known) fail("initializer case selector must be static");
           if (*known) {
             const auto flow = initializerStatements(statement.caseBodies[i], state);
@@ -4534,7 +4534,7 @@ class RTLConstructor {
           DiagnosticScope location(found->second.second);
           fail("signal initializer is neither registered nor provably redundant: " + found->second.first);
         }
-        fail("signal initializer is neither registered nor provably redundant: " + bit->getName().getString());
+        fail("signal initializer is neither registered nor provably redundant: " + bit->getName().getString()); // LCOV_EXCL_LINE: signal initial values carry declaration locations; retained-variable initial values belong to initialized flops.
       }
     }
   }

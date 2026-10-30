@@ -525,7 +525,10 @@ architecture rtl of top is
     for i in result'range loop
       exit when endfile(source);
       readline(source, line_buffer); hread(line_buffer, word);
-      result(i) := word;
+      case i is
+        when 4 => result(i) := word;
+        when others => result(i) := word;
+      end case;
     end loop;
     return result;
   end;

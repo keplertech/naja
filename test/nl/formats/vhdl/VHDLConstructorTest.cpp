@@ -7596,3 +7596,223 @@ TEST_F(VHDLConstructorTest, RTLMultilineSourceReferencesWithWideColumns) {
   }
   EXPECT_EQ(1, gates);
 }
+
+
+TEST_F(VHDLConstructorTest, StringGenericAttributesAndOrderingAreStatic) {
+  for (const auto* condition : {
+      "label'left = 1", "label'low = 1", "label'right = 3", "label'high = 3",
+      "label'ascending", "label /= \"xyz\"", "label < \"xyz\"",
+      "label <= \"abc\"", "label > \"aaa\"", "label >= \"abc\""}) {
+    const std::string expression = condition;
+    SCOPED_TRACE(expression);
+    auto* design = VHDLConstructor(library_).construct(
+        "entity strings is generic(label : string := \"abc\"); port(y : out bit); end; "
+        "architecture rtl of strings is constant valid : boolean := " + expression +
+        "; begin y <= '1' when valid else '0'; end;", "strings");
+    ASSERT_NE(design, nullptr);
+    EXPECT_EQ(design->getProperty("VHDLRTLSource")->getString(), "VHDLRTLSource");
+    EXPECT_TRUE(assignSource(design->getScalarTerm(NLName("y"))->getNet())->isConstant1());
+    design->destroy();
+  }
+}
+
+TEST_F(VHDLConstructorTest, RTLValidationDiagnosticsRollBackDesigns) {
+  library_->setName(NLName("design"));
+  const std::vector<std::pair<std::string, std::string>> cases{
+    {"entity bad is generic(v : bit := '0'); end; architecture rtl of bad is begin end;",
+      "RTL generics require"},
+    {"entity bad is generic(v : string := 7); end; architecture rtl of bad is begin end;",
+      "string generic actual must be a static string"},
+    {"entity bad is generic(v : string := \"a\"); end; architecture rtl of bad is constant n : integer := v'foo; begin end;",
+      "unsupported string generic attribute"},
+    {"entity bad is end; architecture rtl of bad is constant n, n : integer := 1; begin end;",
+      "duplicate constant"},
+    {"use ieee.std_logic_1164.all; entity bad is port(y : out bit); end; architecture rtl of bad is begin y <= '0'; end;",
+      "unsupported RTL package visibility"},
+    {"entity bad is end; architecture rtl of bad is constant f : integer := 1; function f return integer is begin return 2; end; begin end;",
+      "duplicate or overloaded architecture function"},
+    {"entity bad is port(y : out bit); end; architecture rtl of bad is type words is array(0 to 1) of bit_vector(1 downto 0); signal y : words; begin end;",
+      "duplicate local declaration"},
+    {"entity bad is port(clk : out bit; d : in bit; q : out bit); end; architecture rtl of bad is begin process(clk) begin if falling_edge(clk) then q <= d; end if; end process; end;",
+      "clock must name a scalar input"},
+    {"entity bad is port(clk, rst, d : in bit; q : out bit); end; architecture rtl of bad is begin process(clk, rst) begin if rst = '1' then q <= '0'; elsif falling_edge(clk) then q <= d; end if; end process; end;",
+      "falling-edge registers with asynchronous reset"},
+    {"entity bad is port(y : out bit); end; architecture rtl of bad is function f(s : string) return bit is begin return '1'; end; begin y <= f(\"a\"); end;",
+      "string function arguments require"}
+  };
+  for (const auto& [source, diagnostic] : cases) {
+    SCOPED_TRACE(source);
+    try {
+      VHDLConstructor(library_).construct(source, "bad");
+      FAIL() << "expected diagnostic: " << diagnostic;
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find(diagnostic), std::string::npos) << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+}
+
+TEST_F(VHDLConstructorTest, ProcessLocalArraysAndRecordsPreserveValues) {
+  auto* design = VHDLConstructor(library_).construct(R"(
+entity local_types is port(a : in bit; y : out bit); end;
+architecture rtl of local_types is begin
+  process(all)
+    type pair_t is array(0 to 1) of bit;
+    type packet_t is record data : pair_t; valid : bit; end record;
+    variable packet : packet_t;
+  begin packet := (data => (a, not a), valid => '1'); y <= packet.data(1) and packet.valid; end process;
+end;
+)");
+  for (const bool input : {false, true}) {
+    std::unordered_map<SNLBitNet*, bool> values{{design->getScalarTerm(NLName("a"))->getNet(), input}};
+    std::unordered_set<SNLBitNet*> visiting;
+    EXPECT_EQ(evaluateRTL(design->getScalarTerm(NLName("y"))->getNet(), values, visiting), !input);
+  }
+}
+
+namespace {
+// The source reads four-bit words so mixed logic states also exercise binary
+// initialization formatting when a hexadecimal digit cannot represent a word.
+std::string textInitializerSource(const std::filesystem::path& path,
+    const std::string& declarations, const std::string& statements) {
+  return "library ieee; use ieee.std_logic_1164.all; use std.textio.all; "
+      "entity initialized is port(clk, en : in std_logic; address : in natural range 0 to 1; "
+      "d : in std_logic_vector(3 downto 0); q : out std_logic_vector(3 downto 0)); end; "
+      "architecture rtl of initialized is type words is array(0 to 1) of std_logic_vector(3 downto 0); "
+      "impure function initialize return words is file source : text is in \"" + path.string() + "\"; "
+      "variable row : line; variable word : std_logic_vector(3 downto 0); "
+      "variable result : words := (others => (others => '0')); " + declarations +
+      " begin " + statements + " return result; end; signal storage : words := initialize; "
+      "begin process(clk) begin if rising_edge(clk) then if en = '1' then storage(address) <= d; "
+      "end if; q <= storage(address); end if; end process; end;";
+}
+
+class VHDLInitializerFile {
+ public:
+  VHDLInitializerFile() {
+    directory = std::filesystem::temp_directory_path() /
+        ("naja-vhdl-initializer-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+    std::filesystem::create_directories(directory);
+    path = directory / "words.txt";
+  }
+  ~VHDLInitializerFile() { std::filesystem::remove_all(directory); }
+  void write(const std::string& content) { std::ofstream(path) << content; }
+  std::filesystem::path directory, path;
+};
+}
+
+TEST_F(VHDLConstructorTest, TextInitializerDiagnosticsRollBackDesigns) {
+  VHDLInitializerFile file;
+  file.write("1010\n");
+  for (const auto& [statements, diagnostic] : std::vector<std::pair<std::string, std::string>>{
+      {"readline(source);", "initializer TextIO currently requires two positional arguments"},
+      {"readline(row, row);", "readline requires a text file and a local line variable"},
+      {"readline(source, word);", "readline requires a text file and a local line variable"},
+      {"readline(source, row); read(row, count);", "initializer read requires a local logic vector variable"},
+      {"readline(source, row); read(row, word(0));", "initializer read requires a local logic vector variable"},
+      {"if endfile(row) then null; end if;", "endfile requires a visible text file"}}) {
+    SCOPED_TRACE(statements);
+    try {
+      VHDLConstructor(library_).construct(textInitializerSource(file.path,
+          "variable count : natural := 0;", statements), "initialized");
+      FAIL() << "expected " << diagnostic;
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find(diagnostic), std::string::npos) << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+  file.write("10Q1\n");
+  try {
+    VHDLConstructor(library_).construct(textInitializerSource(file.path, "",
+        "readline(source, row); read(row, word);"), "initialized");
+    FAIL() << "expected invalid binary data diagnostic";
+  } catch (const NLException& error) {
+    EXPECT_NE(std::string(error.what()).find("invalid or unsupported binary initialization data"), std::string::npos)
+        << error.what();
+  }
+  EXPECT_TRUE(library_->getSNLDesigns().empty());
+}
+
+TEST_F(VHDLConstructorTest, TextInitializerControlFlowAndCacheTrackFileContents) {
+  VHDLInitializerFile file;
+  file.write("10XZ\r\n0101\n");
+  const auto source = textInitializerSource(file.path, "", R"(
+    for i in 0 to 1 loop
+      if endfile(source) then exit; else readline(source, row); end if;
+      case i is
+        when 0 => read(row, word); result(i) := word;
+        when others => read(row, word); result(i) := word;
+      end case;
+    end loop;
+    if not endfile(source) then return result; end if;
+    case 1 is when 0 => null; when others => return result; end case;
+  )");
+  auto* design = VHDLConstructor(library_).construct(source, "initialized");
+  ASSERT_NE(design, nullptr);
+  const auto memories = naja::NL::test::zeroMemoryState(design);
+  ASSERT_EQ(memories.size(), 1u);
+  EXPECT_EQ(memories.begin()->first->getInstParameter(NLName("INIT"))->getValue(), "8'b010110xz");
+  EXPECT_EQ(VHDLConstructor(library_).construct(source, "initialized"), design);
+  file.write("0000\n1111\n");
+  try {
+    VHDLConstructor(library_).construct(source, "initialized");
+    FAIL() << "expected changed initialization file diagnostic";
+  } catch (const NLException& error) {
+    EXPECT_NE(std::string(error.what()).find("initialization file changed for existing design"), std::string::npos)
+        << error.what();
+  }
+  EXPECT_EQ(library_->getSNLDesign(NLName("initialized")), design);
+}
+
+TEST_F(VHDLConstructorTest, ImportedTypesStillEnforcePortAndTextIORestrictions) {
+  VHDLInitializerFile file;
+  file.write("1010\n");
+  auto source = textInitializerSource(file.path, "", "readline(source, row); read(row, word);");
+  const auto replaceAll = [](std::string& text, const std::string& from, const std::string& to) {
+    size_t pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos) {
+      text.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  };
+  replaceAll(source, "library ieee; use ieee.std_logic_1164.all;", "use work.types.all;");
+  replaceAll(source, "std_logic_vector(3 downto 0)", "word_t");
+  replaceAll(source, "std_logic", "bit");
+  source = "library ieee; use ieee.std_logic_1164.all; package types is "
+      "subtype word_t is std_logic_vector(3 downto 0); end; " + source;
+  for (const auto& [input, top, diagnostic] : std::vector<std::tuple<std::string, std::string, std::string>>{
+      {R"(
+package types is type grid is array(0 to 1) of bit_vector(1 downto 0); end;
+use work.types.all;
+entity bad is port(a : in grid); end;
+architecture rtl of bad is begin end;
+)", "bad", "RTL ports require scalar values or one-dimensional logic vectors"},
+      {source, "initialized", "logic-vector TextIO requires ieee.std_logic_1164 visibility"}}) {
+    SCOPED_TRACE(input);
+    try {
+      VHDLConstructor(library_).construct(input, top);
+      FAIL() << "expected " << diagnostic;
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find(diagnostic), std::string::npos) << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+}
+
+TEST_F(VHDLConstructorTest, InitializerCaseRejectsRuntimeSelectors) {
+  VHDLInitializerFile file;
+  file.write("0000\n");
+  auto source = textInitializerSource(file.path, "",
+      "case selector is when 0 => null; when others => null; end case;");
+  source.replace(source.find("function initialize return"), std::string("function initialize return").size(),
+      "function initialize(selector : natural) return");
+  source.replace(source.find(":= initialize;"), std::string(":= initialize;").size(), ":= initialize(address);");
+  try {
+    VHDLConstructor(library_).construct(source, "initialized");
+    FAIL() << "expected static case selector diagnostic";
+  } catch (const NLException& error) {
+    EXPECT_NE(std::string(error.what()).find("initializer case selector must be static"), std::string::npos)
+        << error.what();
+  }
+  EXPECT_TRUE(library_->getSNLDesigns().empty());
+}
