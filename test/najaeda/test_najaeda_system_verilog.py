@@ -5,6 +5,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 import faulthandler
 from pathlib import Path
 
@@ -72,9 +73,10 @@ class NajaEDASystemVerilogTest(unittest.TestCase):
             counts = {finding["code"]: finding["expanded_bits"] for finding in leaf["findings"]}
             self.assertEqual({"identical_mux_inputs": 16, "duplicate_mux": 16,
                               "repeated_mux_arm": 16, "unconsumed_mux": 48}, counts)
-            with self.assertNoLogs("najaeda.stats", level="WARNING"):
+            with patch("najaeda.stats.logger.warning") as warning:
                 top.get_lowering_efficiency_report(warn_threshold=49)
                 top.get_lowering_efficiency_report(warn_threshold=None)
+            warning.assert_not_called()
             for invalid in (0, -1, True, "10"):
                 with self.assertRaises(ValueError):
                     top.get_lowering_efficiency_report(warn_threshold=invalid)
