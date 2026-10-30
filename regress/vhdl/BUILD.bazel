@@ -8,13 +8,14 @@ sh_test(
     args = [
         "$(rootpath //src/nl/python/naja_wrapping:naja.so)",
         "$(rootpath //src/nl/python/naja_wrapping:naja_runtime)",
-        "$(PYTHON3)",
+        "$(PYTHON3_ROOTPATH)",
         "$(rootpath :test_soc_frontend.py)",
     ],
     data = [
         "test_soc_frontend.py",
         "//src/nl/python/naja_wrapping:naja.so",
         "//src/nl/python/naja_wrapping:naja_runtime",
+        "@rules_python//python:current_py_toolchain",
     ] + glob(["soc_probes/*.vhdl"]),
     toolchains = ["@rules_python//python:current_py_toolchain"],
 )
@@ -25,7 +26,7 @@ sh_test(
     args = [
         "$(rootpath //src/nl/python/naja_wrapping:naja.so)",
         "$(rootpath //src/nl/python/naja_wrapping:naja_runtime)",
-        "$(PYTHON3)",
+        "$(PYTHON3_ROOTPATH)",
         "$(rootpath :test_memory_initialization.py)",
     ],
     data = [
@@ -33,6 +34,7 @@ sh_test(
         "//src/nl/python/naja_wrapping:naja.so",
         "//src/nl/python/naja_wrapping:naja_runtime",
         "memory_file_init.vhdl",
+        "@rules_python//python:current_py_toolchain",
     ],
     toolchains = ["@rules_python//python:current_py_toolchain"],
 )
