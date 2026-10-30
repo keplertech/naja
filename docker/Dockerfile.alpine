@@ -29,6 +29,7 @@ WORKDIR /naja
 COPY CMakeLists.txt /naja/
 COPY src /naja/src
 COPY test /naja/test
+COPY regress/vhdl /naja/regress/vhdl
 COPY cmake /naja/cmake
 COPY primitives /naja/primitives
 COPY thirdparty /naja/thirdparty

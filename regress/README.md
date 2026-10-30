@@ -8,9 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 - [`sv/`](sv/README.md): pinned external SystemVerilog load/dump, lint, and
   functional simulation regressions. Case-specific files live in `sv/cases/`,
   shared helpers in `sv/common/`, and runner unit tests in `sv/tests/`.
-- [`vhdl/`](vhdl/README.md): Microwatt VHDL benches driving Naja-exported
-  Verilog through GHDL/Verilator co-simulation, including 16 CPU-in-SoC console
-  programs.
+- [`vhdl/`](vhdl/README.md): synthetic VHDL frontend and RAM initialization
+  regressions, with optional reference and exported-Verilog simulation checks.
 - `designs/verilog/`: legacy design regressions using `Makefile.inc`.
 - `liberty/`: machine-local Liberty regression inputs, when available.
 

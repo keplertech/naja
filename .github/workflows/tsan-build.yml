@@ -42,4 +42,5 @@ jobs:
         # Keep TSan focused on Naja code paths and avoid TBB scheduler reports.
         NON_MT: 1
         TSAN_OPTIONS: halt_on_error=1 ignore_noninstrumented_modules=1 suppressions=${{ github.workspace }}/.github/tsan.supp
-      run: ctest --parallel 1 -VV -E ".*[p|P]ython.*" -C ${{ env.BUILD_TYPE }}
+      # System Python cannot load TSan-instrumented libraries without the runtime.
+      run: ctest --parallel 1 -VV -E ".*[pP]ython.*" -LE "^python$" -C ${{ env.BUILD_TYPE }}

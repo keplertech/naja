@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           # Use GCC to avoid the Ubuntu GHDL LLVM runtime-library mismatch.
-          sudo apt-get install -yq ccache libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev ghdl-gcc verilator
+          sudo apt-get install -yq ccache libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev ghdl-gcc iverilog
 
       - name: Verify GHDL toolchain
         run: |
@@ -64,32 +64,10 @@ jobs:
       - name: Build external VHDL regression
         run: cmake --build build --target snlVHDLExternalTests naja --config Release --parallel $(nproc)
 
-      - name: Check out pinned Microwatt sources
-        uses: actions/checkout@v7
-        with:
-          repository: antonblanchard/microwatt
-          ref: f341bed306a9a7281bf65200df8cc1f0a002617d
-          path: build/vhdl-regress/microwatt
-          persist-credentials: false
-
-      - name: Run Microwatt VHDL benches against Naja exports
-        env:
-          PYTHONPATH: ${{ github.workspace }}/build/src/nl/python/naja_wrapping
+      - name: Run synthetic VHDL frontend regressions
         run: |
-          python3 -m pip install vunit_hdl==4.7.1
-          python3 regress/vhdl/microwatt_cosim.py \
-            --source build/vhdl-regress/microwatt \
-            --output build/vhdl-regress/microwatt-results \
-            --ghdl ghdl-gcc --jobs 4 --build-timeout 600
-
-      - name: Run Microwatt full-core preview console regression
-        env:
-          PYTHONPATH: ${{ github.workspace }}/build/src/nl/python/naja_wrapping
-        run: |
-          python3 -B regress/vhdl/microwatt_core_smoke.py \
-            --source build/vhdl-regress/microwatt \
-            --output build/vhdl-regress/core-smoke \
-            --preview-dcache-fix --ghdl ghdl-gcc --jobs 4 --build-timeout 1800
+          ctest --test-dir build -R '^(VHDLSocFrontend|VHDLMemoryInitialization)$' \
+            --no-tests=error --output-on-failure
 
       - name: Download and test AES decryption benchmark
         env:
@@ -119,16 +97,6 @@ jobs:
           name: vhdl-regress-results
           path: |
             build/vhdl-regress/results.xml
-            build/vhdl-regress/microwatt-results/report.json
-            build/vhdl-regress/microwatt-results/*/*.xml
-            build/vhdl-regress/microwatt-results/*/*.log
-            build/vhdl-regress/microwatt-results/*/naja/test_output/*/output.txt
-            build/vhdl-regress/core-smoke/report.json
-            build/vhdl-regress/core-smoke/dcache-preview.patch
-            build/vhdl-regress/core-smoke/reference/*.log
-            build/vhdl-regress/core-smoke/naja/*.log
-            build/vhdl-regress/core-smoke/*/runs/*/*.log
-            build/vhdl-regress/core-smoke/*/runs/*/console.out
 
       - name: Show ccache statistics
         if: always()

@@ -21,6 +21,7 @@
 #include "SNLInstTerm.h"
 #include "SNLBusTermBit.h"
 #include <functional>
+#include <fstream>
 #include "SNLRTLPrimitives.h"
 #include "SNLUtils.h"
 #include "SNLScalarNet.h"
@@ -192,11 +193,14 @@ struct State {
 class RTLSourceProperty final : public naja::NajaPrivateProperty {
  public:
   std::string signature;
+  std::map<std::string, std::string> initializationFiles;
   std::string getName() const override { return "VHDLRTLSource"; }
   std::string getString() const override { return getName(); }
-  static void attach(SNLDesign* design, const std::string& signature) {
+  static void attach(SNLDesign* design, const std::string& signature,
+      const std::map<std::string, std::string>& initializationFiles) {
     auto* property = new RTLSourceProperty;
     property->signature = signature;
+    property->initializationFiles = initializationFiles;
     property->postCreate(design);
   }
 };
@@ -259,6 +263,7 @@ struct GenericValue {
   StaticScalar scalar;
   // Binary bits in declaration order, independent of the caller's netlist.
   std::optional<std::string> bits;
+  std::optional<std::string> text;
 };
 using GenericValues = std::map<std::string, GenericValue>;
 
@@ -283,10 +288,13 @@ class RTLConstructor {
       const auto type = key(generic.type.name);
       const bool vector = type == "bit_vector" || type == "std_logic_vector" ||
           type == "std_ulogic_vector" || type == "unsigned" || type == "signed";
-      if (!vector && type != "integer" && type != "natural" && type != "positive" && type != "boolean")
-        fail("RTL generics require an integer subtype, boolean, or constrained binary vector");
+      if (!vector && type != "integer" && type != "natural" && type != "positive" && type != "boolean" && type != "string")
+        fail("RTL generics require an integer subtype, boolean, string, or constrained binary vector");
       std::optional<Shape> target;
-      if (vector) {
+      if (type == "string") {
+        if (generic.type.constraint) fail("constrained string generics are unsupported");
+        target = Shape{{"string"}, {}};
+      } else if (vector) {
         target = shape(generic.type);
         target->size();
       }
@@ -302,13 +310,16 @@ class RTLConstructor {
         const auto value = genericOverrides_.contains(id) ? genericOverrides_.at(id) :
             genericValue(*generic.defaultValue, expected);
         interfaceBindings_->declare(id);
-        if (vector) {
+        if (type == "string") {
+          if (!value.text) fail("string generic requires a static string value: " + id);
+          strings_.emplace(id, *value.text);
+        } else if (vector) {
           if (!value.bits || value.bits->size() != target->size()) fail("vector generic type or length mismatch: " + id);
           Value object{*target, {}};
           for (char bit : *value.bits) object.bits.push_back(constant(bit == '1'));
           objects_.emplace(id, Object{std::move(object), false, false, false, true});
         } else {
-          if (value.bits || value.scalar.boolean != (type == "boolean")) fail("generic value type mismatch: " + id);
+          if (value.text || value.bits || value.scalar.boolean != (type == "boolean")) fail("generic value type mismatch: " + id);
           if (type == "boolean" && generic.type.constraint) fail("boolean generic constraints are unsupported");
           if (generic.type.constraint) range(*generic.type.constraint).position(value.scalar.value);
           if ((type == "positive" && value.scalar.value < 1) || (type == "natural" && value.scalar.value < 0))
@@ -320,8 +331,42 @@ class RTLConstructor {
     }
   }
 
+  bool staticString(const Expr& expr) const {
+    return expr.kind == Expr::Kind::StringLiteral ||
+        (expr.kind == Expr::Kind::Name && strings_.contains(key(expr))) ||
+        (expr.kind == Expr::Kind::Binary && expr.text == "&" && staticString(*expr.left) && staticString(*expr.right));
+  }
+
+  std::string stringValue(const Expr& expr) const {
+    if (expr.kind == Expr::Kind::Name && strings_.contains(key(expr))) return strings_.at(key(expr));
+    if (expr.kind == Expr::Kind::Binary && expr.text == "&") return stringValue(*expr.left) + stringValue(*expr.right);
+    if (expr.kind == Expr::Kind::StringLiteral) {
+      std::string result;
+      for (size_t i = 1; i + 1 < expr.text.size(); ++i) {
+        result += expr.text[i];
+        if (expr.text[i] == '"' && i + 2 < expr.text.size() && expr.text[i + 1] == '"') ++i;
+      }
+      return result;
+    }
+    fail("string generic actual must be a static string");
+  }
+
+  std::optional<StaticScalar> stringAttribute(const Expr& expr) const {
+    if (expr.kind != Expr::Kind::Attribute || !expr.left || expr.left->kind != Expr::Kind::Name ||
+        !strings_.contains(key(*expr.left))) return std::nullopt;
+    const auto size = int64_t(strings_.at(key(*expr.left)).size());
+    const auto name = key(expr);
+    if (name == "length") return StaticScalar{size, false};
+    if (name == "left" || name == "low") return StaticScalar{1, false};
+    if (name == "right" || name == "high") return StaticScalar{size, false};
+    if (name == "ascending") return StaticScalar{1, true};
+    fail("unsupported string generic attribute: " + name);
+  }
+
   GenericValue genericValue(const Expr& actual, const Shape* expected) {
     DiagnosticScope location(actual.span);
+    if (expected && expected->types == std::vector<std::string>{"string"})
+      return {{}, {}, stringValue(actual)};
     if (!expected) return {scalar(actual), {}};
     const auto value = expression(actual, State{}, expected);
     std::string bits;
@@ -332,6 +377,8 @@ class RTLConstructor {
     }
     return {{}, std::move(bits)};
   }
+
+  const auto& getInitializationFiles() const { return *initializationFiles_; }
 
   void run() {
     DiagnosticScope location(entity_.span);
@@ -365,7 +412,7 @@ class RTLConstructor {
     architectureBindings.names = interfaceBindings_->names;
     declarations(architecture_.arrayTypes, architecture_.constants, architecture_.recordTypes,
                  architecture_.signals, architecture_.enumerationTypes, architecture_.functions, architecture_.subtypes,
-                 &architectureBindings);
+                 &architectureBindings, architecture_.aliases);
     inferMemories();
     checkLabels(architecture_.generates, architecture_.instantiations);
     State empty;
@@ -375,6 +422,18 @@ class RTLConstructor {
     for (const auto& instance : architecture_.instantiations) lowerInstance(instance);
     for (const auto& process : architecture_.processes) lowerProcess(process);
     finalizeMemories();
+    // A signal with no elaborated driver retains its declaration value for
+    // the entire simulation, including when a generate removes its only writer.
+    const auto initializeUndriven = [&](const Object& object) {
+      if (object.input || object.variable || object.constant) return;
+      for (auto* bit : object.value.bits) {
+        const auto initial = initialValues_.find(bit);
+        if (initial != initialValues_.end() && !drivers_.contains(bit))
+          drive(bit, constant(initial->second));
+      }
+    };
+    for (const auto& [name, object] : objects_) initializeUndriven(object);
+    for (const auto& [name, object] : generatedObjects_) initializeUndriven(object);
     checkInitialValues();
     for (const auto& [name, object] : objects_)
       if (!memories_.contains(name)) checkDriven(name, object);
@@ -439,13 +498,32 @@ class RTLConstructor {
         fail("signal bit has no driver: " + name);
   }
 
+  struct InitializerScope {
+    bool& active;
+    bool previous;
+    explicit InitializerScope(bool& flag): active(flag), previous(flag) { active = true; }
+    ~InitializerScope() { active = previous; }
+  };
+
+  Value initializer(const Expr& expr, const Shape& type) {
+    InitializerScope scope(initializerContext_);
+    auto value = expression(expr, State{}, &type);
+    for (auto* bit : value.bits)
+      if (!bit || !bit->isConstant()) fail("initializer must be static");
+    return value;
+  }
+
   void addSignal(const vhdl::SignalDeclaration& signal, const Shape* declaredType = nullptr, const Value* initializer = nullptr) {
     DiagnosticScope location(signal.span);
     const auto type = declaredType ? *declaredType : shape(signal.type);
     const auto initial = signal.initializer ? std::optional<Value>{initializer ? *initializer :
-        expression(*signal.initializer, State{}, &type)} : std::nullopt;
-    for (const auto& name : signal.names) addObject(name, type);
-    if (initial) {
+        this->initializer(*signal.initializer, type)} : std::nullopt;
+    const bool deferred = arrays_.contains(type.types.front()) && type.fields.empty();
+    for (const auto& name : signal.names) {
+      addObject(name, type, false, false, false, false, deferred);
+      if (deferred) pendingSignals_.emplace(key(name), PendingSignal{name, signal.span, initial ? initial->bits : Bits{}});
+    }
+    if (initial && !deferred) {
       const auto& value = *initial;
       for (const auto& name : signal.names) {
         const auto& bits = objects_.at(key(name)).value.bits;
@@ -453,9 +531,53 @@ class RTLConstructor {
           const auto initial = constantValue(value.bits[i]);
           if (!initial) fail("signal initializer must be a constant binary value");
           initialValues_[bits[i]] = *initial;
+          initialDeclarations_[bits[i]] = {name.spelling, signal.span};
         }
       }
     }
+  }
+
+  struct PendingSignal { vhdl::Name name; vhdl::SourceSpan span; Bits initial; };
+
+  void materializeSignal(const std::string& name) {
+    const auto found = pendingSignals_.find(name);
+    if (found == pendingSignals_.end() || memories_.contains(name)) return;
+    const auto pending = std::move(found->second);
+    DiagnosticScope location(pending.span);
+    pendingSignals_.erase(found);
+    const auto type = objects_.at(name).value.shape;
+    objects_.erase(name);
+    addObject(pending.name, type);
+    const auto& bits = objects_.at(name).value.bits;
+    for (size_t i = 0; i < pending.initial.size(); ++i) {
+      const auto value = constantValue(pending.initial[i]);
+      if (!value) fail("register initializer must be a constant binary value");
+      initialValues_[bits[i]] = *value;
+      initialDeclarations_[bits[i]] = {pending.name.spelling, pending.span};
+    }
+  }
+
+  static std::string compactMemoryInitial(const std::string& binary) {
+    const auto first = binary.find("'b");
+    if (first == std::string::npos) return binary;
+    const auto size = binary.size() - first - 2;
+    std::string digits;
+    const auto padding = (4 - size % 4) % 4;
+    for (size_t offset = 0; offset < size + padding; offset += 4) {
+      char nibble[4];
+      unsigned number = 0;
+      bool numeric = true;
+      for (size_t i = 0; i < 4; ++i) {
+        nibble[i] = offset + i < padding ? '0' : binary[first + 2 + offset + i - padding];
+        numeric &= nibble[i] == '0' || nibble[i] == '1';
+        number = (number << 1) | (nibble[i] == '1');
+      }
+      if (numeric) digits += "0123456789abcdef"[number];
+      else if (std::all_of(std::begin(nibble), std::end(nibble), [&](char c) { return c == nibble[0]; }))
+        digits += nibble[0];
+      else return binary;
+    }
+    return binary.substr(0, first) + "'h" + digits;
   }
 
   struct MemoryRead { Bits address, data; };
@@ -465,11 +587,13 @@ class RTLConstructor {
     std::vector<MemoryRead> reads;
     MemoryWrite write;
     SNLBitNet* clock = nullptr;
+    std::string initial;
   };
 
   // Infer a single syntactic write site. Partial writes use canonical masks;
   // unrolled partial writes must share an address, checked during lowering.
-  // Initialization and whole-word writes inside loops keep register lowering.
+  // Whole-word writes inside loops keep register lowering. Initial contents
+  // belong to the inferred memory, without allocating per-word signal nets.
   void inferMemories(const vhdl::GenerateStatement* scope = nullptr, const std::set<std::string>* names = nullptr) {
     for (const auto& [name, object] : objects_) {
       if ((names && !names->contains(name)) || memories_.contains(name)) continue;
@@ -479,8 +603,7 @@ class RTLConstructor {
           !arrays_.contains(type.types.front()) ||
           std::min(type.ranges.front().left, type.ranges.front().right) < 0 ||
           std::max(type.ranges.front().left, type.ranges.front().right) > INT32_MAX ||
-          std::any_of(object.value.bits.begin(), object.value.bits.end(),
-              [&](auto* bit) { return initialValues_.contains(bit); })) continue;
+          std::any_of(aliases_.begin(), aliases_.end(), [&](const auto& alias) { return alias.second.name == name; })) continue;
       size_t writes = 0;
       bool supported = true, masked = false;
       const vhdl::ClockedProcess* owner = nullptr;
@@ -545,8 +668,29 @@ class RTLConstructor {
         ++memory.signature.abits;
       memory.signature.writePorts = 1;
       memory.signature.independentWriteClocks = masked;
+      if (const auto pending = pendingSignals_.find(name); pending != pendingSignals_.end() && !pending->second.initial.empty()) {
+        const auto& data = pending->second.initial;
+        // INIT's least significant word is address zero. VHDL arrays instead
+        // store values in declaration order, which may be descending/nonzero.
+        memory.initial = std::to_string(data.size()) + "'b";
+        const auto& bounds = type.ranges.front();
+        const auto low = std::min(bounds.left, bounds.right);
+        for (size_t address = memory.signature.depth; address; --address) {
+          const auto position = bounds.position(low + int64_t(address - 1)) * memory.signature.width;
+          for (size_t bit = 0; bit < memory.signature.width; ++bit) {
+            const auto* net = data[position + bit];
+            if (!net || !net->isConstant()) fail("memory initializer must be static");
+            memory.initial += net->isConstant0() ? '0' : net->isConstant1() ? '1' : net->isConstantX() ? 'x' : 'z';
+          }
+        }
+      }
+      if (!memory.initial.empty()) memory.initial = compactMemoryInitial(memory.initial);
       memories_.emplace(name, std::move(memory));
     }
+    std::vector<std::string> pending;
+    for (const auto& [name, signal] : pendingSignals_)
+      if ((!names || names->contains(name)) && !memories_.contains(name)) pending.push_back(name);
+    for (const auto& name : pending) materializeSignal(name);
   }
 
   // Full-width bounds checks prevent a wide or nonzero-based VHDL index from
@@ -620,6 +764,10 @@ class RTLConstructor {
           {"ABITS", memory.signature.abits}, {"RD_PORTS", memory.signature.readPorts},
           {"WR_PORTS", memory.signature.writePorts}})
         SNLInstParameter::create(instance, model->getParameter(NLName(parameter)), std::to_string(value));
+      if (!memory.initial.empty()) {
+        SNLInstParameter::create(instance, model->getParameter(NLName("INIT_ENABLE")), "1");
+        SNLInstParameter::create(instance, model->getParameter(NLName("INIT")), memory.initial);
+      }
       instance->setTermNet(NLDB0::getMemoryClock(model), memory.clock);
       instance->setTermNet(NLDB0::getMemoryReset(model), constant(false));
       const auto connect = [&](SNLBusTerm* term, const Bits& bits, size_t offset = 0) {
@@ -648,6 +796,7 @@ class RTLConstructor {
       }
       for (auto* net : nets) net->destroy();
       objects_.at(name).value.bits.clear();
+      pendingSignals_.erase(name);
     }
   }
 
@@ -676,7 +825,7 @@ class RTLConstructor {
   void addSubtype(const vhdl::SubtypeDeclaration& declaration) {
     DiagnosticScope location(declaration.span);
     const auto name = key(declaration.name);
-    if (subtypes_.contains(name) || functions_.contains(name) || objects_.contains(name) ||
+    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || objects_.contains(name) ||
         integers_.contains(name) || booleans_.contains(name) || arrayDeclarations_.contains(name) ||
         records_.contains(name) || enumerations_.contains(name) || integerTables_.contains(name) ||
         name == "bit" || name == "bit_vector" || name == "boolean" || name == "integer" ||
@@ -714,7 +863,7 @@ class RTLConstructor {
   void addArray(const vhdl::ArrayTypeDeclaration& declaration) {
     DiagnosticScope location(declaration.span);
     const auto name = key(declaration.name);
-    if (subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) || integerTables_.contains(name) || integers_.contains(name) || objects_.contains(name) ||
+    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) || integerTables_.contains(name) || integers_.contains(name) || objects_.contains(name) ||
         name == "bit" || name == "bit_vector" || name == "std_logic" ||
         name == "std_logic_vector" || name == "std_ulogic" || name == "std_ulogic_vector" ||
         name == "unsigned" || name == "signed" || name == "integer" ||
@@ -747,7 +896,7 @@ class RTLConstructor {
   void addRecord(const vhdl::RecordTypeDeclaration& declaration) {
     DiagnosticScope location(declaration.span);
     const auto name = key(declaration.name);
-    if (subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) ||
+    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) ||
         objects_.contains(name) || integers_.contains(name) || integerTables_.contains(name) ||
         name == "bit" || name == "bit_vector" || name == "std_logic" || name == "std_ulogic" ||
         name == "std_logic_vector" || name == "std_ulogic_vector" || name == "unsigned" ||
@@ -800,8 +949,29 @@ class RTLConstructor {
                     const std::vector<vhdl::SignalDeclaration>& signals = {},
                     const std::vector<vhdl::EnumerationTypeDeclaration>& enumerations = {},
                     const std::vector<vhdl::FunctionDeclaration>& functions = {},
-                    const std::vector<vhdl::SubtypeDeclaration>& subtypes = {}, LocalBindings* bindings = nullptr) {
+                    const std::vector<vhdl::SubtypeDeclaration>& subtypes = {}, LocalBindings* bindings = nullptr,
+                    const std::vector<vhdl::AliasDeclaration>& aliases = {}) {
     std::map<size_t, std::function<void()>> ordered;
+    for (const auto& alias : aliases)
+      ordered.emplace(alias.span.start.offset, [&alias, this, bindings] {
+        DiagnosticScope location(alias.span);
+        auto selected = selection(*alias.target);
+        materializeSignal(selected.name);
+        auto object = objects_.at(selected.name);
+        auto value = readSelected(*alias.target, State{});
+        if (alias.type) {
+          const auto type = shape(*alias.type);
+          if (!compatible(type, value.shape)) fail("alias subtype does not match its object");
+          value.shape = type;
+          selected.shape = type;
+        }
+        const auto name = key(alias.name);
+        if (bindings) bindings->declare(name);
+        if (objects_.contains(name) || aliases_.contains(name)) fail("duplicate alias: " + name);
+        object.value = std::move(value);
+        objects_.emplace(name, std::move(object));
+        aliases_.emplace(name, std::move(selected));
+      });
     for (const auto& array : arrays)
       ordered.emplace(array.span.start.offset, [&array, this, bindings] { addArray(array); if (bindings) bindings->names.insert(key(array.name)); });
     for (const auto& constant : constants)
@@ -814,7 +984,7 @@ class RTLConstructor {
     for (const auto& signal : signals)
       ordered.emplace(signal.span.start.offset, [&signal, this, bindings] {
         const auto type = shape(signal.type);
-        const auto initial = signal.initializer ? std::optional<Value>{expression(*signal.initializer, State{}, &type)} : std::nullopt;
+        const auto initial = signal.initializer ? std::optional<Value>{this->initializer(*signal.initializer, type)} : std::nullopt;
         if (bindings) for (const auto& name : signal.names) bindings->declare(key(name));
         addSignal(signal, &type, initial ? &*initial : nullptr);
       });
@@ -898,8 +1068,9 @@ class RTLConstructor {
       }
       if (position) fail("named and positional associations cannot be mixed in array aggregates");
       const auto apply = [&](const Expr& index) {
-        if (index.kind == Expr::Kind::Range) {
-          Range selected{arrayIndex(*index.left, bounds), arrayIndex(*index.right, bounds), index.text == "to"};
+        if (index.kind == Expr::Kind::Range || arrayAttribute(index)) {
+          Range selected = arrayAttribute(index) ? attributeRange(index) :
+              Range{arrayIndex(*index.left, bounds), arrayIndex(*index.right, bounds), index.text == "to"};
           bounds.position(selected.left);
           bounds.position(selected.right);
           for (size_t i = 0; i < selected.size(); ++i)
@@ -929,11 +1100,12 @@ class RTLConstructor {
   }
 
   void addConstant(const vhdl::ConstantDeclaration& declaration) {
+    InitializerScope initializerScope(initializerContext_);
     const auto type = resolveSubtype(declaration.object.type);
     const auto name = key(type.name);
     std::set<std::string> names;
     for (const auto& id : declaration.object.names)
-      if (subtypes_.contains(key(id)) || functions_.contains(key(id)) || booleans_.contains(key(id)) || !names.insert(key(id)).second || objects_.contains(key(id)) || integers_.contains(key(id)) ||
+      if (strings_.contains(key(id)) || subtypes_.contains(key(id)) || functions_.contains(key(id)) || booleans_.contains(key(id)) || !names.insert(key(id)).second || objects_.contains(key(id)) || integers_.contains(key(id)) ||
           integerTables_.contains(key(id)) || (enumerations_.contains(key(id)) || records_.contains(key(id))) || arrayDeclarations_.contains(key(id)))
         fail("duplicate constant: " + key(id));
     if (name == "string") {
@@ -1123,14 +1295,17 @@ class RTLConstructor {
     const auto parentObjects = objects_;
     const auto parentIntegers = integers_;
     const auto parentBooleans = booleans_;
+    const auto parentStrings = strings_;
     for (const auto& generic : entity->generics)
       for (const auto& name : generic.names) {
         const auto id = key(name);
         integers_.erase(id);
         booleans_.erase(id);
+        strings_.erase(id);
         objects_.erase(id);
         if (childScope.objects_.contains(id)) objects_[id] = childScope.objects_.at(id);
         else if (childScope.booleans_.contains(id)) booleans_[id] = childScope.booleans_.at(id);
+        else if (childScope.strings_.contains(id)) strings_[id] = childScope.strings_.at(id);
         else integers_[id] = childScope.integers_.at(id);
       }
     std::map<std::string, Shape> formalShapes;
@@ -1165,7 +1340,13 @@ class RTLConstructor {
     objects_ = parentObjects;
     integers_ = parentIntegers;
     booleans_ = parentBooleans;
+    strings_ = parentStrings;
     auto* model = build_(targetLibrary, key(instance.entity), overrides);
+    if (const auto* property = dynamic_cast<RTLSourceProperty*>(model->getProperty("VHDLRTLSource")))
+      for (const auto& [path, content] : property->initializationFiles) {
+        const auto [dependency, inserted] = initializationFiles_->emplace(path, content);
+        if (!inserted && dependency->second != content) fail("initialization file changed during elaboration: " + path);
+      }
     std::vector<SNLTerm*> ports;
     for (const auto& declaration : interface.ports) for (const auto& name : declaration.names) {
       SNLTerm* matching = nullptr;
@@ -1312,7 +1493,7 @@ class RTLConstructor {
               libraryContext_.owner(candidate.name.span.start.offset) == targetLibrary) package = &candidate;
         if (!package) fail("missing package: " + name);
         const auto callerLibraries = libraries_;
-        const bool callerLogic = stdLogic_, callerUnsigned = unsigned_, callerArith = arith_, callerNumeric = numeric_, callerSigned = signed_;
+        const bool callerLogic = stdLogic_, callerUnsigned = unsigned_, callerArith = arith_, callerNumeric = numeric_, callerSigned = signed_, callerTextio = textio_;
         auto* callerWork = work_;
         work_ = targetLibrary;
         libraries_ = {"std", "work"};
@@ -1333,11 +1514,20 @@ class RTLConstructor {
         unsigned_ = callerUnsigned;
         arith_ = callerArith;
         numeric_ = callerNumeric;
-        signed_ = callerSigned;
+        signed_ = callerSigned; textio_ = callerTextio;
         continue;
       }
       if (use.selectedName.size() == 3 && key(use.selectedName[0]) == "std" &&
           key(use.selectedName[1]) == "standard" && key(use.selectedName[2]) == "all") continue;
+      if (use.selectedName.size() == 3 && key(use.selectedName[0]) == "std" &&
+          key(use.selectedName[1]) == "textio" && key(use.selectedName[2]) == "all") textio_ = true;
+      // These standard packages are commonly imported by RTL that also has
+      // simulation branches. Visibility alone requires no hardware; live file
+      // operations or calls still need an explicitly supported implementation.
+      if (use.selectedName.size() == 3 && key(use.selectedName[0]) == "std" &&
+          ((key(use.selectedName[1]) == "textio" && key(use.selectedName[2]) == "all") ||
+           (key(use.selectedName[1]) == "env" && (key(use.selectedName[2]) == "all" ||
+            key(use.selectedName[2]) == "stop" || key(use.selectedName[2]) == "finish")))) continue;
       if (use.selectedName.size() != 3 || key(use.selectedName[0]) != "ieee" ||
           key(use.selectedName[2]) != "all" || !libraries_.contains("ieee"))
         fail("unsupported RTL package visibility");
@@ -1372,6 +1562,8 @@ class RTLConstructor {
     std::map<std::string, IntegerTable> arrays;
     std::map<std::string, const vhdl::ArrayTypeDeclaration*> arrayTypes;
     bool logic = false, numeric = false, arith = false, unsignedLogic = false, signedLogic = false;
+    bool textio = false;
+    std::map<std::string, std::string> strings;
   };
   struct StaticScope {
     const FunctionEnvironment* environment = nullptr;
@@ -1545,7 +1737,7 @@ class RTLConstructor {
   void addLocalFunction(const vhdl::FunctionDeclaration& function) {
     const auto name = key(function.name);
     if (!function.body) fail("architecture function forward declarations are unsupported: " + name);
-    if (subtypes_.contains(name) || functions_.contains(name) || integers_.contains(name) || booleans_.contains(name) ||
+    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || integers_.contains(name) || booleans_.contains(name) ||
         (objects_.contains(name) && !enumLiterals_.contains(name)) || integerTables_.contains(name) || records_.contains(name) ||
         enumerations_.contains(name) || arrayDeclarations_.contains(name))
       fail("duplicate or overloaded architecture function: " + name);
@@ -1565,6 +1757,8 @@ class RTLConstructor {
     environment.arrays = integerTables_;
     environment.arrayTypes = arrayDeclarations_;
     for (const auto& [id, object] : objects_) if (object.constant) environment.constants.emplace(id, object);
+    environment.strings = strings_;
+    environment.textio = textio_;
     environment.logic = stdLogic_;
     environment.numeric = numeric_;
     environment.arith = arith_;
@@ -1865,7 +2059,7 @@ class RTLConstructor {
   }
 
   bool scalarFunction(const vhdl::FunctionDeclaration& function) const {
-    return !function.procedure && scalarFunctionType(function.returnType) &&
+    return function.pure && function.files.empty() && !function.procedure && scalarFunctionType(function.returnType) &&
         std::all_of(function.parameters.begin(), function.parameters.end(), [this](const auto& parameter) {
           return scalarFunctionType(parameter.type);
         });
@@ -1988,19 +2182,170 @@ class RTLConstructor {
     return std::nullopt;
   }
 
+  bool initializerProcedure(const Expr& call, State& state) {
+    const auto& prefix = call.kind == Expr::Kind::Name ? call : *call.left;
+    if (prefix.kind != Expr::Kind::Name || functions_.contains(key(prefix))) return false;
+    const auto name = key(prefix);
+    if (name != "readline" && name != "read" && name != "hread") return false;
+    if (!initializerContext_ || !textio_) fail("TextIO requires a static initializer and std.textio visibility");
+    std::vector<const Expr*> arguments;
+    if (call.kind == Expr::Kind::Indexed) arguments.push_back(call.right.get());
+    else if (call.kind == Expr::Kind::Call) for (const auto& argument : call.elements) arguments.push_back(argument.get());
+    if (arguments.size() != 2 || arguments[0]->kind != Expr::Kind::Name)
+      fail("initializer TextIO currently requires two positional arguments");
+    const auto source = key(*arguments[0]);
+    if (name == "readline") {
+      if (!files_.contains(source) || arguments[1]->kind != Expr::Kind::Name || !lines_.contains(key(*arguments[1])))
+        fail("readline requires a text file and a local line variable");
+      std::string line;
+      if (!std::getline(*files_.at(source), line)) fail("readline reached EOF or failed reading the initialization file");
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      lines_.at(key(*arguments[1])) = std::move(line);
+      return true;
+    }
+    if (!lines_.contains(source) || !lines_.at(source)) fail("read requires a non-null local line variable");
+    const auto target = selection(*arguments[1]);
+    const auto& object = objects_.at(target.name);
+    if (!object.variable || target.shape.ranges.size() != 1 || !target.shape.fields.empty() || target.shape.integerWidth ||
+        (target.shape.types.back() != "bit" && target.shape.types.back() != "std_logic"))
+      fail("initializer read requires a local logic vector variable");
+    if (target.shape.types.back() == "std_logic" && !stdLogic_)
+      fail("logic-vector TextIO requires ieee.std_logic_1164 visibility");
+    auto& line = *lines_.at(source);
+    size_t cursor = 0;
+    const auto whitespace = [](char c) { return c == ' ' || c == '\t' || c == '\r'; };
+    while (cursor < line.size() && whitespace(line[cursor])) ++cursor;
+    const size_t width = target.shape.size();
+    const size_t digits = name == "hread" ? (width + 3) / 4 : width;
+    std::string data;
+    bool underscore = false;
+    for (size_t count = 0; count < digits;) {
+      if (cursor >= line.size()) fail("initialization line is too short for " + name);
+      const char c = line[cursor++];
+      if (name == "hread" && c == '_') {
+        if (!count || underscore) fail("invalid underscore in initialization data");
+        underscore = true;
+        continue;
+      }
+      underscore = false;
+      if (name == "hread") {
+        const int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+            c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (digit >= 0) for (int bit = 3; bit >= 0; --bit) data += ((digit >> bit) & 1) ? '1' : '0';
+        else if ((c == 'X' || c == 'Z') && target.shape.types.back() == "std_logic") data.append(4, c);
+        else fail("invalid hexadecimal initialization data");
+      } else {
+        if (c != '0' && c != '1' && !(target.shape.types.back() == "std_logic" && (c == 'X' || c == 'Z')))
+          fail("invalid or unsupported binary initialization data");
+        data += c;
+      }
+      ++count;
+    }
+    const auto padding = data.size() - width;
+    if (std::find(data.begin(), data.begin() + padding, '1') != data.begin() + padding)
+      fail("hexadecimal initialization value exceeds the target width");
+    auto element = target.shape;
+    element.ranges.clear();
+    element.removeOuterType();
+    auto& bits = state.variables.at(target.name);
+    for (size_t i = 0; i < width; ++i) bits[target.offset + i] = logicLiteral(data[padding + i], element);
+    line.erase(0, cursor);
+    return true;
+  }
+
+  struct InitializerFlow {
+    std::optional<Value> returned;
+    bool exited = false;
+  };
+
+  bool initializerCondition(const Expr& condition, const State& state) {
+    IntegerFacts facts(*this, state);
+    const auto value = conditionValue(expression(condition, state));
+    const auto known = constantValue(value.bits.front());
+    if (!known) fail("initializer control flow must be static");
+    return *known;
+  }
+
+  InitializerFlow initializerStatements(const std::vector<Statement>& body, State& state) {
+    struct DepthGuard { size_t& depth; ~DepthGuard() { --depth; } } depth{*runtimeControlDepth_};
+    if (++*runtimeControlDepth_ > 256) fail("initializer control-flow nesting limit exceeded");
+    for (const auto& statement : body) {
+      DiagnosticScope location(statement.span);
+      IntegerFacts integerFacts(*this, state);
+      if (++*runtimeSteps_ > 1000000) fail("initializer evaluation limit exceeded");
+      if (statement.kind == Statement::Kind::Null) continue;
+      if (statement.kind == Statement::Kind::Return) {
+        auto value = expression(*statement.returnValue, state, runtimeReturnShape_ ? &*runtimeReturnShape_ : nullptr);
+        for (auto* bit : value.bits) if (!bit || !bit->isConstant()) fail("initializer function must return a static value");
+        return {std::move(value)};
+      }
+      if (statement.kind == Statement::Kind::Exit) {
+        if (!statement.condition || initializerCondition(*statement.condition, state)) return {std::nullopt, true};
+      } else if (statement.kind == Statement::Kind::Call) {
+        if (!initializerProcedure(*statement.procedureCall, state)) callRuntime(*statement.procedureCall, state, &state);
+      } else if (statement.kind == Statement::Kind::Assignment) {
+        const auto& assignment = statement.assignment;
+        const auto found = objects_.find(key(assignment.target));
+        if (assignment.kind != vhdl::AssignmentKind::Variable || found == objects_.end() || !found->second.variable)
+          fail("initializer functions may assign only local variables");
+        assign(assignment, state);
+      } else if (statement.kind == Statement::Kind::If) {
+        const auto flow = initializerStatements(initializerCondition(*statement.condition, state) ?
+            statement.statements : statement.alternative, state);
+        if (flow.returned || flow.exited) return flow;
+      } else if (statement.kind == Statement::Kind::Case) {
+        const auto selector = expression(*statement.condition, state);
+        const auto matches = selectionMatches(selector, statement.choices);
+        for (size_t i = 0; i < matches.size(); ++i) {
+          const auto known = statement.choices[i].empty() ? std::optional<bool>{true} : constantValue(matches[i]);
+          if (!known) fail("initializer case selector must be static");
+          if (*known) {
+            const auto flow = initializerStatements(statement.caseBodies[i], state);
+            if (flow.returned || flow.exited) return flow;
+            break;
+          }
+        }
+      } else if (statement.kind == Statement::Kind::For) {
+        const auto bounds = range(statement.range);
+        const auto name = key(statement.iterator);
+        if (integers_.contains(name) || booleans_.contains(name) || objects_.contains(name))
+          fail("shadowed runtime function loop parameters are unsupported");
+        LocalBindings bindings(*this);
+        bindings.declare(name);
+        for (size_t i = 0; i < bounds.size(); ++i) {
+          if (++*runtimeSteps_ > 1000000) fail("initializer loop limit exceeded");
+          integers_[name] = bounds.ascending ? bounds.left + int64_t(i) : bounds.left - int64_t(i);
+          const auto flow = initializerStatements(statement.statements, state);
+          if (flow.returned) return flow;
+          if (flow.exited) break;
+        }
+      } else if (statement.kind == Statement::Kind::While) {
+        while (initializerCondition(*statement.condition, state)) {
+          if (++*runtimeSteps_ > 1000000) fail("initializer loop limit exceeded");
+          const auto flow = initializerStatements(statement.statements, state);
+          if (flow.returned) return flow;
+          if (flow.exited) break;
+        }
+      } else fail("unsupported initializer statement");
+    }
+    return {};
+  }
+
   Value callRuntime(const Expr& call, const State& callerState, State* updatedState = nullptr) {
     const auto& prefix = call.kind == Expr::Kind::Name ? call : *call.left;
     const auto binding = staticFunction(key(prefix), nullptr);
     if (!binding.second) fail("no visible function: " + key(prefix));
     const auto& declaration = *binding.second;
     if (declaration.procedure != (updatedState != nullptr)) fail("function/procedure call kind mismatch");
-    if (!declaration.pure) fail("impure functions are unsupported");
+    if (!declaration.pure && !initializerContext_) fail("impure functions require a static initializer");
     if (libraryContext_.precedes(call.span.start.offset, declaration.span.start.offset))
       fail("function is used before its declaration: " + key(prefix));
     if (runtimeDepth_ >= 64) fail("runtime function recursion limit exceeded");
     if (++*runtimeSteps_ > 100000) fail("runtime function elaboration limit exceeded");
     const auto& body = functionBody(binding);
     RTLConstructor frame(design_, entity_, architecture_, syntax_, libraryContext_, {}, build_);
+    frame.initializerContext_ = initializerContext_;
+    frame.initializationFiles_ = initializationFiles_;
     frame.runtimeDepth_ = runtimeDepth_ + 1;
     frame.runtimeSteps_ = runtimeSteps_;
     frame.runtimeControlDepth_ = runtimeControlDepth_;
@@ -2041,6 +2386,8 @@ class RTLConstructor {
         if (value.boolean) frame.booleans_[name] = value.value;
         else frame.integers_[name] = value.value;
       }
+      frame.strings_ = environment.strings;
+      frame.textio_ = environment.textio;
       frame.stdLogic_ = environment.logic;
       frame.numeric_ = environment.numeric;
       frame.arith_ = environment.arith;
@@ -2079,6 +2426,7 @@ class RTLConstructor {
     // Evaluate every actual in the caller before introducing formal names.
     std::vector<std::optional<Value>> values(formals.size());
     std::vector<std::optional<StaticScalar>> scalars(formals.size());
+    std::vector<std::optional<std::string>> texts(formals.size());
     const State empty;
     std::map<size_t, Selection> outputs;
     for (size_t i = 0; i < formals.size(); ++i) {
@@ -2087,7 +2435,11 @@ class RTLConstructor {
       if (!argument) fail("missing function argument: " + formals[i].first);
       auto& evaluator = actuals[i] ? *this : frame;
       const auto& argumentState = actuals[i] ? callerState : empty;
-      if (formal.mode != vhdl::PortMode::In) {
+      if (key(frame.resolveSubtype(formal.type).name) == "string") {
+        if (!initializerContext_ || formal.mode != vhdl::PortMode::In || formal.type.constraint)
+          fail("string function arguments require a static initializer and unconstrained mode in");
+        texts[i] = evaluator.stringValue(*argument);
+      } else if (formal.mode != vhdl::PortMode::In) {
         if (!updatedState || !actuals[i]) fail("procedure output requires a variable actual");
         const auto selected = selection(*argument);
         if (!objects_.at(selected.name).variable) fail("procedure output requires a variable actual");
@@ -2122,7 +2474,12 @@ class RTLConstructor {
       frame.functions_.erase(name);
       frame.enumLiterals_.erase(name);
       if (!actuals[i] && !formal->defaultValue) fail("missing function argument: " + name);
-      if (formal->mode == vhdl::PortMode::In && scalars[i]) {
+      if (texts[i]) {
+        frame.objects_.erase(name);
+        frame.integers_.erase(name);
+        frame.booleans_.erase(name);
+        frame.strings_[name] = *texts[i];
+      } else if (formal->mode == vhdl::PortMode::In && scalars[i]) {
         const auto value = *scalars[i];
         frame.checkStaticType(value, formal->type, nullptr);
         frame.objects_.erase(name);
@@ -2161,7 +2518,33 @@ class RTLConstructor {
         fail("shadowed runtime function locals are unsupported");
       localBindings.declare(key(name));
     };
+    std::map<size_t, const vhdl::FileDeclaration*> files;
+    for (const auto& file : body.files) files.emplace(file.span.start.offset, &file);
+    const auto openFiles = [&](size_t before) {
+      while (!files.empty() && files.begin()->first < before) {
+        const auto& file = *files.begin()->second;
+        DiagnosticScope location(file.span);
+        if (!initializerContext_ || !frame.textio_ || key(file.type) != "text" || key(file.mode) != "read_mode" || !file.path)
+          fail("only read-only text files in static initializers are supported");
+        if (declaration.pure) fail("file operations require an impure function");
+        const auto path = frame.stringValue(*file.path);
+        for (const auto& name : file.names) {
+          declareLocal(name);
+          auto stream = std::make_shared<std::ifstream>(path, std::ios::binary);
+          if (!stream->is_open()) fail("cannot open initialization file: " + path);
+          std::string content((std::istreambuf_iterator<char>(*stream)), std::istreambuf_iterator<char>());
+          if (stream->bad()) fail("cannot read initialization file: " + path);
+          auto [dependency, inserted] = initializationFiles_->emplace(path, content);
+          if (!inserted && dependency->second != content) fail("initialization file changed during elaboration: " + path);
+          stream->clear();
+          stream->seekg(0);
+          frame.files_.emplace(key(name), std::move(stream));
+        }
+        files.erase(files.begin());
+      }
+    };
     for (const auto& [offset, entry] : locals) {
+      openFiles(offset);
       const auto& object = *entry.first;
       const bool variable = std::any_of(body.variables.begin(), body.variables.end(),
           [&](const auto& candidate) { return &candidate == &object; });
@@ -2169,6 +2552,11 @@ class RTLConstructor {
         for (const auto& name : object.names) declareLocal(name);
         frame.addConstant(*std::find_if(body.constants.begin(), body.constants.end(),
             [&](const auto& constant) { return &constant.object == &object; }));
+        continue;
+      }
+      if (key(object.type.name) == "line") {
+        if (!initializerContext_ || !frame.textio_ || entry.second) fail("line variables require a static TextIO initializer");
+        for (const auto& name : object.names) { declareLocal(name); frame.lines_.emplace(key(name), std::nullopt); }
         continue;
       }
       const auto type = frame.functionShape(object.type);
@@ -2179,7 +2567,9 @@ class RTLConstructor {
         state.variables[key(name)] = initial;
       }
     }
-    const auto result = frame.runtimeStatements(body.statements, state);
+    openFiles(std::numeric_limits<size_t>::max());
+    const auto result = initializerContext_ ? frame.initializerStatements(body.statements, state).returned :
+        frame.runtimeStatements(body.statements, state);
     if (declaration.procedure) {
       if (result) fail("procedure cannot return a value");
       for (const auto& [position, output] : outputs) {
@@ -2217,6 +2607,12 @@ class RTLConstructor {
       fail("unsupported static scalar type: " + name);
     };
     if (expression.kind == Expr::Kind::IntegerLiteral) return false;
+    if (!scope) {
+      if (const auto value = stringAttribute(expression)) return value->boolean;
+      if (expression.kind == Expr::Kind::Binary && staticString(*expression.left) && staticString(*expression.right))
+        return expression.text == "=" || expression.text == "/=" || expression.text == "<" ||
+            expression.text == "<=" || expression.text == ">" || expression.text == ">=";
+    }
     if (arrayAttribute(expression)) return attributeScalar(expression, scope).boolean;
     if (expression.kind == Expr::Kind::Name) {
       const auto name = key(expression);
@@ -2289,6 +2685,19 @@ class RTLConstructor {
       const auto value = constantValue(selected->object->value.bits.at(offset));
       if (!value) fail("boolean constant element must be binary");
       return {*value, true};
+    }
+    if (!scope) {
+      if (const auto value = stringAttribute(expression)) return *value;
+      if (expression.kind == Expr::Kind::Binary && staticString(*expression.left) && staticString(*expression.right)) {
+        const auto left = stringValue(*expression.left), right = stringValue(*expression.right);
+        const auto& op = expression.text;
+        if (op == "=") return {left == right, true};
+        if (op == "/=") return {left != right, true};
+        if (op == "<") return {left < right, true};
+        if (op == "<=") return {left <= right, true};
+        if (op == ">") return {left > right, true};
+        if (op == ">=") return {left >= right, true};
+      }
     }
     if (arrayAttribute(expression)) return attributeScalar(expression, scope);
     if (expression.kind == Expr::Kind::Name) {
@@ -2613,15 +3022,16 @@ class RTLConstructor {
   }
 
   void addObject(const vhdl::Name& name, const Shape& type, bool input = false,
-                 bool output = false, bool variable = false, bool port = false) {
+                 bool output = false, bool variable = false, bool port = false, bool deferred = false) {
     const auto id = key(name);
-    if (port && (type.ranges.size() > 1 || type.integerWidth))
-      fail("RTL ports require scalar logic or one-dimensional logic vectors");
-    if (functions_.contains(id) || booleans_.contains(id) || objects_.contains(id) || integers_.contains(id) || (enumerations_.contains(id) || records_.contains(id)) || arrayDeclarations_.contains(id) || integerTables_.contains(id))
+    if (port && type.ranges.size() > 1)
+      fail("RTL ports require scalar values or one-dimensional logic vectors");
+    if (strings_.contains(id) || functions_.contains(id) || booleans_.contains(id) || objects_.contains(id) || integers_.contains(id) || (enumerations_.contains(id) || records_.contains(id)) || arrayDeclarations_.contains(id) || integerTables_.contains(id))
       fail("duplicate or shadowing object: " + id);
     Bits bits;
     const auto size = type.size();
-    if (variable) bits.resize(size, nullptr);
+    if (deferred) {} // Inference materializes only arrays that require registers.
+    else if (variable) bits.resize(size, nullptr);
     else if (!type.ranges.empty() || type.integerWidth || type.enumeration || !type.fields.empty()) {
       const auto r = (type.integerWidth || type.enumeration || !type.fields.empty()) ? Range{int64_t(size - 1), 0, false} : type.ranges.back();
       if (r.left < std::numeric_limits<NLID::Bit>::min() || r.left > std::numeric_limits<NLID::Bit>::max() ||
@@ -2659,6 +3069,7 @@ class RTLConstructor {
   }
 
   Selection selection(const std::string& name) {
+    if (const auto alias = aliases_.find(name); alias != aliases_.end()) return alias->second;
     const auto found = objects_.find(name);
     if (found == objects_.end()) fail("no declaration for object: " + name);
     return {name, found->second.value.shape, 0};
@@ -2862,6 +3273,8 @@ class RTLConstructor {
   }
 
   bool isStatic(const Expr& expr) const {
+    if (expr.kind == Expr::Kind::Binary && staticString(*expr.left) && staticString(*expr.right) &&
+        (expr.text == "=" || expr.text == "/=" || expr.text == "<" || expr.text == "<=" || expr.text == ">" || expr.text == ">=")) return true;
     if (const auto selected = booleanSelection(expr))
       return std::all_of(selected->indices.begin(), selected->indices.end(), [&](const auto* index) { return isStaticIndex(*index); });
     if (expr.kind == Expr::Kind::IntegerLiteral) return true;
@@ -3021,6 +3434,7 @@ class RTLConstructor {
   }
 
   Value readObject(const std::string& name, const State& state) {
+    materializeSignal(name);
     const auto& object = objects_.at(name);
     if (memories_.contains(name)) {
       Value value{object.value.shape, {}};
@@ -3200,6 +3614,13 @@ class RTLConstructor {
 
   Value readSelected(const Expr& expr, const State& state) {
     if (expr.kind == Expr::Kind::Name) {
+      if (const auto alias = aliases_.find(key(expr)); alias != aliases_.end()) {
+        auto value = readObject(alias->second.name, state);
+        const auto first = alias->second.offset;
+        value.bits = Bits(value.bits.begin() + first, value.bits.begin() + first + alias->second.shape.size());
+        value.shape = alias->second.shape;
+        return value;
+      }
       if (!objects_.contains(key(expr))) fail("no declaration for object: " + key(expr));
       return readObject(key(expr), state);
     }
@@ -3358,7 +3779,15 @@ class RTLConstructor {
     DiagnosticScope location(expr.span);
     Value value;
     Shape inferred;
-    if (expr.kind == Expr::Kind::Indexed && expr.left->kind == Expr::Kind::Attribute &&
+    if (initializerContext_ && expr.kind == Expr::Kind::Indexed && expr.left->kind == Expr::Kind::Name &&
+        key(*expr.left) == "endfile" && !functions_.contains("endfile")) {
+      if (!textio_ || expr.right->kind != Expr::Kind::Name || !files_.contains(key(*expr.right)))
+        fail("endfile requires a visible text file");
+      auto& file = *files_.at(key(*expr.right));
+      const bool end = file.peek() == std::char_traits<char>::eof();
+      if (file.bad()) fail("failed reading initialization file");
+      value = {{{"boolean"}, {}}, {constant(end)}};
+    } else if (expr.kind == Expr::Kind::Indexed && expr.left->kind == Expr::Kind::Attribute &&
         (key(*expr.left) == "pos" || key(*expr.left) == "val")) {
       const auto& prefix = *expr.left->left;
       if (prefix.kind != Expr::Kind::Name || !enumerations_.contains(key(prefix)))
@@ -3668,11 +4097,38 @@ class RTLConstructor {
       auto element = *expected;
       element.removeOuterType();
       element.ranges.erase(element.ranges.begin());
+      std::map<const Expr*, std::pair<Range, Bits>> slices;
+      if (expected->ranges.size() == 1) for (const auto& item : expr.elements) {
+        if (item->kind != Expr::Kind::Association) continue;
+        const auto& choice = *item->left;
+        if (choice.kind != Expr::Kind::Range && !arrayAttribute(choice)) continue;
+        const auto& rhs = *item->right;
+        if (rhs.kind == Expr::Kind::CharacterLiteral) continue;
+        const bool contextual = rhs.kind == Expr::Kind::StringLiteral || rhs.kind == Expr::Kind::BitStringLiteral ||
+            rhs.kind == Expr::Kind::Aggregate || rhs.kind == Expr::Kind::Others;
+        if (!contextual && expression(rhs, state, nullptr, 0).shape.ranges.empty()) continue;
+        const auto& bounds = expected->ranges.front();
+        const auto selected = arrayAttribute(choice) ? attributeRange(choice) :
+            Range{arrayIndex(*choice.left, bounds), arrayIndex(*choice.right, bounds), choice.text == "to"};
+        auto context = *expected;
+        context.ranges.front() = selected;
+        slices.emplace(&rhs, std::make_pair(selected, expression(rhs, state, &context).bits));
+      }
       std::map<const Expr*, Bits> parts;
-      for (const auto* item : arrayAggregateElements(expr, expected->ranges.front())) {
-        auto [part, inserted] = parts.try_emplace(item);
-        if (inserted) part->second = expression(*item, state, &element).bits;
-        value.bits.insert(value.bits.end(), part->second.begin(), part->second.end());
+      const auto actuals = arrayAggregateElements(expr, expected->ranges.front());
+      for (size_t i = 0; i < actuals.size(); ++i) {
+        const auto* item = actuals[i];
+        if (const auto found = slices.find(item); found != slices.end()) {
+          const auto& bounds = expected->ranges.front();
+          const auto index = bounds.ascending ? bounds.left + int64_t(i) : bounds.left - int64_t(i);
+          const auto first = found->second.first.position(index) * element.size();
+          value.bits.insert(value.bits.end(), found->second.second.begin() + first,
+              found->second.second.begin() + first + element.size());
+        } else {
+          auto [part, inserted] = parts.try_emplace(item);
+          if (inserted) part->second = expression(*item, state, &element).bits;
+          value.bits.insert(value.bits.end(), part->second.begin(), part->second.end());
+        }
       }
     } else if (expr.kind == Expr::Kind::CharacterLiteral || expr.kind == Expr::Kind::StringLiteral ||
                expr.kind == Expr::Kind::Others || expr.kind == Expr::Kind::BitStringLiteral) {
@@ -4063,9 +4519,24 @@ class RTLConstructor {
       return safe;
     };
     for (const auto& [bit, value] : initialValues_) if (!initializedFlops_.contains(bit)) {
+      // A connected child's output supplies the driver and its initial value.
+      // The actual signal's declaration default does not initialize that child.
+      // Each RTL child has already checked its own drivers and initializers.
+      const auto terms = bit->getInstTerms();
+      const bool childDriven = std::any_of(terms.begin(), terms.end(), [](auto* term) {
+        return term->getDirection() == SNLTerm::Direction::Output &&
+            !term->getInstance()->getModel()->isPrimitive();
+      });
+      if (childDriven) continue;
       const auto actual = evaluate(bit);
-      if ((!actual || *actual != value) && !behindRegister(behindRegister, bit))
-        fail("signal initializer is neither registered nor provably redundant");
+      if ((!actual || *actual != value) && !behindRegister(behindRegister, bit)) {
+        const auto found = initialDeclarations_.find(bit);
+        if (found != initialDeclarations_.end()) {
+          DiagnosticScope location(found->second.second);
+          fail("signal initializer is neither registered nor provably redundant: " + found->second.first);
+        }
+        fail("signal initializer is neither registered nor provably redundant: " + bit->getName().getString()); // LCOV_EXCL_LINE: signal initial values carry declaration locations; retained-variable initial values belong to initialized flops.
+      }
     }
   }
 
@@ -4134,8 +4605,8 @@ class RTLConstructor {
       return index->kind != Expr::Kind::Range && index->kind != Expr::Kind::Selected && !isStaticIndex(*index);
     });
     if (dynamic) {
-      const auto name = key(assignment.target);
-      const auto root = selection(name);
+      const auto root = selection(key(assignment.target));
+      const auto& name = root.name;
       const auto& object = objects_.at(name);
       if (object.input || object.constant || object.variable != (assignment.kind == vhdl::AssignmentKind::Variable))
         fail("dynamic assignment requires a writable object of the matching kind");
@@ -4489,12 +4960,17 @@ class RTLConstructor {
     void declare(const std::string& name) {
       if (!names.insert(name).second) fail("duplicate local declaration: " + name);
       hide(owner.objects_, name);
+      hide(owner.aliases_, name);
       hide(owner.integers_, name);
+      hide(owner.strings_, name);
       hide(owner.booleans_, name);
       hide(owner.functions_, name);
       hide(owner.enumLiterals_, name);
       hide(owner.subtypes_, name);
       hide(owner.arrays_, name);
+      hide(owner.arrayTypeOffsets_, name);
+      hide(owner.arrayTypeRanges_, name);
+      hide(owner.recordOffsets_, name);
       hide(owner.records_, name);
       hide(owner.enumerations_, name);
       hide(owner.integerTables_, name);
@@ -4510,6 +4986,28 @@ class RTLConstructor {
 
   void addProcessDeclarations(const vhdl::ClockedProcess& process, LocalBindings& bindings) {
     std::map<size_t, std::function<void()>> ordered;
+    for (const auto& array : process.arrayTypes)
+      ordered.emplace(array.span.start.offset, [&array, &bindings, this] {
+        bindings.declare(key(array.name)); addArray(array);
+      });
+    for (const auto& record : process.recordTypes)
+      ordered.emplace(record.span.start.offset, [&record, &bindings, this] {
+        bindings.declare(key(record.name)); addRecord(record);
+      });
+    for (const auto& enumeration : process.enumerationTypes)
+      ordered.emplace(enumeration.span.start.offset, [&enumeration, &bindings, this] {
+        bindings.declare(key(enumeration.name));
+        for (const auto& literal : enumeration.literals) bindings.declare(key(literal));
+        addEnumeration(enumeration);
+      });
+    for (const auto& subtype : process.subtypes)
+      ordered.emplace(subtype.span.start.offset, [&subtype, &bindings, this] {
+        bindings.declare(key(subtype.name)); addSubtype(subtype);
+      });
+    for (const auto& function : process.functions)
+      ordered.emplace(function.span.start.offset, [&function, &bindings, this] {
+        bindings.declare(key(function.name)); addLocalFunction(function);
+      });
     for (const auto& constant : process.constants)
       ordered.emplace(constant.object.span.start.offset, [&constant, &bindings, this] {
         for (const auto& name : constant.object.names) bindings.declare(key(name));
@@ -4640,8 +5138,11 @@ class RTLConstructor {
     const auto clockName = key(process.eventSignal);
     auto clock = selection(clockName);
     if (!objects_.at(clockName).input || clock.shape.size() != 1 ||
-        !clock.shape.ranges.empty() || process.level != "'1'")
-      fail("clock must name a scalar input with a positive edge");
+        !clock.shape.ranges.empty() || (process.level != "'1'" && process.level != "'0'"))
+      fail("clock must name a scalar input with a binary edge level");
+    const bool falling = process.level == "'0'";
+    if (falling && process.asynchronousReset)
+      fail("falling-edge registers with asynchronous reset require an unsupported primitive capability");
     const auto sensitivity = processSensitivity(process);
     if (!sensitivity.names.contains(clockName)) fail("clock is absent from process sensitivity");
     if (key(process.levelSignal) != clockName) fail("clock event and level must match");
@@ -4822,6 +5323,7 @@ class RTLConstructor {
       return found == asynchronousValues.end() ? -1 : int(found->second);
     };
     for (const auto& [name, write] : state.memoryWrites) {
+      if (falling) fail("falling-edge memory writes require an unsupported primitive capability");
       auto& memory = memories_.at(name);
       memory.write = write;
       memory.clock = objects_.at(clockName).value.bits.front();
@@ -4843,7 +5345,7 @@ class RTLConstructor {
           ++end;
         }
         const auto width = end - first;
-        auto* model = asynchronousKind < 0 ? NLDB0::getOrCreateDFF(width) :
+        auto* model = asynchronousKind < 0 ? (falling ? NLDB0::getOrCreateDFFN(width) : NLDB0::getOrCreateDFF(width)) :
             asynchronousKind == 1 ? NLDB0::getOrCreateDFFS(width) :
             process.resetLevel == "'0'" ? NLDB0::getOrCreateDFFRN(width) : NLDB0::getOrCreateDFFR(width);
         auto* flop = origin(SNLInstance::create(design_, model));
@@ -4910,6 +5412,7 @@ class RTLConstructor {
   std::map<std::string, const vhdl::ArrayTypeDeclaration*> arrayDeclarations_;
   std::set<std::string> instanceNames_;
   std::map<std::string, int64_t> integers_;
+  std::map<std::string, std::string> strings_;
   std::set<std::string> locallyStaticIntegers_;
   SubtypeMap subtypes_;
   std::map<std::string, FunctionBinding> functions_;
@@ -4932,12 +5435,21 @@ class RTLConstructor {
   std::string objectPrefix_;
   std::vector<std::pair<std::string, Object>> generatedObjects_;
   std::map<std::string, Memory> memories_;
+  std::map<std::string, PendingSignal> pendingSignals_;
+  bool initializerContext_ = false;
+  std::shared_ptr<std::map<std::string, std::string>> initializationFiles_ =
+      std::make_shared<std::map<std::string, std::string>>();
+  bool textio_ = false;
+  std::map<std::string, std::shared_ptr<std::ifstream>> files_;
+  std::map<std::string, std::optional<std::string>> lines_;
+  std::map<std::string, Selection> aliases_;
   std::map<std::pair<std::string, Bits>, SNLBitNet*> gates_;
   std::map<std::tuple<Bits, Bits, bool>, Bits> adders_;
   std::map<std::tuple<SNLBitNet*, Bits, Bits>, Bits> muxes_;
   std::map<std::pair<SNLDesign*, Bits>, Bits> tables_;
   std::set<SNLBitNet*> drivers_, reads_;
   std::map<SNLBitNet*, bool> initialValues_;
+  std::map<SNLBitNet*, std::pair<std::string, vhdl::SourceSpan>> initialDeclarations_;
   std::set<SNLBitNet*> initializedFlops_;
   std::set<std::string> libraries_{"std", "work"};
   const Sensitivity* sensitivity_ = nullptr;
@@ -5139,15 +5651,29 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     }
     if (!entity || !architecture) fail("missing RTL entity or architecture: " + name);
     std::string modelName = entity->name.spelling;
-    for (const auto& [generic, value] : overrides)
-      modelName += "__" + generic + "_" +
-          (value.bits ? "v" + *value.bits : value.scalar.boolean ?
-            (value.scalar.value ? "true" : "false") : std::to_string(value.scalar.value));
+    for (const auto& [generic, value] : overrides) {
+      modelName += "__" + generic + "_";
+      if (value.text) {
+        modelName += "s" + std::to_string(value.text->size()) + "_";
+        for (const unsigned char c : *value.text) {
+          modelName += "0123456789abcdef"[c >> 4];
+          modelName += "0123456789abcdef"[c & 15];
+        }
+      } else modelName += value.bits ? "v" + *value.bits : value.scalar.boolean ?
+          (value.scalar.value ? "true" : "false") : std::to_string(value.scalar.value);
+    }
     const auto signature = std::string(source.substr(context.start(owner),
         std::max(entity->span.end.offset, architecture->span.end.offset) - context.start(owner))) + modelName;
     if (auto* existing = owner->getSNLDesign(NLName(modelName))) {
       auto* property = dynamic_cast<RTLSourceProperty*>(existing->getProperty("VHDLRTLSource"));
       if (!property || property->signature != signature) fail("conflicting RTL design: " + modelName);
+      for (const auto& [path, previous] : property->initializationFiles) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) fail("cannot open initialization file for cached design: " + path);
+        const std::string current((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        if (file.bad() || current != previous)
+          fail("initialization file changed for existing design; use a fresh library: " + path);
+      }
       active.erase({owner, name});
       return existing;
     }
@@ -5155,9 +5681,10 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     created.push_back(design);
     sourceMap.annotate(design, entity->span, true);
     sourceMap.annotate(design, architecture->span);
-    RTLConstructor(design, *entity, *architecture, syntax, context, overrides, build).run();
+    RTLConstructor constructor(design, *entity, *architecture, syntax, context, overrides, build);
+    constructor.run();
     SNLUtils::mergeRepeatedMuxSelections(design);
-    RTLSourceProperty::attach(design, signature);
+    RTLSourceProperty::attach(design, signature, constructor.getInitializationFiles());
     active.erase({owner, name});
     return design;
   };

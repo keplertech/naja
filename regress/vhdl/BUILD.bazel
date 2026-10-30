@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+# SPDX-License-Identifier: Apache-2.0
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "soc_frontend_tests",
+    srcs = ["run_soc_frontend.sh"],
+    args = [
+        "$(rootpath //src/nl/python/naja_wrapping:naja.so)",
+        "$(rootpath //src/nl/python/naja_wrapping:naja_runtime)",
+        "$(PYTHON3_ROOTPATH)",
+        "$(rootpath :test_soc_frontend.py)",
+    ],
+    data = [
+        "test_soc_frontend.py",
+        "//src/nl/python/naja_wrapping:naja.so",
+        "//src/nl/python/naja_wrapping:naja_runtime",
+        "@rules_python//python:current_py_toolchain",
+    ] + glob(["soc_probes/*.vhdl"]),
+    toolchains = ["@rules_python//python:current_py_toolchain"],
+)
+
+sh_test(
+    name = "memory_initialization_tests",
+    srcs = ["run_soc_frontend.sh"],
+    args = [
+        "$(rootpath //src/nl/python/naja_wrapping:naja.so)",
+        "$(rootpath //src/nl/python/naja_wrapping:naja_runtime)",
+        "$(PYTHON3_ROOTPATH)",
+        "$(rootpath :test_memory_initialization.py)",
+    ],
+    data = [
+        "test_memory_initialization.py",
+        "//src/nl/python/naja_wrapping:naja.so",
+        "//src/nl/python/naja_wrapping:naja_runtime",
+        "memory_file_init.vhdl",
+        "@rules_python//python:current_py_toolchain",
+    ],
+    toolchains = ["@rules_python//python:current_py_toolchain"],
+)

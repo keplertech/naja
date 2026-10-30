@@ -73,6 +73,13 @@ struct SubtypeDeclaration {
     SourceSpan span;
 };
 
+struct AliasDeclaration {
+    Name name;
+    std::optional<TypeMark> type;
+    std::unique_ptr<Expression> target;
+    SourceSpan span;
+};
+
 struct PortDeclaration {
     std::vector<Name> names;
     PortMode mode = PortMode::In;
@@ -155,6 +162,14 @@ struct SequentialStatement {
     std::vector<std::vector<SequentialStatement>> caseBodies;
 };
 
+struct FileDeclaration {
+    std::vector<Name> names;
+    Name type;
+    Name mode;
+    std::unique_ptr<Expression> path;
+    SourceSpan span;
+};
+
 struct FunctionDeclaration {
     Name name;
     std::vector<GenericDeclaration> parameters;
@@ -166,6 +181,7 @@ struct FunctionDeclaration {
     bool body = false;
     bool pure = true;
     bool procedure = false;
+    std::vector<FileDeclaration> files;
 };
 
 struct LibraryClause {
@@ -184,7 +200,7 @@ struct ContextClause {
 };
 
 // Restricted positive-edge process syntax; names remain unresolved here.
-enum class ClockEdgeForm { EventAndLevel, RisingEdgeCall };
+enum class ClockEdgeForm { EventAndLevel, RisingEdgeCall, FallingEdgeCall };
 
 struct ClockedProcess {
     Name sensitivity;
@@ -211,6 +227,11 @@ struct ClockedProcess {
     std::optional<Name> label;
     std::vector<ConstantDeclaration> constants;
     std::unique_ptr<Expression> clockEnable;
+    std::vector<ArrayTypeDeclaration> arrayTypes;
+    std::vector<RecordTypeDeclaration> recordTypes;
+    std::vector<EnumerationTypeDeclaration> enumerationTypes;
+    std::vector<SubtypeDeclaration> subtypes;
+    std::vector<FunctionDeclaration> functions;
 };
 
 struct EntityDeclaration {
@@ -294,6 +315,7 @@ struct ArchitectureBody {
     std::vector<EnumerationTypeDeclaration> enumerationTypes;
     std::vector<FunctionDeclaration> functions;
     std::vector<SubtypeDeclaration> subtypes;
+    std::vector<AliasDeclaration> aliases;
 };
 
 struct DesignFile {
