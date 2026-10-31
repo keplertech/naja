@@ -299,6 +299,127 @@ end;
         self.assertEqual("unsupported_without_additional_elaboration", second["bits"]["default_value_status"])
         self.assertEqual(3, second["bits"]["declared_type"]["resolved"]["width"])
 
+    def test_package_array_and_record_declarations(self):
+        path = self.path("package_shapes.vhd", """
+package shapes is
+  type words_t is array(natural range <>) of bit_vector(1 downto 0);
+  type pair_t is record flag, valid : bit; data : words_t(0 to 1); end record;
+end;
+""")
+        self.assertIsNone(self.load(files=[path]))
+        declarations = self.declarations(self.db.getLibrary("DESIGN"))
+        words = declarations["words_t"]
+        self.assertEqual("bit_vector", words["element_type"]["name"])
+        self.assertEqual("unavailable_without_elaboration", words["resolution_status"])
+        pair = declarations["pair_t"]
+        self.assertEqual(["flag", "valid", "data"], [f["name"] for f in pair["fields"]])
+        self.assertEqual("words_t", pair["fields"][2]["declared_type"]["name"])
+        self.assertEqual("unavailable_without_elaboration", pair["resolution_status"])
+
+    def test_constant_domains_and_integer_table_types(self):
+        path = self.path("constants.vhd", """
+entity constants is port(y : out bit_vector(3 downto 0)); end;
+architecture rtl of constants is
+  type fixed_t is array(3 downto 2) of integer;
+  type table_t is array(natural range <>) of integer;
+  type bits_t is array(natural range <>) of bit;
+  constant fixed_values : fixed_t := (4, -2);
+  constant values : table_t(0 to 1) := (2, 5);
+  constant flag : boolean := false;
+  constant bits : bit_vector(3 downto 0) := "1010";
+  constant message_text : string := "example";
+begin y <= bits; end;
+""")
+        declarations = self.declarations(self.load(files=[path], top="constants"))
+        self.assertIs(False, declarations["flag"]["effective_value"])
+        self.assertEqual("1010", declarations["bits"]["effective_value"])
+        self.assertEqual("bits_in_declaration_order", declarations["bits"]["value_format"])
+        self.assertEqual(4, declarations["bits"]["resolved_type"]["width"])
+        for name in ["message_text", "values", "fixed_values"]:
+            self.assertEqual("unsupported", declarations[name]["value_status"])
+        for name in ["fixed_t", "table_t"]:
+            self.assertEqual("static_integer_table", declarations[name]["resolution_status"])
+            self.assertEqual("integer", declarations[name]["element_type"]["name"])
+        self.assertEqual({"left": 3, "right": 2, "direction": "downto"},
+                         declarations["fixed_t"]["index_range"])
+        self.assertNotIn("index_range", declarations["table_t"])
+        self.assertEqual("unconstrained", declarations["bits_t"]["resolution_status"])
+
+    def test_overridden_unevaluable_scalar_defaults(self):
+        path = self.path("defaults.vhd", """
+entity defaults_leaf is generic(n : integer := -(1 / 0)); port(y : out bit); end;
+architecture rtl of defaults_leaf is begin y <= '1'; end;
+entity defaults is port(y : out bit); end;
+architecture rtl of defaults is begin
+  child: entity work.defaults_leaf generic map(n => 2) port map(y);
+end;
+""")
+        top = self.load(files=[path], top="defaults")
+        generic = self.declarations(top.getInstance("child"))["n"]
+        self.assertEqual(2, generic["effective_value"])
+        self.assertTrue(generic["overridden"])
+        self.assertEqual("unavailable", generic["default_value_status"])
+        self.assertNotIn("default_value", generic)
+
+    def test_required_generic_has_no_default_expression(self):
+        path = self.path("required_generic.vhd", """
+entity required_leaf is generic(n : positive); port(y : out bit); end;
+architecture rtl of required_leaf is begin y <= '1'; end;
+entity required_generic is port(y : out bit); end;
+architecture rtl of required_generic is begin
+  child: entity work.required_leaf generic map(n => 2) port map(y);
+end;
+""")
+        top = self.load(files=[path], top="required_generic")
+        generic = self.declarations(top.getInstance("child"))["n"]
+        self.assertEqual(2, generic["effective_value"])
+        self.assertTrue(generic["overridden"])
+        self.assertEqual("absent", generic["default_value_status"])
+        self.assertIsNone(generic["default_expression"])
+        self.assertNotIn("default_value", generic)
+
+    def test_functions_in_processes_and_generate_alternatives(self):
+        path = self.path("functions.vhd", """
+entity functions is port(a : in bit; y : out bit); end;
+architecture rtl of functions is begin
+  choice: if false generate
+    process(all)
+      function unused(n : integer) return integer is begin return n; end;
+    begin y <= not a; end process;
+  else generate
+    process(all)
+      function increment(n : integer) return integer is begin return n + 1; end;
+      constant amount : integer := increment(1);
+    begin if amount = 2 then y <= a; else y <= not a; end if; end process;
+  end generate;
+end;
+""")
+        top = self.load(files=[path], top="functions")
+        amount = self.declarations(top)["amount"]
+        self.assertEqual(2, amount["effective_value"])
+        self.assertEqual(["process"], [s["kind"] for s in amount["lexical_scopes"]])
+
+    def test_type_declaration_diagnostics(self):
+        cases = [
+            ("type index_t is (first_slot, last_slot); "
+             "type table_t is array(index_t) of integer;",
+             "enumeration-indexed integer constant tables are not yet supported"),
+            ("type pair_t is record flag : bit; end record; "
+             "type pair_t is record data : bit; end record;",
+             "duplicate or shadowing record type: pair_t"),
+            ("type large_t is (" + ",".join(f"item_{i}" for i in range(4097)) + ");",
+             "enumeration must contain 1 to 4096 identifier literals"),
+        ]
+        for declarations, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                naja.NLUniverse.get().destroy()
+                naja.NLUniverse.create()
+                self.db = naja.NLDB.create(naja.NLUniverse.get())
+                path = self.path("invalid_types.vhd", "entity invalid_types is end; "
+                                 "architecture rtl of invalid_types is " + declarations + " begin end;")
+                with self.assertRaisesRegex(RuntimeError, diagnostic):
+                    self.load(files=[path], top="invalid_types")
+
     def test_explicit_unsupported_dependencies_and_failed_arguments(self):
         path = self.path("dependencies.vhd", """
 entity dependencies is port(a : in bit; y : out bit); end;

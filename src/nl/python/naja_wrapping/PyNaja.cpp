@@ -303,8 +303,10 @@ PyObject* buildVHDLIntentValue(const naja::NL::VHDLIntentValue& record) {
     if (!result) return nullptr;
     for (const auto& [key, item] : *value)
       if (setDictItem(result, key.c_str(), buildVHDLIntentValue(item)) < 0) {
+        // LCOV_EXCL_START CPython allocation/dictionary insertion failure
         Py_DECREF(result);
         return nullptr;
+        // LCOV_EXCL_STOP
       }
     return result;
   }
