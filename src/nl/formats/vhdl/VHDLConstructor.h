@@ -24,6 +24,8 @@ class VHDLSourceMap;
 class VHDLConstructor {
   public:
     struct ConstructOptions {
+      /// Retain copied semantic intent from RTL elaboration; no live AST pointers.
+      bool keepASTLink {false};
       /// All warning occurrences, overwritten per load; nullopt is console-only.
       std::optional<std::filesystem::path> diagnosticsReportPath {"naja_vhdl_diagnostics.log"};
     };

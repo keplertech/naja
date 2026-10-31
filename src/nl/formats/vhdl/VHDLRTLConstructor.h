@@ -4,6 +4,7 @@
 #pragma once
 
 #include "vhdl/Parser.h"
+#include "VHDLIntent.h"
 #include "NLException.h"
 #include <cstddef>
 #include <vector>
@@ -34,5 +35,6 @@ bool requiresVHDLRTL(const vhdl::DesignFile& syntax);
 SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
                           std::string_view top, std::string_view source,
                           const std::vector<VHDLLibrarySource>& libraries,
-                          const VHDLSourceMap& sourceMap);
+                          const VHDLSourceMap& sourceMap,
+                          const VHDLIntent::SessionPtr& intentSession = {});
 }

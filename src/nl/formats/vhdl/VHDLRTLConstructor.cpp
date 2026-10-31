@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <exception>
 #include <limits>
 #include <map>
 #include <memory>
@@ -211,6 +212,8 @@ class LibraryContext {
   const std::vector<VHDLLibrarySource>& sources;
   const vhdl::DesignFile& syntax;
   const VHDLSourceMap& sourceMap;
+  std::string_view source;
+  VHDLIntent::SessionPtr intentSession;
   NLLibrary* owner(size_t offset) const {
     for (const auto& source : sources)
       if (offset >= source.offset && offset < source.offset + source.size) return source.library;
@@ -309,7 +312,34 @@ class RTLConstructor {
           genericOverrides_.at(id) = genericActual_(id, expected);
         const auto value = genericOverrides_.contains(id) ? genericOverrides_.at(id) :
             genericValue(*generic.defaultValue, expected);
+        if (retainingIntent()) {
+          auto record = intentDeclaration(name, "generic");
+          record["declared_type"] = declaredTypeIntent(generic.type, target ? &*target : nullptr);
+          record["default_expression"] = expressionIntent(generic.defaultValue.get());
+          record["overridden"] = genericOverrides_.contains(id);
+          if (value.text) record["effective_value"] = *value.text;
+          else if (value.bits) {
+            record["effective_value"] = *value.bits;
+            record["value_format"] = "bits_in_declaration_order";
+          } else if (value.scalar.boolean) record["effective_value"] = bool(value.scalar.value);
+          else record["effective_value"] = value.scalar.value;
+          if (!genericOverrides_.contains(id)) record["default_value"] = record["effective_value"];
+          else if (!generic.defaultValue) record["default_value_status"] = "absent";
+          else if (generic.defaultValue && pureIntentScalar(*generic.defaultValue)) {
+            try {
+              const auto defaultValue = scalar(*generic.defaultValue);
+              record["default_value"] = defaultValue.boolean ? Intent(bool(defaultValue.value)) : Intent(defaultValue.value);
+            } catch (const NLException&) {
+              // An overridden default need not be evaluable in this context.
+              record["default_value_status"] = "unavailable";
+            }
+          } else if (generic.defaultValue && type == "string" && staticString(*generic.defaultValue)) {
+            record["default_value"] = stringValue(*generic.defaultValue);
+          } else record["default_value_status"] = "unsupported_without_additional_elaboration";
+          intentDeclarations_.emplace_back(record);
+        }
         interfaceBindings_->declare(id);
+        if (retainingIntent()) intentBindings_[id] = intentDeclarations_.back();
         if (type == "string") {
           if (!value.text) fail("string generic requires a static string value: " + id);
           strings_.emplace(id, *value.text);
@@ -380,8 +410,54 @@ class RTLConstructor {
 
   const auto& getInitializationFiles() const { return *initializationFiles_; }
 
+  void retainPackages(NLLibrary* library) {
+    if (!libraryContext_.intentSession) return;
+    captureIntent_ = true;
+    for (const auto& package : syntax_.packages) {
+      if (package.body || libraryContext_.owner(package.name.span.start.offset) != library) continue;
+      intentBindings_.clear();
+      for (const auto& enumeration : package.enumerationTypes) {
+        auto record = intentDeclaration(enumeration.name, "type");
+        record["resolved_type"] = shapeIntent(Shape{{key(enumeration.name)}, {}, 0, {}, &enumeration});
+        rememberIntent(enumeration.name, std::move(record));
+      }
+      for (const auto& subtype : package.subtypes) {
+        auto record = intentDeclaration(subtype.name, "subtype");
+        record["base_type"] = declaredTypeIntent(subtype.type);
+        record["resolution_status"] = "unavailable_without_elaboration";
+        rememberIntent(subtype.name, std::move(record));
+      }
+      for (const auto& constant : package.constants) for (const auto& name : constant.object.names) {
+        auto record = intentDeclaration(name, "constant");
+        record["declared_type"] = declaredTypeIntent(constant.object.type);
+        record["expression"] = expressionIntent(constant.value.get());
+        record["value_status"] = "unavailable_without_elaboration";
+        rememberIntent(name, std::move(record));
+      }
+      for (const auto& array : package.arrayTypes) {
+        auto record = intentDeclaration(array.name, "type");
+        record["element_type"] = declaredTypeIntent(array.elementType);
+        record["resolution_status"] = "unavailable_without_elaboration";
+        rememberIntent(array.name, std::move(record));
+      }
+      for (const auto& recordType : package.recordTypes) {
+        auto record = intentDeclaration(recordType.name, "type");
+        IntentList fields;
+        for (const auto& field : recordType.fields) for (const auto& name : field.names)
+          fields.emplace_back(IntentDict{{"name", name.spelling}, {"declared_type", declaredTypeIntent(field.type)}});
+        record["fields"] = std::move(fields);
+        record["resolution_status"] = "unavailable_without_elaboration";
+        rememberIntent(recordType.name, std::move(record));
+      }
+    }
+    VHDLIntent::attach(library, libraryContext_.intentSession,
+        IntentDict{{"status", "available"}, {"language", "vhdl"}, {"analysis", "package_declarations"},
+            {"declarations", intentDeclarations_}});
+  }
+
   void run() {
     DiagnosticScope location(entity_.span);
+    captureIntent_ = true;
     prepareEntity();
     std::vector<Shape> portShapes;
     for (const auto& port : entity_.ports) {
@@ -397,6 +473,7 @@ class RTLConstructor {
       const auto& port = entity_.ports[i];
       for (const auto& name : port.names) {
         interfaceBindings_->declare(key(name));
+        objectIntent(name, port.type, portShapes[i], "port");
         addObject(name, portShapes[i], port.mode == vhdl::PortMode::In,
                   port.mode == vhdl::PortMode::Out, false, true);
       }
@@ -438,9 +515,248 @@ class RTLConstructor {
     for (const auto& [name, object] : objects_)
       if (!memories_.contains(name)) checkDriven(name, object);
     for (const auto& [name, object] : generatedObjects_) checkDriven(name, object);
+    if (retainingIntent()) VHDLIntent::attach(design_, libraryContext_.intentSession,
+        IntentDict{{"status", "available"}, {"language", "vhdl"},
+            {"entity", intentDeclaration(entity_.name, "entity")},
+            {"architecture", intentDeclaration(architecture_.name, "architecture")},
+            {"context", design_->getName().getString()}, {"declarations", intentDeclarations_}});
   }
 
  private:
+  using Intent = VHDLIntentValue;
+  using IntentDict = Intent::Dict;
+  using IntentList = Intent::List;
+
+  bool retainingIntent() const { return captureIntent_ && libraryContext_.intentSession; }
+
+  IntentDict intentDeclaration(const vhdl::Name& name, const char* kind) const {
+    const auto offset = name.span.start.offset;
+    auto* owner = libraryContext_.owner(offset);
+    std::string unit, unitKind;
+    size_t closest = 0;
+    const auto consider = [&](const vhdl::Name& candidate, const char* candidateKind) {
+      const auto start = candidate.span.start.offset;
+      if (start <= offset && start >= closest && libraryContext_.owner(start) == owner) {
+        closest = start;
+        unit = candidate.spelling;
+        unitKind = candidateKind;
+      }
+    };
+    for (const auto& package : syntax_.packages) consider(package.name, package.body ? "package_body" : "package");
+    for (const auto& entity : syntax_.entities) consider(entity.name, "entity");
+    for (const auto& architecture : syntax_.architectures) consider(architecture.name, "architecture");
+    IntentList scopes;
+    const auto addScope = [&](const vhdl::SourceSpan& span, const std::string& display, const char* kind) {
+      if (span.start.offset <= offset && offset < span.end.offset)
+        scopes.emplace_back(IntentDict{{"id", "scope:" + std::to_string(owner->getID()) + ":" +
+            std::to_string(span.start.offset)}, {"name", display}, {"kind", kind}});
+    };
+    const auto visit = [&](const auto& self, const auto& scope) -> void {
+      for (const auto& process : scope.processes) {
+        addScope(process.span, process.label ? process.label->spelling : std::string{}, "process");
+        for (const auto& function : process.functions) addScope(function.span, function.name.spelling, "subprogram");
+      }
+      for (const auto& function : scope.functions) addScope(function.span, function.name.spelling, "subprogram");
+      for (const auto& generate : scope.generates) {
+        self(self, generate);
+        for (const auto& branch : generate.alternatives) self(self, branch);
+      }
+    };
+    for (const auto& architecture : syntax_.architectures) visit(visit, architecture);
+    const auto ref = libraryContext_.sourceMap.reference(name.span);
+    return {{"id", "decl:" + std::to_string(owner->getID()) + ":" + std::to_string(offset)},
+        {"name", name.spelling}, {"canonical_name", key(name)}, {"kind", kind},
+        {"library", owner->getName().getString()}, {"owner", unit}, {"owner_kind", unitKind},
+        {"scope", objectPrefix_}, {"lexical_scopes", std::move(scopes)},
+        {"source", IntentDict{{"file", ref.range.file.getString()}, {"line", int64_t(ref.range.line)},
+            {"column", int64_t(ref.range.column)}}}};
+  }
+
+  // Restrict additional default queries to the existing, side-effect-free
+  // scalar evaluator. In particular, never call a user function or create bits.
+  bool pureIntentScalar(const Expr& expression) const {
+    if (expression.kind == Expr::Kind::IntegerLiteral) return true;
+    if (expression.kind == Expr::Kind::Name)
+      return integers_.contains(key(expression)) || booleans_.contains(key(expression)) ||
+          key(expression) == "true" || key(expression) == "false";
+    if (expression.kind == Expr::Kind::Unary)
+      return expression.left && pureIntentScalar(*expression.left);
+    if (expression.kind == Expr::Kind::Binary)
+      return expression.left && expression.right && pureIntentScalar(*expression.left) && pureIntentScalar(*expression.right);
+    return false;
+  }
+
+  Intent expressionIntent(const Expr* expression) const {
+    if (!expression) return {};
+    IntentList dependencies;
+    const auto walk = [&](const auto& self, const Expr& expr) -> void {
+      if (expr.kind == Expr::Kind::Name) {
+        const auto found = intentBindings_.find(key(expr));
+        IntentDict dependency{{"name", expr.text}, {"status", "unresolved"}};
+        if (found != intentBindings_.end() && !(enumLiterals_.contains(key(expr)) && enumLiterals_.at(key(expr)).size() > 1)) {
+          const auto& declaration = std::get<IntentDict>(found->second.value);
+          dependency["declaration_id"] = declaration.at("id");
+          dependency["scope"] = declaration.at("scope");
+          dependency["status"] = "resolved";
+        }
+        dependencies.emplace_back(std::move(dependency));
+      }
+      const bool indexedCall = expr.kind == Expr::Kind::Indexed && expr.left &&
+          expr.left->kind == Expr::Kind::Name && functions_.contains(key(*expr.left));
+      if (expr.kind == Expr::Kind::Call || expr.kind == Expr::Kind::Selected || indexedCall)
+        dependencies.emplace_back(IntentDict{{"name", expr.text}, {"status", "unsupported"},
+            {"reason", "call or selected-name dependency resolution is not retained"}});
+      if (expr.left) self(self, *expr.left);
+      if (expr.right) self(self, *expr.right);
+      if (expr.condition) self(self, *expr.condition);
+      for (const auto& element : expr.elements) self(self, *element);
+    };
+    walk(walk, *expression);
+    const auto start = std::min(expression->span.start.offset, libraryContext_.source.size());
+    const auto end = std::min(expression->span.end.offset, libraryContext_.source.size());
+    const auto ref = libraryContext_.sourceMap.reference(expression->span);
+    return IntentDict{{"text", std::string(libraryContext_.source.substr(start, end >= start ? end - start : 0))},
+        {"dependencies", std::move(dependencies)},
+        {"source", IntentDict{{"file", ref.range.file.getString()}, {"line", int64_t(ref.range.line)},
+            {"column", int64_t(ref.range.column)}}}};
+  }
+
+  Intent shapeIntent(const Shape& type) const {
+    IntentDict result{{"status", "available"}, {"width", int64_t(type.size())},
+        {"name", type.types.empty() ? std::string{} : type.types.front()}};
+    IntentList ranges;
+    for (const auto& range : type.ranges) {
+      IntentDict bounds{{"left", range.left}, {"right", range.right},
+          {"direction", range.ascending ? "to" : "downto"}, {"length", int64_t(range.size())},
+          {"index_kind", range.indexEnumeration ? "enumeration" : "integer"}};
+      if (range.indexEnumeration) {
+        const auto definition = intentNominalTypes_.find(range.indexEnumeration);
+        bounds["index_type"] = definition == intentNominalTypes_.end() ?
+            Intent(intentDeclaration(range.indexEnumeration->name, "type")) : definition->second;
+      }
+      ranges.emplace_back(std::move(bounds));
+    }
+    result["ranges"] = std::move(ranges);
+    if (!type.ranges.empty()) {
+      result["kind"] = "array";
+      auto element = type;
+      element.ranges.erase(element.ranges.begin());
+      element.removeOuterType();
+      result["element_type"] = shapeIntent(element);
+    } else if (type.enumeration) {
+      result["kind"] = "enumeration";
+      const auto definition = intentNominalTypes_.find(type.enumeration);
+      result["declaration"] = definition == intentNominalTypes_.end() ?
+          Intent(intentDeclaration(type.enumeration->name, "type")) : definition->second;
+      result["encoding"] = "unsigned_binary_ordinal";
+      IntentList literals;
+      for (size_t i = 0; i < type.enumeration->literals.size(); ++i) {
+        const auto& literal = type.enumeration->literals[i];
+        literals.emplace_back(IntentDict{{"name", literal.spelling}, {"ordinal", int64_t(i)},
+            {"representation", int64_t(i)}});
+      }
+      result["literals"] = std::move(literals);
+    } else if (!type.fields.empty()) {
+      result["kind"] = "record";
+      IntentList fields;
+      const auto declaration = type.declarations.empty() ? intentRecordFields_.end() :
+          intentRecordFields_.find(type.declarations.front());
+      size_t position = 0;
+      for (const auto& [name, field] : type.fields) {
+        IntentDict item{{"name", name}};
+        if (declaration != intentRecordFields_.end() && position < declaration->second.size())
+          item = std::get<IntentDict>(declaration->second[position].value);
+        item["type"] = shapeIntent(*field);
+        fields.emplace_back(std::move(item));
+        ++position;
+      }
+      result["fields"] = std::move(fields);
+    } else result["kind"] = type.integerWidth ? "integer" : "scalar";
+    // Resolve nominal declarations using elaborator identity.
+    const void* nominal = type.declarations.empty() ? nullptr : type.declarations.front();
+    if (const auto found = intentNominalTypes_.find(nominal); found != intentNominalTypes_.end())
+      result["declaration"] = found->second;
+    return result;
+  }
+
+  Intent declaredTypeIntent(const vhdl::TypeMark& type, const Shape* resolved = nullptr) const {
+    IntentDict result{{"name", type.name.spelling}, {"canonical_name", key(type.name)}};
+    const auto found = intentBindings_.find(key(type.name));
+    if (found != intentBindings_.end())
+      result["declaration_id"] = std::get<IntentDict>(found->second.value).at("id");
+    else {
+      static const std::set<std::string> builtins{"bit", "bit_vector", "boolean", "integer", "natural", "positive",
+          "string", "std_logic", "std_ulogic", "std_logic_vector", "std_ulogic_vector", "signed", "unsigned"};
+      if (builtins.contains(key(type.name))) {
+        result["identity_status"] = "builtin";
+        result["builtin_type"] = key(type.name);
+      } else result["identity_status"] = "unavailable";
+    }
+    if (type.constraint) {
+      result["constraint"] = IntentDict{{"direction", type.constraint->ascending ? "to" : "downto"},
+          {"left_expression", expressionIntent(type.constraint->leftExpression.get())},
+          {"right_expression", expressionIntent(type.constraint->rightExpression.get())}};
+    }
+    if (resolved) {
+      result["resolved"] = shapeIntent(*resolved);
+      const auto subtype = subtypes_.find(key(type.name));
+      if (subtype != subtypes_.end() && subtype->second.type.constraint) {
+        const auto& bounds = *subtype->second.type.constraint;
+        result["subtype_constraint"] = IntentDict{{"left", bounds.left}, {"right", bounds.right},
+            {"direction", bounds.ascending ? "to" : "downto"}};
+      }
+    } else result["resolution_status"] = "unavailable";
+    return result;
+  }
+
+  void rememberIntent(const vhdl::Name& name, IntentDict record) {
+    if (!retainingIntent()) return;
+    intentBindings_[key(name)] = record;
+    intentDeclarations_.emplace_back(std::move(record));
+  }
+
+  void constantIntent(const vhdl::ConstantDeclaration& declaration) {
+    if (!retainingIntent()) return;
+    for (const auto& name : declaration.object.names) {
+      auto record = intentDeclaration(name, "constant");
+      record["expression"] = expressionIntent(declaration.value.get());
+      record["declared_type"] = declaredTypeIntent(declaration.object.type);
+      const auto id = key(name);
+      if (integers_.contains(id)) record["effective_value"] = integers_.at(id);
+      else if (booleans_.contains(id)) record["effective_value"] = bool(booleans_.at(id));
+      else if (objects_.contains(id)) {
+        const auto& value = objects_.at(id).value;
+        record["resolved_type"] = shapeIntent(value.shape);
+        std::string bits;
+        for (auto* bit : value.bits)
+          bits += bit->isConstant0() ? '0' : bit->isConstant1() ? '1' : bit->isConstantX() ? 'x' : 'z';
+        record["effective_value"] = bits;
+        record["value_format"] = "bits_in_declaration_order";
+      } else record["value_status"] = "unsupported";
+      rememberIntent(name, std::move(record));
+    }
+  }
+
+  void objectIntent(const vhdl::Name& name, const vhdl::TypeMark& mark, const Shape& type, const char* kind) {
+    if (!retainingIntent()) return;
+    auto record = intentDeclaration(name, kind);
+    record["declared_type"] = declaredTypeIntent(mark, &type);
+    intentObjects_[name.span.start.offset] = record;
+    rememberIntent(name, std::move(record));
+  }
+
+  void attachObjectIntent(NLObject* object, const vhdl::Name& name, const Shape& type) {
+    if (!retainingIntent()) return;
+    auto found = intentObjects_.find(name.span.start.offset);
+    Intent record = found == intentObjects_.end() ? Intent(intentDeclaration(name, "object")) : found->second;
+    auto& dict = std::get<IntentDict>(record.value);
+    dict["resolved_type"] = shapeIntent(type);
+    dict["status"] = "available";
+    dict["language"] = "vhdl";
+    dict["context"] = design_->getName().getString();
+    VHDLIntent::attach(object, libraryContext_.intentSession, std::move(record));
+  }
+
   template<typename T>
   T* origin(T* object) const {
     return libraryContext_.sourceMap.annotate(object, diagnosticSpan);
@@ -520,6 +836,7 @@ class RTLConstructor {
         this->initializer(*signal.initializer, type)} : std::nullopt;
     const bool deferred = arrays_.contains(type.types.front()) && type.fields.empty();
     for (const auto& name : signal.names) {
+      objectIntent(name, signal.type, type, "signal");
       addObject(name, type, false, false, false, false, deferred);
       if (deferred) pendingSignals_.emplace(key(name), PendingSignal{name, signal.span, initial ? initial->bits : Bits{}});
     }
@@ -857,6 +1174,15 @@ class RTLConstructor {
           type.constraint->span, literal(bounds.left), literal(bounds.right)};
     }
     if (!integerType && !vectorType && !arrayDeclarations_.contains(base)) shape(type);
+    if (retainingIntent()) {
+      auto record = intentDeclaration(declaration.name, "subtype");
+      record["base_type"] = declaredTypeIntent(declaration.type);
+      // Bounds here have already been resolved by addSubtype.
+      if (type.constraint && type.constraint->leftExpression && type.constraint->rightExpression)
+        record["resolved_constraint"] = IntentDict{{"left", type.constraint->left}, {"right", type.constraint->right},
+            {"direction", type.constraint->ascending ? "to" : "downto"}};
+      rememberIntent(declaration.name, std::move(record));
+    }
     subtypes_.emplace(name, SubtypeBinding{std::move(type), declaration.span.start.offset});
   }
 
@@ -874,6 +1200,7 @@ class RTLConstructor {
         fail("unsupported unconstrained array index subtype: " + subtype);
     }
     arrayDeclarations_.emplace(name, &declaration);
+    if (retainingIntent()) intentNominalTypes_[&declaration] = intentDeclaration(declaration.name, "type");
     if (!declaration.indexSubtype) arrayTypeRanges_.emplace(name, arrayBounds(declaration));
     const auto elementName = key(declaration.elementType.name);
     // Integer tables are evaluated as static values, without synthesizing an
@@ -882,6 +1209,17 @@ class RTLConstructor {
       if ((declaration.indexType && enumerations_.contains(key(*declaration.indexType))) || (declaration.indexSubtype && enumerations_.contains(key(*declaration.indexSubtype))) ||
           (declaration.indexRange.leftExpression && enumIndexType(*declaration.indexRange.leftExpression)))
         fail("enumeration-indexed integer constant tables are not yet supported");
+      if (retainingIntent()) {
+        auto record = intentDeclaration(declaration.name, "type");
+        record["element_type"] = declaredTypeIntent(declaration.elementType);
+        record["resolution_status"] = "static_integer_table";
+        if (!declaration.indexSubtype) {
+          const auto& bounds = arrayTypeRanges_.at(name);
+          record["index_range"] = IntentDict{{"left", bounds.left}, {"right", bounds.right},
+              {"direction", bounds.ascending ? "to" : "downto"}};
+        }
+        rememberIntent(declaration.name, std::move(record));
+      }
       return;
     }
     auto element = shape(declaration.elementType);
@@ -891,6 +1229,13 @@ class RTLConstructor {
     if (!declaration.indexSubtype) element.size();
     arrays_.emplace(name, std::move(element));
     arrayTypeOffsets_.emplace(name, declaration.span.start.offset);
+    if (retainingIntent()) {
+      auto record = intentDeclaration(declaration.name, "type");
+      record["element_type"] = declaredTypeIntent(declaration.elementType);
+      if (!declaration.indexSubtype) record["resolved_type"] = shapeIntent(arrays_.at(name));
+      else record["resolution_status"] = "unconstrained";
+      rememberIntent(declaration.name, std::move(record));
+    }
   }
 
   void addRecord(const vhdl::RecordTypeDeclaration& declaration) {
@@ -902,6 +1247,7 @@ class RTLConstructor {
         name == "std_logic_vector" || name == "std_ulogic_vector" || name == "unsigned" ||
         name == "signed" || name == "integer" || name == "natural" || name == "positive" || name == "boolean")
       fail("duplicate or shadowing record type: " + name);
+    if (retainingIntent()) intentNominalTypes_[&declaration] = intentDeclaration(declaration.name, "type");
     Shape record{{name}, {}};
     record.declarations.push_back(&declaration);
     std::set<std::string> names;
@@ -913,6 +1259,17 @@ class RTLConstructor {
       }
     }
     record.size();
+    if (retainingIntent()) {
+      // Field type marks bind at the record definition, even if a later scope
+      // shadows those names where the record is used.
+      IntentList fields;
+      for (const auto& field : declaration.fields) for (const auto& fieldName : field.names)
+        fields.emplace_back(IntentDict{{"name", fieldName.spelling}, {"declared_type", declaredTypeIntent(field.type)}});
+      intentRecordFields_[&declaration] = std::move(fields);
+      auto intent = intentDeclaration(declaration.name, "type");
+      intent["resolved_type"] = shapeIntent(record);
+      rememberIntent(declaration.name, std::move(intent));
+    }
     records_.emplace(name, std::move(record));
     recordOffsets_[name] = declaration.span.start.offset;
   }
@@ -931,6 +1288,12 @@ class RTLConstructor {
     if (declaration.literals.empty() || declaration.literals.size() > 4096)
       fail("enumeration must contain 1 to 4096 identifier literals");
     enumerations_[name] = &declaration;
+    if (retainingIntent()) {
+      intentNominalTypes_[&declaration] = intentDeclaration(declaration.name, "type");
+      auto record = intentDeclaration(declaration.name, "type");
+      record["resolved_type"] = shapeIntent(Shape{{name}, {}, 0, {}, &declaration});
+      rememberIntent(declaration.name, std::move(record));
+    }
     Shape type{{name}, {}, 0, {}, &declaration};
     std::set<std::string> localLiterals;
     for (size_t i = 0; i < declaration.literals.size(); ++i) {
@@ -940,6 +1303,12 @@ class RTLConstructor {
       const auto value = number(i, type);
       enumLiterals_[literal].push_back(value);
       objects_.emplace(literal, Object{value, false, false, false, true});
+      if (retainingIntent()) {
+        auto record = intentDeclaration(declaration.literals[i], "enumeration_literal");
+        record["effective_value"] = int64_t(i);
+        record["type_declaration"] = intentDeclaration(declaration.name, "type");
+        rememberIntent(declaration.literals[i], std::move(record));
+      }
     }
   }
 
@@ -1100,6 +1469,12 @@ class RTLConstructor {
   }
 
   void addConstant(const vhdl::ConstantDeclaration& declaration) {
+    struct Capture {
+      RTLConstructor& owner;
+      const vhdl::ConstantDeclaration& declaration;
+      int exceptions = std::uncaught_exceptions();
+      ~Capture() noexcept(false) { if (std::uncaught_exceptions() == exceptions) owner.constantIntent(declaration); }
+    } capture{*this, declaration};
     InitializerScope initializerScope(initializerContext_);
     const auto type = resolveSubtype(declaration.object.type);
     const auto name = key(type.name);
@@ -1361,6 +1736,20 @@ class RTLConstructor {
     const auto instanceName = prefix + instance.label.spelling;
     if (!instanceNames_.insert(prefix + key(instance.label)).second) fail("duplicate instance label");
     auto* child = declaration(SNLInstance::create(design_, model, NLName(instanceName)), instance.span);
+    if (retainingIntent()) {
+      if (const auto* modelIntent = VHDLIntent::get(model)) {
+        auto record = std::get<IntentDict>(modelIntent->value);
+        record["instance"] = intentDeclaration(instance.label, "instance");
+        record["context"] = design_->getName().getString() + "/" + instanceName;
+        record["model_context"] = model->getName().getString();
+        IntentList actuals;
+        for (const auto& association : instance.generics)
+          actuals.emplace_back(IntentDict{{"formal", association.formal ? association.formal->spelling : std::string{}},
+              {"expression", expressionIntent(association.actual.get())}});
+        record["generic_actuals"] = std::move(actuals);
+        VHDLIntent::attach(child, libraryContext_.intentSession, std::move(record));
+      }
+    }
     std::map<SNLTerm*, std::vector<bool>> bound;
     SNLTerm* previousPort = nullptr;
     named = false;
@@ -3051,19 +3440,29 @@ class RTLConstructor {
         }
         auto* net = SNLBusNet::create(design_, r.left, r.right, NLName(busName));
         declaration(net, name.span);
+        attachObjectIntent(net, name, type);
         for (size_t i = 0; i < r.size(); ++i) bits.push_back(net->getBitAtPosition(i));
-        if (port) declaration(SNLBusTerm::create(design_, input ? SNLTerm::Direction::Input :
-            SNLTerm::Direction::Output, r.left, r.right, NLName(name.spelling)), name.span)->setNet(net);
+        if (port) {
+          auto* term = declaration(SNLBusTerm::create(design_, input ? SNLTerm::Direction::Input :
+              SNLTerm::Direction::Output, r.left, r.right, NLName(name.spelling)), name.span);
+          term->setNet(net);
+          attachObjectIntent(term, name, type);
+        }
       }
     } else {
       for (size_t i = 0; i < size; ++i) {
         auto* bit = SNLScalarNet::create(design_, NLName(objectPrefix_ + name.spelling +
             (size == 1 ? "" : "_" + std::to_string(i))));
         declaration(bit, name.span);
+        attachObjectIntent(bit, name, type);
         bits.push_back(bit);
       }
-      if (port) declaration(SNLScalarTerm::create(design_, input ? SNLTerm::Direction::Input :
-          SNLTerm::Direction::Output, NLName(name.spelling)), name.span)->setNet(bits.front());
+      if (port) {
+        auto* term = declaration(SNLScalarTerm::create(design_, input ? SNLTerm::Direction::Input :
+            SNLTerm::Direction::Output, NLName(name.spelling)), name.span);
+        term->setNet(bits.front());
+        attachObjectIntent(term, name, type);
+      }
     }
     objects_.emplace(id, Object{{type, std::move(bits)}, input, output, variable});
   }
@@ -4959,6 +5358,7 @@ class RTLConstructor {
     }
     void declare(const std::string& name) {
       if (!names.insert(name).second) fail("duplicate local declaration: " + name);
+      hide(owner.intentBindings_, name);
       hide(owner.objects_, name);
       hide(owner.aliases_, name);
       hide(owner.integers_, name);
@@ -5396,6 +5796,12 @@ class RTLConstructor {
     return level == "'1'" ? value.bits.front() : gate("not", value.bits.front());
   }
 
+  bool captureIntent_ = false;
+  VHDLIntentValue::List intentDeclarations_;
+  std::map<std::string, VHDLIntentValue> intentBindings_;
+  std::map<size_t, VHDLIntentValue> intentObjects_;
+  std::map<const void*, VHDLIntentValue> intentNominalTypes_;
+  std::map<const void*, VHDLIntentValue::List> intentRecordFields_;
   SNLDesign* design_;
   const vhdl::EntityDeclaration& entity_;
   const vhdl::ArchitectureBody& architecture_;
@@ -5555,8 +5961,8 @@ bool requiresVHDLRTL(const vhdl::DesignFile& syntax) {
 SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
                           std::string_view top, std::string_view source,
                           const std::vector<VHDLLibrarySource>& libraries,
-                          const VHDLSourceMap& sourceMap) {
-  const LibraryContext context{library, libraries, syntax, sourceMap};
+                          const VHDLSourceMap& sourceMap, const VHDLIntent::SessionPtr& intentSession) {
+  const LibraryContext context{library, libraries, syntax, sourceMap, source, intentSession};
   std::set<std::pair<NLLibrary*, std::string>> packages, bodies;
   for (const auto& package : syntax.packages) {
     DiagnosticScope location(package.name.span);
@@ -5599,6 +6005,13 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
   for (const auto& package : syntax.packages) visitPackage(package);
   if (syntax.entities.empty() && syntax.architectures.empty()) {
     if (!top.empty()) fail("package source does not define a top entity");
+    if (intentSession) {
+      // Package-only loads have no SNL design or effective generic environment.
+      const vhdl::EntityDeclaration entity;
+      const vhdl::ArchitectureBody architecture;
+      RTLConstructor catalogue(nullptr, entity, architecture, syntax, context, {}, {});
+      catalogue.retainPackages(library);
+    }
     return nullptr;
   }
   bool noRoot = false;

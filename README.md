@@ -302,6 +302,28 @@ These are the same smoke commands used by
 install target; use the CMake workflow above when you need an installed
 library, Python package, or packaged artifact.
 
+Root source builds collect their abbreviated Git revision before build actions,
+matching CMake's producer identity. The generated version header uses hermetic
+Python and a declared stable-status input. A custom `--workspace_status_command`
+must also emit `STABLE_NAJA_GIT_HASH`; without Git, source archives use `unknown`
+(or the `NAJA_GIT_HASH` environment fallback). Naja built as a dependency keeps its
+module-derived identity and never uses a consumer workspace's Git hash.
+
+With newer Xcode SDKs, if Clang reports `SDKSettings.json` as an absolute include,
+include the SDK root in the local toolchain's built-in directory discovery:
+
+```bash
+NAJA_MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+bazel test //... --repo_env="BAZEL_CXXOPTS=-std=c++20:-isystem${NAJA_MACOS_SDK}" --test_output=errors
+```
+
+This local configuration preserves include validation and does not add host
+libraries to the product. For a direct comparison of two built raw Python
+packages, run `python3 ci/check_vhdl_build_parity.py --help`. The checker compares
+raw API and producer identity, VHDL intent, live state, Verilog, DOT, snapshot
+bytes, retention on/off and fresh cross-build snapshot reloads. Each package
+must be paired with a Python interpreter matching its extension's ABI.
+
 Check source selection and the remaining registry-backed source revisions:
 
 ```bash
