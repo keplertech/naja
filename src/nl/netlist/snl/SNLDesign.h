@@ -202,6 +202,7 @@ class SNLDesign final: public NLObject {
 
     /// \return SNLNet with NLID::DesignObjectID id or nullptr if it does not exist.
     SNLNet* getNet(NLID::DesignObjectID id) const;
+    SNLNet* getNetByID(NLID::DesignObjectID id) const { return getNet(id); }
     /// \return SNLNet with NLName name or nullptr if it does not exist.
     SNLNet* getNet(const NLName& netName) const;
     /// \return SNLScalarNet with NLID::DesignObjectID id or nullptr if it does not exist.
