@@ -938,6 +938,49 @@ conditions can select generate branches or drive supported boolean expressions.
 Required boolean generics follow the same deferred dependency-loading convention
 as required integer generics. Vector generic values are not yet supported.
 
+VHDL semantic intent through the raw API
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For source-aware tools, ``najaeda.naja.NLDB.loadVHDL`` accepts
+``keep_ast_link=True``. This opt-in retains copied facts from VHDL RTL
+elaboration: enum identity and ordinal encoding, declared signal/port types,
+record fields, resolved array bounds and widths, generic defaults and overrides,
+constants and supported declaration dependencies. It does not retain a Slang
+compilation and does not identify FSMs from enum declarations.
+
+.. code-block:: python
+
+   from najaeda import naja
+
+   universe = naja.NLUniverse.create()
+   db = naja.NLDB.create(universe)
+   top = db.loadVHDL(files=["types.vhd", "design.vhd"], top="top",
+                     keep_ast_link=True, diagnostics_report_path=None)
+   intent = naja.intentDescribe(top)
+   if intent["status"] == "available":
+       for declaration in intent["declarations"]:
+           print(declaration["id"], declaration["name"])
+
+Use ``intentDescribe`` for explicit availability and ownership, ``intentTypeOf``
+for a retained signal or port's resolved type, and ``intentParametersOf`` for
+elaborated generic and constant values. VHDL response fields are documented in
+:ref:`raw-vhdl-intent`; existing SV response dictionaries remain unchanged.
+The high-level VHDL loader does not yet expose intent retention.
+
+Every attempted raw VHDL load invalidates the previous VHDL intent session in
+that database. Failed loads, disabled retention, reset and destruction cannot
+return old intent as live data. NajaIF snapshots preserve structural source
+references but do not serialize semantic intent. Recover intent by re-elaborating
+the original inputs in a fresh database with retention enabled. The same applies
+to designs reused from the model cache without new elaboration.
+
+Package-only loads can expose a declaration catalogue on their destination
+library; values requiring elaboration report unavailable. Incremental loads
+retain source ownership and ``work`` semantics, with effective values captured
+in each newly elaborated specialization. Calls and selected-name dependency
+resolution, some overridden defaults and unelaborated package constraints have
+explicit limitations described in the raw reference.
+
 VHDL source references
 ~~~~~~~~~~~~~~~~~~~~~~
 

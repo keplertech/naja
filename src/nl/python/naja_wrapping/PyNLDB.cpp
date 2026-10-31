@@ -24,6 +24,7 @@
 #include "SNLVRLConstructor.h"
 #include "SNLVRLDumper.h"
 #include "VHDLConstructor.h"
+#include "VHDLIntent.h"
 #include "SNLHDLLibrary.h"
 
 #include "PyInterface.h"
@@ -495,11 +496,13 @@ static PyObject* PyNLDB_loadGateLevelVerilog(PyNLDB* self, PyObject* args, PyObj
 }
 
 PyObject* PyNLDB_loadVHDL(PyNLDB* self, PyObject* args, PyObject* kwargs) {
+  VHDLIntent::invalidate(self->object_);
   PyObject* file = nullptr;
   PyObject* topObject = nullptr;
   PyObject* libraryObject = nullptr;
   PyObject* diagnosticsReportPath = nullptr;
-  static const char* const kwords[] = {"file", "top", "diagnostics_report_path", "library", nullptr};
+  int keepASTLink = 0;
+  static const char* const kwords[] = {"file", "top", "diagnostics_report_path", "library", "keep_ast_link", nullptr};
   // Keep the legacy file keyword and positional argument order.
   if (kwargs && PyDict_GetItemString(kwargs, "files")) {
     if (PyDict_GetItemString(kwargs, "file")) {
@@ -515,8 +518,8 @@ PyObject* PyNLDB_loadVHDL(PyNLDB* self, PyObject* args, PyObject* kwargs) {
     return result;
   }
   if (not PyArg_ParseTupleAndKeywords(
-      args, kwargs, "O|OOO:NLDB.loadVHDL", const_cast<char**>(kwords),
-      &file, &topObject, &diagnosticsReportPath, &libraryObject)) {
+      args, kwargs, "O|OOOp:NLDB.loadVHDL", const_cast<char**>(kwords),
+      &file, &topObject, &diagnosticsReportPath, &libraryObject, &keepASTLink)) {
     return nullptr;
   }
   std::string libraryName;
@@ -563,6 +566,7 @@ PyObject* PyNLDB_loadVHDL(PyNLDB* self, PyObject* args, PyObject* kwargs) {
   }
 
   VHDLConstructor::ConstructOptions options;
+  options.keepASTLink = keepASTLink;
   if (diagnosticsReportPath == Py_None) {
     options.diagnosticsReportPath.reset();
   } else if (diagnosticsReportPath != nullptr) {
@@ -880,6 +884,7 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
   SNLDesign* top = nullptr;
   TRY
   auto* designLibrary = hdlDestination(db, libraryName);
+  VHDLIntent::invalidate(db);
   SNLSVConstructor constructor(designLibrary);
   try {
     constructor.construct(inputPaths, options);
@@ -1038,7 +1043,8 @@ PyMethodDef PyNLDB_Methods[] = {
     "  file (str | list[str]): input files in any order; files is a keyword alias\n"
     "  library (str): destination root library (default DESIGN)\n"
     "  diagnostics_report_path (str | None): all warning occurrences; defaults to naja_vhdl_diagnostics.log.\n"
-    "  top (str | None, optional): entity selected as the structural top"},
+    "  top (str | None, optional): entity selected as the structural top\n"
+    "  keep_ast_link (bool): retain copied VHDL source intent for this load (default False)"},
   { "loadSystemVerilog", (PyCFunction)PyNLDB_loadSystemVerilog, METH_VARARGS|METH_KEYWORDS,
     "elaborate Verilog or SystemVerilog RTL using slang, including .v and .sv files.\n"
     "Supports an RTL subset; this is not a full language implementation or a simulator.\n\n"

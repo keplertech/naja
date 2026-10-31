@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "VHDLConstructor.h"
+#include "VHDLIntent.h"
 #include "NajaPrivateProperty.h"
 #include "VHDLRTLConstructor.h"
 #include "VHDLSourceInfo.h"
@@ -128,6 +129,7 @@ SNLDesign* VHDLConstructor::construct(std::string_view source) const {
 
 SNLDesign* VHDLConstructor::constructFile(
     const std::filesystem::path& path, std::string_view top) const {
+  VHDLIntent::invalidate(library_ ? library_->getDB() : nullptr);
   std::ifstream input(path, std::ios::binary);
   if (!input) {
     unsupported("cannot open VHDL file '" + path.string() + "'");
@@ -146,6 +148,7 @@ SNLDesign* VHDLConstructor::constructFile(
 
 SNLDesign* VHDLConstructor::constructFiles(
     const std::vector<std::filesystem::path>& paths, std::string_view top) const {
+  VHDLIntent::invalidate(library_ ? library_->getDB() : nullptr);
   if (paths.empty()) unsupported("no VHDL input files");
   // Stable storage order also makes repeated loads reuse model signatures.
   // Dependencies resolve from the complete unit index, not this path order.
@@ -175,6 +178,12 @@ SNLDesign* VHDLConstructor::constructSource(
 SNLDesign* VHDLConstructor::constructInputs(
     const std::vector<std::pair<std::string, std::string>>& inputs,
     std::string_view top, bool batch, const VHDLSourceMap* mappedSource) const {
+  const auto intentSession = library_ ? VHDLIntent::begin(library_->getDB(), options_.keepASTLink) : nullptr;
+  struct IntentGuard {
+    VHDLIntent::SessionPtr session;
+    int exceptions = std::uncaught_exceptions();
+    ~IntentGuard() { if (session && std::uncaught_exceptions() > exceptions) session->valid = false; }
+  } intentGuard{intentSession};
   std::string source;
   std::vector<VHDLSources::Input> inputOrigins;
   for (const auto& [path, text] : inputs) {
@@ -316,7 +325,7 @@ SNLDesign* VHDLConstructor::constructInputs(
     SNLDesign* design = nullptr;
     try {
       const VHDLSourceMap compilationMap(compilation, origins);
-      design = constructVHDLRTL(library_, all.syntax, selected, compilation, libraries, compilationMap);
+      design = constructVHDLRTL(library_, all.syntax, selected, compilation, libraries, compilationMap, intentSession);
     } catch (const VHDLRTLException& exception) {
       const auto offset = exception.span.start.offset;
       size_t start = 0;

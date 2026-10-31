@@ -98,6 +98,24 @@ end;
 }
 }
 
+TEST_F(VHDLConstructorTest, RetainedIntentPropertyDescriptions) {
+  library_->setName(NLName("DESIGN"));
+  VHDLConstructor::ConstructOptions options;
+  options.keepASTLink = true;
+  options.diagnosticsReportPath = std::nullopt;
+  auto* top = VHDLConstructor(library_, options).construct(R"(
+    entity top is port(a : in bit; y : out bit); end;
+    architecture rtl of top is begin y <= not a; end;
+  )");
+  ASSERT_NE(nullptr, top);
+  auto* session = library_->getDB()->getProperty("VHDLIntentSession");
+  ASSERT_NE(nullptr, session);
+  EXPECT_EQ("VHDLIntentSession", session->getString());
+  auto* record = top->getProperty("VHDLIntentRecord");
+  ASSERT_NE(nullptr, record);
+  EXPECT_EQ("VHDLIntentRecord", record->getString());
+}
+
 TEST_F(VHDLConstructorTest, RepeatedMuxFalseSelectionsUseAnd) {
   auto* top = VHDLConstructor(library_).construct(R"(
     entity top is port(a,b : in bit_vector(2 downto 0); s,t : in bit;

@@ -65,6 +65,8 @@
 #include "NLObject.h"
 #include "SNLSVConstructor.h"
 #include "SNLSVIntent.h"
+#include "VHDLIntent.h"
+#include "NLLibrary.h"
 #include "SNLDesign.h"
 #include "SNLDesignObject.h"
 #include "SNLInstance.h"
@@ -278,6 +280,46 @@ PyObject* buildIntentTypeDict(const naja::NL::SNLSVIntentType& type) {
     }
   }
   return dict;
+}
+
+PyObject* buildVHDLIntentValue(const naja::NL::VHDLIntentValue& record) {
+  using Value = naja::NL::VHDLIntentValue;
+  if (const auto* value = std::get_if<bool>(&record.value)) return PyBool_FromLong(*value);
+  if (const auto* value = std::get_if<int64_t>(&record.value)) return PyLong_FromLongLong(*value);
+  if (const auto* value = std::get_if<std::string>(&record.value))
+    return PyUnicode_FromStringAndSize(value->data(), value->size());
+  if (const auto* value = std::get_if<Value::List>(&record.value)) {
+    auto* result = PyList_New(value->size());
+    if (!result) return nullptr;
+    for (size_t i = 0; i < value->size(); ++i) {
+      auto* item = buildVHDLIntentValue((*value)[i]);
+      if (!item) { Py_DECREF(result); return nullptr; }
+      PyList_SET_ITEM(result, i, item);
+    }
+    return result;
+  }
+  if (const auto* value = std::get_if<Value::Dict>(&record.value)) {
+    auto* result = PyDict_New();
+    if (!result) return nullptr;
+    for (const auto& [key, item] : *value)
+      if (setDictItem(result, key.c_str(), buildVHDLIntentValue(item)) < 0) {
+        // LCOV_EXCL_START CPython allocation/dictionary insertion failure
+        Py_DECREF(result);
+        return nullptr;
+        // LCOV_EXCL_STOP
+      }
+    return result;
+  }
+  Py_RETURN_NONE;
+}
+
+const naja::NL::VHDLIntentValue* vhdlIntentField(const naja::NL::NLObject* object, const char* name) {
+  const auto* record = naja::NL::VHDLIntent::get(object);
+  if (!record) return nullptr;
+  const auto* dict = std::get_if<naja::NL::VHDLIntentValue::Dict>(&record->value);
+  if (!dict) return nullptr;
+  const auto found = dict->find(name);
+  return found == dict->end() ? nullptr : &found->second;
 }
 
 naja::NL::NLObject* parseIntentObject(PyObject* arg, const char* functionName) {
@@ -570,8 +612,21 @@ static PyObject* snlObjectsOf(PyObject*, PyObject* arg) {
   return result;
 }
 
+static PyObject* intentDescribe(PyObject*, PyObject* arg) {
+  naja::NL::NLObject* object = nullptr;
+  if (IsPyNLLibrary(arg)) object = PYNLLibrary_O(arg);
+  else object = parseIntentObject(arg, "intentDescribe");
+  if (!object) {
+    if (!PyErr_Occurred()) setError("intentDescribe received a destroyed object");
+    return nullptr;
+  }
+  if (const auto* record = naja::NL::VHDLIntent::get(object)) return buildVHDLIntentValue(*record);
+  return Py_BuildValue("{s:s,s:s}", "status", "unavailable", "reason",
+      "No retained VHDL intent for this object in the current load session; re-elaborate in a fresh NLDB with keep_ast_link=True");
+}
+
 static PyObject* intentAvailable(PyObject*, PyObject*) {
-  if (naja::NL::SNLSVIntent::available()) {
+  if (naja::NL::SNLSVIntent::available() || naja::NL::VHDLIntent::available()) {
     Py_RETURN_TRUE;
   }
   Py_RETURN_FALSE;
@@ -583,6 +638,7 @@ static PyObject* intentTypeOf(PyObject*, PyObject* arg) {
     return nullptr;
   }
   try {
+    if (const auto* type = vhdlIntentField(object, "resolved_type")) return buildVHDLIntentValue(*type);
     return buildIntentTypeDict(naja::NL::SNLSVIntent::typeOf(object));
     // LCOV_EXCL_START defensive: SNLSVIntent::typeOf already catches failures
   } catch (...) {
@@ -597,6 +653,19 @@ static PyObject* intentParametersOf(PyObject*, PyObject* arg) {
     return nullptr;
   }
   try {
+    if (const auto* declarations = vhdlIntentField(object, "declarations")) {
+      naja::NL::VHDLIntentValue::List values;
+      for (const auto& declaration : std::get<naja::NL::VHDLIntentValue::List>(declarations->value)) {
+        const auto& dict = std::get<naja::NL::VHDLIntentValue::Dict>(declaration.value);
+        const auto kind = dict.find("kind");
+        if (kind != dict.end()) {
+          const auto& name = std::get<std::string>(kind->second.value);
+          if (name == "generic" || name == "constant") values.push_back(declaration);
+        }
+      }
+      return buildVHDLIntentValue(naja::NL::VHDLIntentValue::Dict{
+          {"status", "available"}, {"language", "vhdl"}, {"params", std::move(values)}});
+    }
     const auto params = naja::NL::SNLSVIntent::parametersOf(object);
     if (!params.valid) {
       Py_RETURN_NONE;
@@ -703,8 +772,10 @@ static PyMethodDef NajaMethods[] = {
     "Return the live frontend AST symbol capsule associated with an SNL object, or None." },
   { "snlObjectsOf", snlObjectsOf, METH_O,
     "Return SNL objects associated with a live frontend AST symbol capsule." },
+  { "intentDescribe", intentDescribe, METH_O,
+    "Return a VHDL semantic catalogue for an SNL object or library, with explicit availability status." },
   { "intentAvailable", intentAvailable, METH_NOARGS,
-    "Return whether curated live SystemVerilog source intent data is available." },
+    "Return whether live source intent data is available for SystemVerilog or VHDL." },
   { "intentTypeOf", intentTypeOf, METH_O,
     "Return a plain Python dict describing live source type intent for an SNL object, or None." },
   { "intentParametersOf", intentParametersOf, METH_O,
