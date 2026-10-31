@@ -205,8 +205,18 @@ def worker(kind, source, output, run):
             obj.addAttribute(naja.SNLAttribute("tag", "23"))
             obj.addAttribute(naja.SNLAttribute("tag", 23))
             obj.addAttribute(naja.SNLAttribute("marker"))
-    elif kind == "vhd":
-        db.loadVHDL(source, top="top", diagnostics_report_path=None)
+    elif kind in ("vhd", "vhd_intent"):
+        db.loadVHDL(source, top="top", diagnostics_report_path=None, keep_ast_link=kind == "vhd_intent")
+        if kind == "vhd_intent":
+            catalogue = []
+            for library in db.getLibraries():
+                for design in library.getSNLDesigns():
+                    catalogue.append(naja.intentDescribe(design))
+                    for net in design.getNets():
+                        catalogue.append(naja.intentDescribe(net))
+                    for term in design.getTerms():
+                        catalogue.append(naja.intentDescribe(term))
+            (Path(output) / "intent.json").write_text(json.dumps(catalogue, sort_keys=True))
     else:
         raise ValueError(kind)
     output = Path(output)
@@ -262,6 +272,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
             baseline = None
+            baseline_intent = None
             for run in range(runs):
                 output = directory / str(run)
                 output.mkdir()
@@ -272,6 +283,12 @@ class NajaEDADeterminismTest(unittest.TestCase):
                      kind, str(source_path), str(output), str(run)],
                     env=environment, capture_output=True, text=True, timeout=120)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                if kind == "vhd_intent":
+                    intent = (output / "intent.json").read_bytes()
+                    if baseline_intent is None:
+                        baseline_intent = intent
+                    else:
+                        self.assertEqual(baseline_intent, intent, "retained intent differs across processes")
                 original = artifacts(output / "original")
                 for name in ("state.json", "design.v", "design.dot", "snapshot/snl.mf",
                              "snapshot/db_implementation.snl", "snapshot/db_interface.snl",
@@ -833,6 +850,10 @@ begin
 end;
 """)
 
+    def test_vhdl_retained_intent(self):
+        from test_najaeda_vhdl_intent import PACKAGE, SOURCE
+        self.check_determinism("vhd_intent", PACKAGE + SOURCE)
+
     def test_vhdl(self):
         self.check_determinism("vhd", VHDL)
 
@@ -843,6 +864,7 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "--load-worker":
         from najaeda import naja
         naja.NLDB.loadNajaIF(sys.argv[2])
+        assert not naja.intentAvailable(), "cold snapshots must not expose retained intent"
         dump_state(Path(sys.argv[3]))
     else:
         unittest.main()

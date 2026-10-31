@@ -21,6 +21,10 @@ common --registry=https://raw.githubusercontent.com/oharboe/bazel-central-regist
 common --registry=https://raw.githubusercontent.com/oharboe/bazel-central-registry/649d563703219943c013c9e5af8884ea81b2ab19/
 common --registry=https://bcr.bazel.build/
 
+# Collect source producer identity before hermetic build actions. This root-only
+# configuration does not propagate a consumer workspace hash into Naja dependencies.
+build --workspace_status_command="/bin/sh ci/bazel_workspace_status.sh"
+
 # Matches CMakeLists.txt:59's `set(CMAKE_CXX_STANDARD 20)` -- applied
 # globally here rather than per-target, same as the CMake build.
 build --cxxopt=-std=c++20

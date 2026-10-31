@@ -4,8 +4,8 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 cc_library(
     name = "naja_snl_vhdl",
-    srcs = ["VHDLConstructor.cpp", "VHDLRTLConstructor.cpp"],
-    hdrs = ["VHDLConstructor.h", "VHDLRTLConstructor.h", "VHDLSourceInfo.h"],
+    srcs = ["VHDLConstructor.cpp", "VHDLRTLConstructor.cpp", "VHDLIntent.cpp"],
+    hdrs = ["VHDLConstructor.h", "VHDLRTLConstructor.h", "VHDLSourceInfo.h", "VHDLIntent.h"],
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [

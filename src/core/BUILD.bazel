@@ -14,14 +14,16 @@
 # neither is ported either.
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
-load(":naja_version.bzl", "naja_git_hash")
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load(":naja_version.bzl", "naja_version_header")
 
-genrule(
-    name = "naja_version_h",
-    srcs = ["NajaVersion.h.in"],
-    outs = ["NajaVersion.h"],
-    cmd = "sed 's/@NAJA_GIT_HASH@/%s/' $< > $@" % naja_git_hash(),
+py_binary(
+    name = "generate_version_header",
+    srcs = ["generate_version_header.py"],
+    main = "generate_version_header.py",
 )
+
+naja_version_header(name = "naja_version_h")
 
 cc_library(
     name = "naja_core",

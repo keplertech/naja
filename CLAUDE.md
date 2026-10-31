@@ -218,8 +218,11 @@ dependencies are on BCR. BCR rejects symlinks in entries, so
   libpython instead of using `current_py_cc_libs` directly. Libraries
   linked into `naja_runtime` that a binary also uses (TBB, zlib) must be
   in its `exports_filter`, or the binary links a second copy.
-- `NAJA_GIT_HASH` comes from the module version
-  (`src/core/naja_version.bzl`): "unknown" when naja is the root module.
+- Root source builds collect `NAJA_GIT_HASH` through
+  `ci/bazel_workspace_status.sh`, matching CMake's checkout identity. Header
+  generation uses hermetic Python and declared stable-status inputs. Dependency
+  builds use the module version (`src/core/naja_version.bzl`), never the consumer
+  workspace's Git hash; registry validation remains independent.
 
 **Validation:** source-based Bazel changes need build/test checks against the
 same shared source revisions as CMake. Before publishing BCR updates, also build

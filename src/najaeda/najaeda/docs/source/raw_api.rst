@@ -289,6 +289,159 @@ The raw module includes expert helpers for live SystemVerilog frontend data:
 These helpers return plain Python data or capsules tied to the latest retained
 SystemVerilog frontend state.  Treat capsules as opaque handles.
 
+.. _raw-vhdl-intent:
+
+VHDL semantic intent (first increment)
+--------------------------------------
+
+Use the raw API directly when a tool needs source declaration identities and
+elaboration values. There is currently no high-level wrapper for these queries.
+Existing SystemVerilog query dictionaries and Slang capsules are unchanged.
+
+.. code-block:: python
+
+   from najaeda import naja
+
+   universe = naja.NLUniverse.create()
+   db = naja.NLDB.create(universe)
+   top = db.loadVHDL(files=["types.vhd", "design.vhd"], top="top",
+                     keep_ast_link=True, diagnostics_report_path=None)
+   catalogue = naja.intentDescribe(top)
+   if catalogue["status"] == "available":
+       declarations = catalogue["declarations"]  # ordered list, not a name-keyed map
+   signal = top.getNet("current_phase")
+   declared = naja.intentDescribe(signal)["declared_type"]
+   resolved = naja.intentTypeOf(signal)
+   parameters = naja.intentParametersOf(top)
+
+``keep_ast_link`` defaults to ``False``. For VHDL it retains copied semantic
+records, not a parser AST or a Slang compilation. This reuses the existing
+source-intent retention option without introducing a second public option.
+Capture reads the RTL elaborator's resolved shapes, declaration bindings and
+values; Python does not parse or search source text to reconstruct semantics.
+
+``intentDescribe(object)`` accepts an ``SNLDesign``, an ``SNLDesignObject`` or
+an ``NLLibrary``. It returns an explicit ``status`` envelope. A retained design
+has ``language="vhdl"``, ``entity``, ``architecture``, a specialization
+``context`` and an ordered ``declarations`` list. An explicit instance also
+has ``instance``, ``model_context`` and ``generic_actuals``; its context is
+relative to its owning design. Compose parent instance contexts when walking
+occurrences. Instances with identical actuals may share a model; distinct
+specializations carry their own effective values. A signal or port has its
+declaration record, ``declared_type`` and ``resolved_type``. Querying a bus bit
+returns the whole declaration's intent, rather than inventing a VHDL bit type.
+Generated helper objects without a declaration report ``status="unavailable"``.
+This new envelope query currently provides VHDL data only; use the existing
+intent queries for SystemVerilog.
+
+Declaration records separate ``id`` from ``name``, ``canonical_name``, ``source``
+and ownership (``library``, ``owner_kind``, ``owner``). IDs are opaque,
+session-local identifiers for parser declarations, shared by specializations
+of that declaration. They are not filenames, display names, persistent IDs or
+SNL IDs. Use a declaration ID together with its elaboration context. Do not key
+catalogues by display name: process-local declarations can shadow outer ones.
+``lexical_scopes`` identifies enclosing processes and subprograms; ``scope``
+contains the elaborated generate prefix where applicable. Basic identifiers
+retain the frontend's case-insensitive canonical spelling; extended identifiers
+retain case. Library ownership and ``work`` resolution use the same root-library
+bindings as elaboration, including package imports.
+
+For VHDL, ``intentTypeOf(signal_or_port)`` returns the resolved shape, for example
+(the declaration and source dictionaries are omitted here):
+
+.. code-block:: python
+
+   {"status": "available", "name": "phase_t", "kind": "enumeration",
+    "width": 2, "ranges": [], "encoding": "unsigned_binary_ordinal",
+    "literals": [{"name": "resting", "ordinal": 0, "representation": 0},
+                 {"name": "working", "ordinal": 1, "representation": 1},
+                 {"name": "finished", "ordinal": 2, "representation": 2}]}
+
+Enumeration encoding describes Naja's lowering, not a user-specified VHDL
+encoding attribute. An enum type alone is not evidence of an FSM. Record shapes
+contain ordered ``fields``, each with a resolved ``type`` and a ``declared_type``
+where retained. Array shapes contain ordered ``ranges`` with ``left``, ``right``,
+``direction`` (``to`` or ``downto``), ``length`` and ``index_kind`` (and an ``index_type`` declaration for enum indices), plus a
+recursive ``element_type``. Widths come from resolved shapes, not from guessing
+nominal types from SNL bus widths. The declared type preserves subtype aliases;
+``subtype_constraint`` contains resolved subtype bounds when retained.
+
+``intentParametersOf(design_or_instance)`` returns
+``{"status": "available", "language": "vhdl", "params": [...]}`` with generic
+and constant declaration records. It does not use SV-specific ``localparam``
+fields. For example, a generic overridden from 3 to 5 has:
+
+.. code-block:: python
+
+   {"name": "width", "kind": "generic", "overridden": True,
+    "default_value": 3, "effective_value": 5,
+    "default_expression": {"text": "3", "dependencies": [], "source": {...}},
+    ...}
+
+Defaults are evaluated in the declaration's effective preceding-generic
+environment. Additional evaluation of an overridden default is restricted to
+side-effect-free scalar expressions and supported string expressions. Other
+defaults carry ``default_value_status``. Non-overridden defaults reuse the value
+already computed by elaboration. Vector/record/enum constants carry bits in
+Naja's declaration order, identified by ``value_format``; integer and boolean
+values remain Python integers and booleans. ``expression`` and
+``default_expression`` retain parser-delimited source and source coordinates.
+Dependencies use declaration IDs when the elaborator's active binding is
+retained. Calls, selected names and unavailable bindings report
+``unsupported`` or ``unresolved`` explicitly; these are not text-search guesses.
+
+Lifecycle and limits
+~~~~~~~~~~~~~~~~~~~~
+
+* The database owns a load session; private properties on live objects own the
+  copied records and hold weak session references. No AST, netlist or Python
+  pointers occur in returned dictionaries. Record storage is released with its
+  owner. Returned Python dictionaries are independent historical copies.
+* Every attempted raw VHDL load invalidates the previous VHDL session in that
+  database, including argument errors, missing files and elaboration failures.
+  A later non-retained load reports intent unavailable. Database/universe
+  destruction (including reset) invalidates the session; querying a destroyed
+  Python wrapper raises ``RuntimeError``. Object deletion removes its record.
+* Incremental sources and package declarations still follow normal VHDL library
+  retention. Each retained load describes its newly elaborated hierarchy.
+  Package-only loads return ``None``; query the destination library for its
+  declaration catalogue. Enum declarations and declared type/field information
+  are available there, but constants and constraints needing elaboration carry
+  an explicit unavailable status. Required-generic units deferred without a top
+  have no elaborated intent until instantiated.
+* An unchanged design returned from the existing model cache is not re-elaborated
+  and its previous intent stays invalid. To enable intent for an existing
+  non-retained or cached model, elaborate the source inputs in a fresh database
+  with ``keep_ast_link=True``. Do not treat a cache hit as renewed semantic data.
+* Semantic records are not serialized in NajaIF. Cold reload reports unavailable,
+  even though source references survive. Re-elaborate the original VHDL sources
+  in a fresh database with retention enabled to recover intent. Snapshot payloads,
+  manifests, SNL ordering, IDs and connectivity are unaffected by retention.
+* ``intentAvailable()`` is a global availability hint across retained SV and VHDL
+  data; use ``intentDescribe(object)["status"]`` for VHDL object availability.
+  ``intentTypeOf`` and ``intentParametersOf`` retain their legacy ``None`` result
+  when no applicable live metadata exists. ``intentPackageMember`` remains an SV
+  query; VHDL packages are selected explicitly through library catalogues and
+  their ownership fields. Slang compilation/symbol capsule APIs remain SV-only.
+* The supported VHDL language subset is unchanged. Unelaborated package records,
+  function-local temporary evaluation frames, static integer tables, constrained
+  enum subtypes and arbitrary dependency graphs are not a complete semantic model.
+  The legacy unnamed-library C++ structural lowering path has no intent provider.
+
+Integration for external intent tools
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A VHDL ``load_intent`` implementation should retain its own ordered input and
+library load configuration, create a fresh raw database, and call ``loadVHDL``
+with ``keep_ast_link=True`` for the final hierarchy elaboration. For package-only
+loads it should query the destination library. A VHDL ``get_intent`` implementation
+can resolve its structural target, call ``intentDescribe`` and, when available,
+use ``intentTypeOf`` or ``intentParametersOf``. Keep declaration IDs, occurrence
+paths, model contexts and source references separate. Propagate unavailable and
+unsupported fields; do not fabricate SV schema fields or infer FSMs. After a
+snapshot reload or cached/non-retained session, offer source re-elaboration in a
+fresh database. No external-tool implementation is included in Naja.
+
 .. _primitive-timing-modeling:
 
 Primitive timing modeling
@@ -610,7 +763,7 @@ semantic source of truth.
        :func:`najaeda.naja.clearLogSinks`,
        :func:`najaeda.naja.installLoggingHandler`, :func:`najaeda.naja.log`,
        :func:`najaeda.naja.logInfo`, :func:`najaeda.naja.logWarn`,
-       :func:`najaeda.naja.logCritical` plus the SystemVerilog intent helpers
+       :func:`najaeda.naja.logCritical`, :func:`najaeda.naja.intentDescribe` plus the source intent helpers
        listed above
 
 
@@ -732,7 +885,7 @@ using the raw API is not required. See :doc:`loading` for matching semantics.
    the library owning the source unit, including imported packages. SV uses
    this option for destination storage, without cross-library source binding.
 
-   ``NLDB.loadVHDL(file, top=None, diagnostics_report_path="naja_vhdl_diagnostics.log", library="DESIGN")`` accepts a single path or a ``list[str]`` and returns the selected top's
+   ``NLDB.loadVHDL(file, top=None, diagnostics_report_path="naja_vhdl_diagnostics.log", library="DESIGN", keep_ast_link=False)`` accepts a single path or a ``list[str]`` and returns the selected top's
    ``SNLDesign``. ``files=`` is an alias for the legacy ``file=`` keyword; the
    legacy positional argument order is unchanged. All files are parsed before
    elaboration, and packages, entities, and architectures resolve independently
@@ -1236,6 +1389,7 @@ Module functions
    logWarn
    logCritical
    intentAvailable
+   intentDescribe
    liveCompilation
    astSymbolOf
    snlObjectsOf
@@ -1245,6 +1399,15 @@ Module functions
 
 .. autofunction:: najaeda.naja.getVersion
 .. autofunction:: najaeda.naja.getGitHash
+
+CMake and root source Bazel builds report the checkout's abbreviated Git
+revision through ``getGitHash()``. Bazel collects it before build actions and
+configures the version header with hermetic Python. Source archives without
+Git use ``unknown`` unless an explicit fallback identity is supplied. Dependency
+builds use their module-derived producer identity, never the consuming project's
+workspace identity. Matching source builds can exchange snapshots when their
+producer and primitive-layout identities agree; semantic intent still requires
+source re-elaboration after cold reload.
 
 ``snapshotManifest(path)`` reads only a snapshot's ``snl.mf`` manifest;
 it does not load the Cap'n Proto payload or create an ``NLUniverse``.  It
@@ -1266,6 +1429,7 @@ layout version is independent of the wire schema version owned by ``naja-if``.
 .. autofunction:: najaeda.naja.logWarn
 .. autofunction:: najaeda.naja.logCritical
 .. autofunction:: najaeda.naja.intentAvailable
+.. autofunction:: najaeda.naja.intentDescribe
 .. autofunction:: najaeda.naja.liveCompilation
 .. autofunction:: najaeda.naja.astSymbolOf
 .. autofunction:: najaeda.naja.snlObjectsOf
