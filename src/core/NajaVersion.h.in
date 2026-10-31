@@ -26,7 +26,7 @@ inline std::string getVersionPart(const std::string& version, int index) {
 
 } // namespace detail
 
-const std::string NAJA_VERSION { "0.7.33" };
+const std::string NAJA_VERSION { "0.7.34" };
 const std::string NAJA_MAJOR { detail::getVersionPart(NAJA_VERSION, 0) };
 const std::string NAJA_MINOR { detail::getVersionPart(NAJA_VERSION, 1) };
 const std::string NAJA_PATCH { detail::getVersionPart(NAJA_VERSION, 2) };
