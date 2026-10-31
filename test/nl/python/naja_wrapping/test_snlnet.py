@@ -20,6 +20,33 @@ class SNLNetTest(unittest.TestCase):
     if naja.NLUniverse.get():
       naja.NLUniverse.get().destroy()
 
+  def testGetNetByID(self):
+    nets = [
+      naja.SNLScalarNet.create(self.design, "scalar"),
+      naja.SNLBusNet.create(self.design, 3, -1, "bus"),
+      naja.SNLScalarNet.create(self.design, ""),
+      naja.SNLBusNet.create(self.design, -2, 2, ""),
+    ]
+    nets[2].setType(naja.SNLNet.Type.Assign0)
+    for net in nets:
+      with self.subTest(netID=net.getID()):
+        self.assertEqual(net.getNLID().getDesignObjectID(), net.getID())
+        self.assertIs(net, self.design.getNetByID(net.getID()))
+        self.assertIsNone(self.model.getNetByID(net.getID()))
+    self.assertEqual("", nets[2].getName())
+    self.assertTrue(nets[2].isConstant0())
+    self.assertIsNone(self.design.getNetByID(max(net.getID() for net in nets) + 1))
+    for bus in (nets[1], nets[3]):
+      for bit in bus.getBits():
+        self.assertEqual(bus.getID(), bit.getID())
+        self.assertIs(bit, self.design.getNetByID(bus.getID()).getBit(bit.getBit()))
+
+  def testGetNetByIDErrors(self):
+    for args in ((), ("invalid",), (None,), (1.5,), (0, 1)):
+      with self.subTest(args=args):
+        with self.assertRaises(RuntimeError):
+          self.design.getNetByID(*args)
+
   def test0(self):
     self.assertIsNotNone(self.design)
 

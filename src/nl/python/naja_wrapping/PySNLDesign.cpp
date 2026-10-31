@@ -724,6 +724,7 @@ GetObjectByName(SNLDesign, SNLBusNet, getBusNet)
 GetObjectByName(SNLDesign, SNLParameter, getParameter)
 GetObjectByIndex(SNLDesign, SNLInstance, InstanceByID)
 GetObjectByIndex(SNLDesign, SNLTerm, TermByID)
+GetObjectByIndex(SNLDesign, SNLNet, NetByID)
 GetNameMethod(SNLDesign)
 SetNameMethod(SNLDesign)
 DirectGetNumericMethod(PySNLDesign_getID, getID, PySNLDesign, SNLDesign)
@@ -1037,6 +1038,8 @@ PyMethodDef PySNLDesign_Methods[] = {
   { "getBundleTerm", (PyCFunction)PySNLDesign_getBundleTerm, METH_VARARGS,
     "retrieve a SNLBundleTerm."},
   { "getNet", (PyCFunction)PySNLDesign_getNet, METH_VARARGS,
+    "retrieve a SNLNet."},
+  { "getNetByID", (PyCFunction)PySNLDesign_getNetByID, METH_VARARGS,
     "retrieve a SNLNet."},
   { "getScalarNet", (PyCFunction)PySNLDesign_getScalarNet, METH_VARARGS,
     "retrieve a SNLScalarNet."},
