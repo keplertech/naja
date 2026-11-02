@@ -4,6 +4,7 @@
 
 
 #pragma once
+#include "NLContentHash.h"
 #include <map>
 #include "NajaCollection.h"
 #include "SNLDesign.h"
@@ -15,6 +16,9 @@ class NLDB;
 
 class NLLibrary final: public NLObject {
   public:
+    /// Deterministic versioned SHA-256 of this object and its descendants.
+    ContentHash getContentHash() const;
+
     friend class NLDB;
     friend class SNLDesign;
     friend class PNLDesign;

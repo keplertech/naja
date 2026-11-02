@@ -307,7 +307,18 @@ static PyObject* PyNLUniverse_destroy(PyNLUniverse* self) {
   Py_RETURN_NONE;
 }
 
+static PyObject* PyNLUniverse_getContentHash(PyNLUniverse* self) {
+  METHOD_HEAD("NLUniverse.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  NLCATCH
+  return nullptr;
+}
+
 PyMethodDef PyNLUniverse_Methods[] = {
+  { "getContentHash", (PyCFunction)PyNLUniverse_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   { "create", (PyCFunction)PyNLUniverse_create, METH_NOARGS|METH_STATIC,
     "create the NLUniverse (static object)"},
   { "destroy", (PyCFunction)PyNLUniverse_destroy, METH_NOARGS,

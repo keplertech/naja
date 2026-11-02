@@ -752,7 +752,33 @@ DEFINE_DEPRECATED_ALIAS(intentTypeOf_deprecated, intentTypeOf, "intent_type_of",
 DEFINE_DEPRECATED_ALIAS(intentParametersOf_deprecated, intentParametersOf, "intent_parameters_of", "intentParametersOf")
 DEFINE_DEPRECATED_ALIAS(intentPackageMember_deprecated, intentPackageMember, "intent_package_member", "intentPackageMember")
 
+static PyObject* getContentHashVersion(PyObject*, PyObject*) {
+  return PyLong_FromUnsignedLong(naja::NL::kContentHashVersion);
+}
+
+static PyObject* contentHashNames(const std::vector<std::string>& names) {
+  auto list = PyList_New(names.size());
+  if (!list) return nullptr;
+  for (size_t i = 0; i < names.size(); ++i) {
+    auto name = PyUnicode_FromString(names[i].c_str());
+    if (!name) { Py_DECREF(list); return nullptr; }
+    PyList_SET_ITEM(list, i, name);
+  }
+  return list;
+}
+
+static PyObject* getContentHashAttributeNames(PyObject*, PyObject*) {
+  return contentHashNames(naja::NL::getContentHashAttributeNames());
+}
+
+static PyObject* getContentHashPropertyNames(PyObject*, PyObject*) {
+  return contentHashNames(naja::NL::getContentHashPropertyNames());
+}
+
 static PyMethodDef NajaMethods[] = {
+  { "getContentHashVersion", getContentHashVersion, METH_NOARGS, "Return the content hash format version." },
+  { "getContentHashAttributeNames", getContentHashAttributeNames, METH_NOARGS, "Return the fixed content attribute registry." },
+  { "getContentHashPropertyNames", getContentHashPropertyNames, METH_NOARGS, "Return the fixed content property registry." },
   { "getVersion", getVersion, METH_NOARGS, "get the version of Naja" },
   { "getGitHash", getGitHash, METH_NOARGS, "get the Naja git hash" },
   { "snapshotManifest", PyNLDB_snapshotManifest, METH_VARARGS,

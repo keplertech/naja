@@ -66,3 +66,14 @@ Instance Attributes
     :undoc-members:
     :show-inheritance:
     :no-index:
+
+Content hash
+------------
+
+``instance.get_content_hash()`` returns the versioned content SHA-256 of its
+model design and descendants. All instances of the same model have the same
+hash, regardless of their placement or parent-side wiring. Primitive model
+hashes identify their reference, name and type; definitions and modeling are
+excluded. Use the raw ``SNLInstance.getContentHash()`` for a placement hash, or
+``netlist.get_content_hash()`` for the whole loaded universe. See :doc:`raw_api`
+for the registry and exclusions.

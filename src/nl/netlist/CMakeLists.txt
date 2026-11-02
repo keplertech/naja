@@ -6,6 +6,8 @@ add_subdirectory(serialization)
 add_subdirectory(visual)
 
 set(NL_SOURCES
+  ${PROJECT_SOURCE_DIR}/thirdparty/sha256/sha-256.c
+  core/NLContentHash.cpp
   core/NLName.cpp
   core/NLObject.cpp
   core/NLUniverse.cpp
@@ -58,6 +60,7 @@ set(DECORATOR_SOURCES
 )
 
 set(HEADERS
+  core/NLContentHash.h
   core/NLName.h
   core/NLID.h
   core/NLObject.h
@@ -112,6 +115,7 @@ add_library(naja_nl SHARED
 )
 
 target_link_libraries(naja_nl PUBLIC naja_core)
+target_include_directories(naja_nl PRIVATE ${PROJECT_SOURCE_DIR}/thirdparty/sha256)
 target_compile_options(naja_nl PRIVATE ${NAJA_CXX_WARNINGS}) 
 
 target_include_directories(naja_nl SYSTEM BEFORE PUBLIC ${Boost_INCLUDE_DIR})

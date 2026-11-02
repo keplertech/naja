@@ -4,6 +4,7 @@
 
 
 #pragma once
+#include "NLContentHash.h"
 #include <memory>
 #include <string>
 #include <string_view>
@@ -24,6 +25,9 @@ class PNLTechnology;
  */
 class NLUniverse final: public NLObject {
   public:
+    /// Deterministic versioned SHA-256 of this object and its descendants.
+    ContentHash getContentHash() const;
+
     friend class NLDB;
     friend class NLDB0;
     friend class NLName;

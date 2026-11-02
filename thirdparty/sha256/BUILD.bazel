@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "sha256",
+    srcs = ["sha-256.c"],
+    hdrs = ["sha-256.h"],
+    includes = ["."],
+    visibility = ["//src/nl/netlist:__pkg__"],
+)

@@ -92,7 +92,18 @@ DBoDeallocMethod(NLLibrary)
 DBoLinkCreateMethod(NLLibrary)
 PyTypeObjectDefinitions(NLLibrary)
 
+static PyObject* PyNLLibrary_getContentHash(PyNLLibrary* self) {
+  METHOD_HEAD("NLLibrary.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  NLCATCH
+  return nullptr;
+}
+
 PyMethodDef PyNLLibrary_Methods[] = {
+  { "getContentHash", (PyCFunction)PyNLLibrary_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   { "create", (PyCFunction)PyNLLibrary_create, METH_VARARGS|METH_STATIC,
     "NLLibrary creator"},
   {"setName", (PyCFunction)PyNLLibrary_setName, METH_O,

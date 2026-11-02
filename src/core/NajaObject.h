@@ -46,6 +46,7 @@ class NajaObject {
     }
     ///\return the collection of NajaProperties of this NajaObject
     NajaCollection<NajaProperty*> getProperties() const;
+    bool hasProperties() const { return not properties_.empty(); }
     ///\return the collection of dumpable NajaProperties of this NajaObject
     NajaCollection<NajaDumpableProperty*> getDumpableProperties() const;
 

@@ -64,7 +64,18 @@ GetBoolAttribute(SNLNet, isConstantX)
 GetBoolAttribute(SNLNet, isConstantZ)
 GetBoolAttribute(SNLNet, isConstant)
 
+static PyObject* PySNLNet_getContentHash(PySNLNet* self) {
+  METHOD_HEAD("SNLNet.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  NLCATCH
+  return nullptr;
+}
+
 PyMethodDef PySNLNet_Methods[] = {
+  { "getContentHash", (PyCFunction)PySNLNet_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   { "getID", (PyCFunction)PySNLNet_getID, METH_NOARGS,
     "get SNLNet design-object ID"},
   { "getName", (PyCFunction)PySNLNet_getName, METH_NOARGS,

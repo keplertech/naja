@@ -156,6 +156,7 @@ def dump_state(output):
         for design in library.getSNLDesigns():
             state.append([
                 design.getNLID().toTuple(), design.getName(), attributes(design),
+                design.getContentHash(),
                 [[p.getName(), p.getValue()] for p in design.getParameters()],
                 [[i.getNLID().toTuple(), i.getName(), attributes(i),
                   i.getModel().getNLID().toTuple(),
@@ -174,6 +175,7 @@ def dump_state(output):
     for db in naja.NLUniverse.get().getUserDBs():
         for library in db.getLibraries():
             visit(library)
+    state.append(["content_hash_v1", naja.NLUniverse.get().getContentHash()])
     output.mkdir()
     (output / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
     top = naja.NLUniverse.get().getTopDesign()

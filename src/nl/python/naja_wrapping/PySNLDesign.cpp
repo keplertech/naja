@@ -893,7 +893,18 @@ static PyObject* PySNLDesign_setRolesFromParameters(
   Py_RETURN_NONE;
 }
 
+static PyObject* PySNLDesign_getContentHash(PySNLDesign* self) {
+  METHOD_HEAD("SNLDesign.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  NLCATCH
+  return nullptr;
+}
+
 PyMethodDef PySNLDesign_Methods[] = {
+  { "getContentHash", (PyCFunction)PySNLDesign_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   {"hasSourceReferences", (PyCFunction)PySNLDesign_hasSourceReferences, METH_NOARGS,
     "Whether this object has a source declaration or any source origins."},
   {"getSourceDeclaration", (PyCFunction)PySNLDesign_getSourceDeclaration, METH_NOARGS,

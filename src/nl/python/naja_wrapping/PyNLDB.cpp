@@ -1000,7 +1000,18 @@ static PyObject* PyNLDB_destroy(PyNLDB* self) {
   Py_RETURN_NONE;
 }
 
+static PyObject* PyNLDB_getContentHash(PyNLDB* self) {
+  METHOD_HEAD("NLDB.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  NLCATCH
+  return nullptr;
+}
+
 PyMethodDef PyNLDB_Methods[] = {
+  { "getContentHash", (PyCFunction)PyNLDB_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   { "create", (PyCFunction)PyNLDB_create, METH_VARARGS | METH_STATIC,
     "create a NLDB."},
   { "getID", (PyCFunction)PyNLDB_getID, METH_NOARGS,
