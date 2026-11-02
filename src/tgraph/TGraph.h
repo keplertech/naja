@@ -48,8 +48,10 @@ class TGraph {
     EdgeId createEdge(NodeId source, NodeId target, TEdgeProxy* proxy);
 
     /// Creates a separate clock-to-capture relationship; returns
-    /// kInvalidCaptureEdge for invalid nodes. Endpoint roles are assigned by the builder.
-    CaptureEdgeId createCaptureEdge(NodeId source, NodeId target);
+    /// kInvalidCaptureEdge for invalid nodes. Endpoint roles and the capture kind
+    /// are assigned by the builder; gate controls are distinct from data captures.
+    CaptureEdgeId createCaptureEdge(NodeId source, NodeId target,
+      TCaptureEdge::Kind kind = TCaptureEdge::Kind::Data);
     bool removeCaptureEdge(CaptureEdgeId edge);
     /// \warning transient view, invalidated by capture storage reallocation.
     /// CaptureEdgeId belongs to a separate ID space from ordinary EdgeId.
@@ -86,7 +88,7 @@ class TGraph {
     /// \brief register a clock reaching `target` (a top terminal or an
     /// instance terminal), seeded at `node` - the graph node TClockPropagator
     /// starts its forward pass from for this clock. The number of clocks is
-    /// unbounded. Grows every live edge's FromClocks/ToClocks masks to
+    /// unbounded. Grows every live edge's clock masks to
     /// match, so all edges always carry same-size masks, sized to
     /// getClocksCount().
     /// \throws std::invalid_argument if `node` is not a valid node.

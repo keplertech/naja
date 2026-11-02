@@ -8,151 +8,133 @@
 #include <stdexcept>
 #include <vector>
 
-#include "TClock.h"
-#include "TEdge.h"
 #include "TGraph.h"
-#include "TLoopBreaker.h"
-#include "TNode.h"
 
 namespace naja::TG {
+namespace {
 
-std::vector<std::size_t> TClockPropagator::propagateForward(TGraph& graph) {
-  const std::size_t nodesCount = graph.getNodesStorage().size();
-  const std::size_t clocksCount = graph.getClocksCount();
-
-  //resolved[n] = clocks reaching n by following enabled edges forward
-  //from their seed (see class doc for the exact definition).
-  std::vector<TEdge::ClockMask> resolved(nodesCount, TEdge::ClockMask(clocksCount));
-  for (std::size_t c = 0; c < clocksCount; ++c) {
-    const TClock* clock = graph.getClock(c);
-    resolved[clock->getNode()].set(c);
-  }
-
-  //Kahn's algorithm over enabled edges only, so a cycle broken by
-  //TLoopBreaker (a disabled back edge) does not block topological order.
-  std::vector<std::size_t> inDegree(nodesCount, 0);
-  for (TGraph::NodeId n = 0; n < nodesCount; ++n) {
-    if (!graph.isNodeValid(n)) {
-      continue;
-    }
-    for (TGraph::EdgeId eid : graph.getNode(n)->getInEdges()) {
-      const TEdge* edge = graph.getEdge(eid);
-      if (edge != nullptr && !edge->isDisabled()) {
-        ++inDegree[n];
-      }
-    }
-  }
-
-  std::vector<TGraph::NodeId> queue;
-  for (TGraph::NodeId n = 0; n < nodesCount; ++n) {
-    if (graph.isNodeValid(n) && inDegree[n] == 0) {
-      queue.push_back(n);
-    }
-  }
-
-  std::size_t processedCount = 0;
-  for (std::size_t qi = 0; qi < queue.size(); ++qi) {
-    const TGraph::NodeId n = queue[qi];
-    ++processedCount;
-    for (TGraph::EdgeId eid : graph.getNode(n)->getOutEdges()) {
-      TEdge* edge = graph.getEdge(eid);
-      if (edge == nullptr || edge->isDisabled()) {
-        continue;
-      }
-      const TGraph::NodeId m = edge->getTarget();
-      resolved[m] |= resolved[n];
-      if (--inDegree[m] == 0) {
-        queue.push_back(m);
-      }
-    }
-  }
-
-  if (processedCount != graph.getNodesCount()) {
-    // LCOV_EXCL_START run() always breaks enabled cycles before calling this private helper.
-    throw std::logic_error(
-      "TClockPropagator::propagateForward: cycle among enabled edges - run TLoopBreaker first");
-    // LCOV_EXCL_STOP
-  }
-
-  for (TGraph::NodeId n = 0; n < nodesCount; ++n) {
-    if (!graph.isNodeValid(n)) {
-      continue;
-    }
-    for (TGraph::EdgeId eid : graph.getNode(n)->getOutEdges()) {
-      TEdge* edge = graph.getEdge(eid);
-      if (edge == nullptr || edge->isDisabled()) {
-        continue;
-      }
-      edge->setFromClocks(resolved[n]);
-    }
-  }
-  return queue;
+// Preserve the original graph-level convention for unclassified flop C->Q
+// arcs. Builders explicitly mark state arcs, including recognized gate latches.
+bool isState(const TGraph& graph, const TEdge& edge) {
+  return edge.getKind() == TEdge::Kind::State ||
+    graph.getNode(edge.getTarget())->isFlopDataOutput();
 }
 
-void TClockPropagator::propagateBackward(TGraph& graph, const std::vector<std::size_t>& order) {
-  const std::size_t nodesCount = graph.getNodesStorage().size();
-  const std::size_t clocksCount = graph.getClocksCount();
-
-  //Direct clock seeds must be included even when C has no incoming edges.
-  std::vector<TEdge::ClockMask> seedMask(nodesCount, TEdge::ClockMask(clocksCount));
-  for (std::size_t c = 0; c < clocksCount; ++c) {
-    const TClock* clock = graph.getClock(c);
-    seedMask[clock->getNode()].set(c);
-  }
-
-  std::vector<TEdge::ClockMask> capture(nodesCount, TEdge::ClockMask(clocksCount));
-  for (const auto& edge : graph.getCaptureEdgesStorage()) {
-    if (!edge.isAlive()) {
-      continue;
-    }
-    const auto source = edge.getSource();
-    TEdge::ClockMask atClock = seedMask[source];
-    for (auto eid : graph.getNode(source)->getInEdges()) {
-      const auto* incoming = graph.getEdge(eid);
-      if (incoming != nullptr && !incoming->isDisabled()) {
-        atClock |= incoming->getFromClocks();
-      }
-    }
-    capture[edge.getTarget()] |= atClock;
-  }
-
-  //Reverse topological order visits every capture consumer before its drivers.
-  for (auto it = order.rbegin(); it != order.rend(); ++it) {
-    const auto n = *it;
-    if (graph.getNode(n)->isFlopDataOutput()) {
-      continue;
-    }
-    for (TGraph::EdgeId eid : graph.getNode(n)->getInEdges()) {
-      TEdge* edge = graph.getEdge(eid);
-      if (edge != nullptr && !edge->isDisabled()) {
-        edge->setToClocks(capture[n]);
-        capture[edge->getSource()] |= capture[n];
-      }
-    }
-  }
+bool traversable(const TGraph& graph, const TEdge& edge, bool waveform) {
+  return edge.isAlive() && !edge.isDisabled() && !isState(graph, edge) &&
+    (!waveform || edge.getKind() != TEdge::Kind::DataOnly);
 }
 
-void TClockPropagator::run(TGraph& graph) {
-  const TEdge::ClockMask empty(graph.getClocksCount());
+std::vector<TGraph::NodeId> topologicalOrder(const TGraph& graph, bool waveform) {
+  std::vector<std::size_t> degree(graph.getNodesStorage().size(), 0);
   for (const auto& edge : graph.getEdgesStorage()) {
-    if (edge.isAlive()) {
-      graph.getEdge(edge.getIndex())->setFromClocks(empty);
-      graph.getEdge(edge.getIndex())->setToClocks(empty);
+    if (traversable(graph, edge, waveform)) ++degree[edge.getTarget()];
+  }
+  std::vector<TGraph::NodeId> order;
+  order.reserve(graph.getNodesCount());
+  for (const auto& node : graph.getNodesStorage()) {
+    if (node.isAlive() && degree[node.getIndex()] == 0) order.push_back(node.getIndex());
+  }
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    for (auto id : graph.getNode(order[i])->getOutEdges()) {
+      const auto& edge = *graph.getEdge(id);
+      if (traversable(graph, edge, waveform) && --degree[edge.getTarget()] == 0) {
+        order.push_back(edge.getTarget());
+      }
+    }
+  }
+  if (order.size() != graph.getNodesCount()) {
+    throw std::logic_error("TClockPropagator::run: enabled combinational cycle; no edges were disabled");
+  }
+  return order;
+}
+
+using Masks = std::vector<TEdge::ClockMask>;
+
+void forward(const TGraph& graph, const std::vector<TGraph::NodeId>& order,
+    Masks& masks, bool waveform) {
+  for (auto n : order) {
+    for (auto id : graph.getNode(n)->getOutEdges()) {
+      const auto& edge = *graph.getEdge(id);
+      if (traversable(graph, edge, waveform)) masks[edge.getTarget()] |= masks[n];
+    }
+  }
+}
+
+}  // namespace
+
+TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
+  const TEdge::ClockMask empty(graph.getClocksCount());
+  const auto size = graph.getNodesStorage().size();
+  std::vector<bool> gateState(size, false);
+  for (const auto& edge : graph.getEdgesStorage()) {
+    if (!edge.isAlive()) continue;
+    auto* live = graph.getEdge(edge.getIndex());
+    live->setFromClocks(empty);
+    live->setToClocks(empty);
+    live->setClockGateControlClocks(empty);
+    if (edge.getKind() == TEdge::Kind::State &&
+        graph.getNode(edge.getSource())->isLatchGate() &&
+        graph.getNode(edge.getTarget())->isLatchDataOutput()) {
+      gateState[edge.getSource()] = gateState[edge.getTarget()] = true;
+    }
+  }
+  for (const auto& capture : graph.getCaptureEdgesStorage()) {
+    if (capture.isAlive() && capture.getKind() == TCaptureEdge::Kind::ClockGateControl) {
+      gateState[capture.getTarget()] = true;
     }
   }
   for (const auto& node : graph.getNodesStorage()) {
-    if (node.isAlive() && node.isLatch()) {
-      throw std::logic_error("TClockPropagator::run: latch analysis is unsupported");
+    if (node.isAlive() && node.isLatch() && !gateState[node.getIndex()]) {
+      throw std::logic_error("TClockPropagator::run: latch analysis is unsupported outside recognized clock gates");
     }
   }
+  Masks origins(size, empty);
   for (const auto& clock : graph.getClocksStorage()) {
     if (!graph.isNodeValid(clock.getNode())) {
       throw std::logic_error("TClockPropagator::run: clock seed node was removed");
     }
+    origins[clock.getNode()].set(clock.getIndex());
   }
-  TLoopBreaker::run(graph);
-  const auto order = propagateForward(graph);
-  propagateBackward(graph, order);
+
+  // Both views must be acyclic before publishing any propagated edge masks.
+  const auto clockOrder = topologicalOrder(graph, true);
+  const auto dataOrder = topologicalOrder(graph, false);
+  forward(graph, clockOrder, origins, true);
+  Masks launch(size, empty);
+  for (const auto& clock : graph.getClocksStorage()) launch[clock.getNode()].set(clock.getIndex());
+  for (const auto& edge : graph.getEdgesStorage()) {
+    if (edge.isAlive() && !edge.isDisabled() && isState(graph, edge)) {
+      launch[edge.getTarget()] |= origins[edge.getSource()];
+    }
+  }
+  forward(graph, dataOrder, launch, false);
+
+  Masks capture(size, empty);
+  Masks control(size, empty);
+  for (const auto& edge : graph.getCaptureEdgesStorage()) {
+    if (!edge.isAlive()) continue;
+    auto& masks = edge.getKind() == TCaptureEdge::Kind::ClockGateControl ? control : capture;
+    masks[edge.getTarget()] |= origins[edge.getSource()];
+  }
+  for (auto it = dataOrder.rbegin(); it != dataOrder.rend(); ++it) {
+    const auto n = *it;
+    if (graph.getNode(n)->isFlopDataOutput() || graph.getNode(n)->isLatchDataOutput()) continue;
+    for (auto id : graph.getNode(n)->getInEdges()) {
+      auto* edge = graph.getEdge(id);
+      if (!traversable(graph, *edge, false)) continue;
+      edge->setToClocks(capture[n]);
+      edge->setClockGateControlClocks(control[n]);
+      capture[edge->getSource()] |= capture[n];
+      control[edge->getSource()] |= control[n];
+    }
+  }
+  for (const auto& edge : graph.getEdgesStorage()) {
+    if (edge.isAlive() && !edge.isDisabled()) {
+      graph.getEdge(edge.getIndex())->setFromClocks(launch[edge.getSource()]);
+    }
+  }
+  return {std::move(origins)};
 }
 
 }  // namespace naja::TG

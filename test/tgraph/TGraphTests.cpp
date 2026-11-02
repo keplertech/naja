@@ -5,6 +5,10 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
+#include <array>
+#include <numeric>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -609,14 +613,15 @@ TEST_F(TGraphTests, testClockPropagatorFlagsMergeOfTwoClockDomains) {
   EXPECT_FALSE(graph.getEdge(eOut)->hasClockCrossing());
 }
 
-TEST_F(TGraphTests, testClockPropagatorBreaksCyclesAutomatically) {
+TEST_F(TGraphTests, testClockPropagatorRejectsCyclesWithoutCuttingEdges) {
   TGraph graph;
   auto n0 = graph.createNode(nullptr);
   auto n1 = graph.createNode(nullptr);
   graph.createEdge(n0, n1, nullptr);
   graph.createEdge(n1, n0, nullptr);
-  EXPECT_NO_THROW(TClockPropagator::run(graph));
-  EXPECT_EQ(0u, TLoopBreaker::run(graph));
+  EXPECT_THROW(TClockPropagator::run(graph), std::logic_error);
+  for (const auto& edge : graph.getEdgesStorage()) EXPECT_FALSE(edge.isDisabled());
+  EXPECT_EQ(1u, TLoopBreaker::run(graph));
 }
 
 TEST_F(TGraphTests, testClockPropagatorSkipsRemovedNodeSlots) {
@@ -758,4 +763,216 @@ TEST_F(TGraphTests, testClockPropagatorSucceedsAfterLoopBreaking) {
     (!graph.getEdge(e0)->isDisabled() && graph.getEdge(e0)->hasFromClock(clk)) ||
     (!graph.getEdge(e1)->isDisabled() && graph.getEdge(e1)->hasFromClock(clk));
   EXPECT_TRUE(resolvedOnAnEnabledEdge);
+}
+
+TEST_F(TGraphTests, testMissingClockInformationIsNotACrossing) {
+  TGraph graph;
+  auto source = graph.createNode(nullptr);
+  auto target = graph.createNode(nullptr);
+  auto eid = graph.createEdge(source, target, nullptr);
+  EXPECT_TRUE(graph.getEdge(eid)->hasNoLaunchClock());
+  EXPECT_TRUE(graph.getEdge(eid)->hasNoCaptureClock());
+  EXPECT_FALSE(graph.getEdge(eid)->hasClockCrossing());
+  graph.createClock("a", nullptr, source);
+  graph.createClock("b", nullptr, target);
+  struct Case {
+    unsigned launch;
+    unsigned capture;
+    bool crossing;
+  };
+  for (auto test : {Case{0, 0, false}, Case{1, 0, false}, Case{0, 2, false},
+                    Case{1, 1, false}, Case{1, 2, true}, Case{1, 3, true}, Case{3, 3, false}}) {
+    SCOPED_TRACE(::testing::Message() << "launch=" << test.launch << " capture=" << test.capture);
+    auto* edge = graph.getEdge(eid);
+    edge->setFromClocks(TEdge::ClockMask(2, test.launch));
+    edge->setToClocks(TEdge::ClockMask(2, test.capture));
+    edge->setClockGateControlClocks(TEdge::ClockMask(2, test.capture));
+    EXPECT_EQ(test.launch == 0, edge->hasNoLaunchClock());
+    EXPECT_EQ(test.capture == 0, edge->hasNoCaptureClock());
+    EXPECT_EQ(test.crossing, edge->hasClockCrossing());
+    EXPECT_EQ(test.crossing, edge->hasClockGateControlCrossing());
+  }
+}
+
+TEST_F(TGraphTests, testCaptureKindSurvivesGrowthAndResetsOnReuse) {
+  TGraph graph;
+  auto clock = graph.createNode(nullptr);
+  auto enable = graph.createNode(nullptr);
+  auto control = graph.createCaptureEdge(clock, enable, TCaptureEdge::Kind::ClockGateControl);
+  for (size_t i = 0; i < 100; ++i) graph.createCaptureEdge(clock, enable);
+  EXPECT_EQ(TCaptureEdge::Kind::ClockGateControl, graph.getCaptureEdge(control)->getKind());
+  EXPECT_EQ(TCaptureEdge::Kind::Data, graph.getCaptureEdge(control + 1)->getKind());
+  EXPECT_NO_THROW(TClockPropagator::run(graph));
+  ASSERT_TRUE(graph.removeCaptureEdge(control));
+  ASSERT_EQ(control, graph.createCaptureEdge(clock, enable));
+  EXPECT_EQ(TCaptureEdge::Kind::Data, graph.getCaptureEdge(control)->getKind());
+  EXPECT_NO_THROW(TClockPropagator::run(graph));
+  ASSERT_TRUE(graph.removeCaptureEdge(control));
+  ASSERT_EQ(control, graph.createCaptureEdge(clock, enable, TCaptureEdge::Kind::ClockGateControl));
+  EXPECT_EQ(TCaptureEdge::Kind::ClockGateControl, graph.getCaptureEdge(control)->getKind());
+}
+
+TEST_F(TGraphTests, testSeparateClockAndDataViewsAreOrderIndependent) {
+  // One physical graph: gated-clock Q feeds the gate control and a data
+  // endpoint. A second domain also drives that shared control/data cone.
+  struct Arc { std::size_t from; std::size_t to; TEdge::Kind kind; };
+  using Kind = TEdge::Kind;
+  const std::array<Arc, 10> arcs {{{0, 3, Kind::Combinational},
+    {3, 5, Kind::State}, {0, 6, Kind::ClockPass}, {5, 6, Kind::DataOnly},
+    {6, 7, Kind::State}, {1, 2, Kind::State}, {2, 8, Kind::Combinational},
+    {7, 8, Kind::Combinational}, {8, 4, Kind::Combinational}, {8, 9, Kind::Combinational}}};
+  std::vector<std::array<TEdge::ClockMask, 3>> reference;
+  std::mt19937 random(718);
+  for (unsigned trial = 0; trial < 40; ++trial) {
+    TGraph graph;
+    std::array<TGraph::NodeId, 10> nodes;
+    std::array<unsigned, 10> creation;
+    std::iota(creation.begin(), creation.end(), 0);
+    if (trial) std::shuffle(creation.begin(), creation.end(), random);
+    for (auto n : creation) nodes[n] = graph.createNode(nullptr);
+    auto classify = [&](unsigned n, TNode::CellKind cell, TNode::PinRole pin) {
+      graph.getNode(nodes[n])->setCellKind(cell);
+      graph.getNode(nodes[n])->setPinRole(pin);
+    };
+    classify(2, TNode::CellKind::FlipFlop, TNode::PinRole::DataOutput);
+    classify(7, TNode::CellKind::FlipFlop, TNode::PinRole::DataOutput);
+    classify(3, TNode::CellKind::Latch, TNode::PinRole::Gate);
+    classify(4, TNode::CellKind::Latch, TNode::PinRole::DataInput);
+    classify(5, TNode::CellKind::Latch, TNode::PinRole::DataOutput);
+    if (trial) std::shuffle(creation.begin(), creation.end(), random);
+    std::array<TGraph::EdgeId, 10> edges;
+    for (auto i : creation) {
+      edges[i] = graph.createEdge(nodes[arcs[i].from], nodes[arcs[i].to], nullptr);
+      graph.getEdge(edges[i])->setKind(arcs[i].kind);
+    }
+    auto a = graph.createClock("a", nullptr, nodes[0]);
+    auto b = graph.createClock("b", nullptr, nodes[1]);
+    auto control = graph.createCaptureEdge(nodes[0], nodes[4], TCaptureEdge::Kind::ClockGateControl);
+    graph.createCaptureEdge(nodes[0], nodes[9]);
+    auto result = TClockPropagator::run(graph);
+    EXPECT_EQ(1u, result.clockOrigins[nodes[6]].count());
+    EXPECT_TRUE(result.clockOrigins[nodes[6]].test(a));
+    for (auto n : {2, 5, 7}) EXPECT_TRUE(result.clockOrigins[nodes[n]].none());
+    EXPECT_TRUE(graph.getEdge(edges[6])->hasFromClock(b));
+    EXPECT_TRUE(graph.getEdge(edges[6])->hasToClock(a));
+    EXPECT_TRUE(graph.getEdge(edges[6])->hasClockCrossing());
+    EXPECT_TRUE(graph.getEdge(edges[6])->hasClockGateControlCrossing());
+    EXPECT_TRUE(graph.getEdge(edges[7])->hasFromClock(a));
+    EXPECT_FALSE(graph.getEdge(edges[7])->hasClockCrossing());
+    EXPECT_FALSE(graph.getEdge(edges[7])->hasClockGateControlCrossing());
+    // State boundaries stop both backward views.
+    for (auto i : {1, 4, 5}) {
+      EXPECT_TRUE(graph.getEdge(edges[i])->getToClocks().none());
+      EXPECT_TRUE(graph.getEdge(edges[i])->getClockGateControlClocks().none());
+    }
+    for (unsigned i = 0; i < edges.size(); ++i) {
+      const auto* e = graph.getEdge(edges[i]);
+      std::array<TEdge::ClockMask, 3> masks {e->getFromClocks(), e->getToClocks(), e->getClockGateControlClocks()};
+      if (!trial) reference.push_back(masks);
+      else EXPECT_EQ(reference[i], masks) << "trial " << trial << " arc " << i;
+      EXPECT_FALSE(e->isDisabled());
+    }
+    // Repeated runs clear stale control results, honor disabled edges, and
+    // restore the exact masks after the caller re-enables its edge.
+    graph.getEdge(edges[2])->setDisabled(true);
+    result = TClockPropagator::run(graph);
+    EXPECT_TRUE(result.clockOrigins[nodes[6]].none());
+    EXPECT_TRUE(graph.getEdge(edges[2])->getFromClocks().none());
+    EXPECT_TRUE(graph.getEdge(edges[2])->getToClocks().none());
+    EXPECT_TRUE(graph.getEdge(edges[2])->getClockGateControlClocks().none());
+    graph.getEdge(edges[2])->setDisabled(false);
+    TClockPropagator::run(graph);
+    for (unsigned i = 0; i < edges.size(); ++i) {
+      const auto* e = graph.getEdge(edges[i]);
+      EXPECT_EQ(reference[i][0], e->getFromClocks());
+      EXPECT_EQ(reference[i][1], e->getToClocks());
+      EXPECT_EQ(reference[i][2], e->getClockGateControlClocks());
+    }
+    graph.removeCaptureEdge(control);
+    graph.getNode(nodes[4])->setCellKind(TNode::CellKind::Unknown);
+    TClockPropagator::run(graph);
+    for (const auto& e : graph.getEdgesStorage()) EXPECT_TRUE(e.getClockGateControlClocks().none());
+  }
+}
+
+TEST_F(TGraphTests, testClockFeedbackDoesNotTransmitWaveformAcrossQ) {
+  std::mt19937 random(573);
+  std::vector<std::array<TEdge::ClockMask, 3>> reference;
+  for (unsigned trial = 0; trial < 32; ++trial) {
+    TGraph graph;
+    std::array<unsigned, 5> creation {0, 1, 2, 3, 4};
+    if (trial) std::shuffle(creation.begin(), creation.end(), random);
+    std::array<TGraph::NodeId, 5> nodes;
+    for (auto n : creation) nodes[n] = graph.createNode(nullptr);
+    auto root = nodes[0];
+    auto c = nodes[1];
+    auto q = nodes[2];
+    auto logic = nodes[3];
+    auto d = nodes[4];
+    graph.getNode(q)->setCellKind(TNode::CellKind::FlipFlop);
+    graph.getNode(q)->setPinRole(TNode::PinRole::DataOutput);
+    const std::array<std::pair<TGraph::NodeId, TGraph::NodeId>, 5> arcs {{{root, c},
+      {c, q}, {q, logic}, {logic, c}, {root, d}}};
+    std::array<unsigned, 5> order {0, 1, 2, 3, 4};
+    if (trial) std::shuffle(order.begin(), order.end(), random);
+    std::array<TGraph::EdgeId, 5> edges;
+    for (auto i : order) edges[i] = graph.createEdge(arcs[i].first, arcs[i].second, nullptr);
+    auto a = graph.createClock("a", nullptr, root);
+    // The physical cycle C->Q->logic->C closes through a state arc.
+    // Q is also used as a capture clock, whose waveform remains unresolved.
+    graph.createCaptureEdge(q, d);
+    graph.createCaptureEdge(c, logic);
+    auto result = TClockPropagator::run(graph);
+    EXPECT_TRUE(result.clockOrigins[q].none());
+    EXPECT_TRUE(graph.getEdge(edges[4])->hasNoCaptureClock());
+    EXPECT_TRUE(result.clockOrigins[c].test(a));
+    EXPECT_TRUE(graph.getEdge(edges[2])->hasFromClock(a));
+    EXPECT_TRUE(graph.getEdge(edges[2])->hasToClock(a));
+    EXPECT_TRUE(graph.getEdge(edges[3])->hasFromClock(a));
+    EXPECT_TRUE(graph.getEdge(edges[1])->getToClocks().none());
+    for (unsigned i = 0; i < edges.size(); ++i) {
+      const auto* e = graph.getEdge(edges[i]);
+      std::array<TEdge::ClockMask, 3> masks {e->getFromClocks(), e->getToClocks(), e->getClockGateControlClocks()};
+      if (!trial) reference.push_back(masks);
+      else EXPECT_EQ(reference[i], masks) << "trial " << trial << " arc " << i;
+      EXPECT_FALSE(e->isDisabled());
+    }
+  }
+}
+
+TEST_F(TGraphTests, testDataViewCycleAndSelfLoopAreRejectedWithoutMutation) {
+  for (bool self : {false, true}) {
+    TGraph graph;
+    auto a = graph.createNode(nullptr);
+    auto b = self ? a : graph.createNode(nullptr);
+    auto e = graph.createEdge(a, b, nullptr);
+    graph.getEdge(e)->setKind(TEdge::Kind::DataOnly);
+    if (!self) graph.createEdge(b, a, nullptr);
+    for (unsigned run = 0; run < 2; ++run) {
+      EXPECT_THROW(TClockPropagator::run(graph), std::logic_error);
+      for (const auto& edge : graph.getEdgesStorage()) EXPECT_FALSE(edge.isDisabled());
+    }
+    graph.getEdge(e)->setDisabled(true);
+    EXPECT_NO_THROW(TClockPropagator::run(graph));
+  }
+}
+
+TEST_F(TGraphTests, testEdgeAnalysisMetadataResetsAndGrows) {
+  TGraph graph;
+  auto a = graph.createNode(nullptr);
+  auto b = graph.createNode(nullptr);
+  auto e = graph.createEdge(a, b, nullptr);
+  auto c = graph.createClock("a", nullptr, a);
+  graph.getEdge(e)->setKind(TEdge::Kind::DataOnly);
+  TEdge::ClockMask mask(1);
+  mask.set(c);
+  graph.getEdge(e)->setClockGateControlClocks(mask);
+  graph.createClock("b", nullptr, b);
+  EXPECT_EQ(2u, graph.getEdge(e)->getClockGateControlClocks().size());
+  EXPECT_TRUE(graph.getEdge(e)->getClockGateControlClocks().test(c));
+  graph.removeEdge(e);
+  EXPECT_EQ(e, graph.createEdge(a, b, nullptr));
+  EXPECT_EQ(TEdge::Kind::Combinational, graph.getEdge(e)->getKind());
+  EXPECT_EQ(2u, graph.getEdge(e)->getClockGateControlClocks().size());
+  EXPECT_TRUE(graph.getEdge(e)->getClockGateControlClocks().none());
 }

@@ -4,6 +4,9 @@
 
 #include "gtest/gtest.h"
 
+#include <stdexcept>
+#include <vector>
+
 #include "NLDB.h"
 #include "NLDB0.h"
 #include "NLException.h"
@@ -81,6 +84,46 @@ class TSNLGraphConstructorTests: public ::testing::Test {
       Model::addInputsToClockArcs({data}, clock);
       Model::addClockToOutputsArcs(clock, {output});
       return model;
+    }
+    struct GateParts {
+      SNLInstance* latch;
+      SNLInstance* inverter;
+      SNLInstance* conjunction;
+      SNLScalarTerm* clockPort;
+      SNLScalarTerm* enablePort;
+      SNLScalarTerm* outputPort;
+      SNLInstTerm* clock;
+      SNLInstTerm* heldInput;
+      SNLInstTerm* output;
+      SNLInstTerm* latchGate;
+      SNLInstTerm* data;
+      SNLInstTerm* held;
+      SNLInstTerm* invInput;
+      SNLInstTerm* invOutput;
+    };
+    GateParts decomposedGate(SNLDesign* design, bool swapInputs = false) {
+      auto* latch = SNLInstance::create(design, NLDB0::getDLatch(), NLName("state"));
+      auto* invModel = NLDB0::getOrCreateNOutputGate(NLDB0::GateType::Not, 1);
+      auto* inverter = SNLInstance::create(design, invModel, NLName("inverse"));
+      auto* andModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::And, 2);
+      auto* conjunction = SNLInstance::create(design, andModel, NLName("conjunction"));
+      auto* root = port(design, "root", SNLTerm::Direction::Input);
+      auto* enable = port(design, "control", SNLTerm::Direction::Input);
+      auto* output = port(design, "result", SNLTerm::Direction::Output);
+      auto* c = conjunction->getInstTerm(NLDB0::getGateNTerms(andModel)->getBit(swapInputs ? 1 : 0));
+      auto* h = conjunction->getInstTerm(NLDB0::getGateNTerms(andModel)->getBit(swapInputs ? 0 : 1));
+      auto* g = conjunction->getInstTerm(NLDB0::getGateSingleTerm(andModel));
+      auto* latchGate = latch->getInstTerm(NLDB0::getDLatchEnable());
+      auto* data = latch->getInstTerm(NLDB0::getDLatchData());
+      auto* held = latch->getInstTerm(NLDB0::getDLatchOutput());
+      auto* invInput = inverter->getInstTerm(NLDB0::getGateSingleTerm(invModel));
+      auto* invOutput = inverter->getInstTerm(NLDB0::getGateNTerms(invModel)->getBit(0));
+      connect(design, {root, c, invInput});
+      connect(design, {invOutput, latchGate});
+      connect(design, {enable, data});
+      connect(design, {held, h});
+      connect(design, {g, output});
+      return {latch, inverter, conjunction, root, enable, output, c, h, g, latchGate, data, held, invInput, invOutput};
     }
     NLLibrary* library_ {nullptr};
     SNLDesign* top_ {nullptr};
@@ -399,4 +442,338 @@ TEST_F(TSNLGraphConstructorTests, recursiveHierarchyBelowTopIsRejected) {
   SNLInstance::create(descendant, child, NLName("recursive"));
   TSNLGraphConstructor constructor(top_);
   expectFailure(constructor, "recursive hierarchy");
+}
+
+TEST_F(TSNLGraphConstructorTests, clockControlFeedbackSharesStructureWithDataFanout) {
+  auto* root = port(top_, "root", SNLTerm::Direction::Input);
+  auto* input = port(top_, "input", SNLTerm::Direction::Input);
+  auto* output = port(top_, "output", SNLTerm::Direction::Output);
+  auto* state = SNLInstance::create(top_, NLDB0::getDFF(), NLName("state"));
+  auto* sink = SNLInstance::create(top_, NLDB0::getDFF(), NLName("sink"));
+  auto* shared = SNLInstance::create(top_, NLDB0::getAssign(), NLName("shared"));
+  auto* primitives = NLLibrary::create(library_->getDB(), NLLibrary::Type::Primitives);
+  auto* model = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("and"));
+  auto* source = port(model, "source", SNLTerm::Direction::Input);
+  auto* control = port(model, "control", SNLTerm::Direction::Input);
+  auto* result = port(model, "result", SNLTerm::Direction::Output);
+  SNLDesignModeling::setTruthTable(model, SNLTruthTable(2, 8, SNLTruthTable::fullDependencies(2)));
+  SNLDesignModeling::addCombinatorialArcs({source, control}, {result});
+  auto* gate = SNLInstance::create(top_, model, NLName("gate"));
+  auto* sharedIn = shared->getInstTerm(NLDB0::getAssignInput());
+  auto* sharedOut = shared->getInstTerm(NLDB0::getAssignOutput());
+  connect(top_, {root, term(gate, "source")});
+  connect(top_, {term(gate, "result"), term(state, "C"), term(sink, "C")});
+  connect(top_, {input, term(state, "D")});
+  connect(top_, {term(state, "Q"), sharedIn});
+  connect(top_, {sharedOut, term(gate, "control"), term(sink, "D"), output});
+
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* component) { return constructor.getNode(SNLOccurrence(component)); };
+  //One node per terminal, even though the shared output is used for both
+  //clock control and ordinary data. This is a topology test, not an ICG model.
+  EXPECT_EQ(14u, graph.getNodesCount());
+  EXPECT_EQ(13u, graph.getEdgesCount());
+  EXPECT_EQ(2u, graph.getCaptureEdgesCount());
+  EXPECT_EQ(3u, graph.getNode(id(sharedOut))->getOutDegree());
+  for (auto* reader : {term(gate, "control"), term(sink, "D")}) {
+    EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(sharedOut), id(reader)));
+  }
+  EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(sharedOut), id(output)));
+
+  const std::vector<SNLNetComponent*> cycle = {
+    term(gate, "control"), term(gate, "result"), term(state, "C"),
+    term(state, "Q"), sharedIn, sharedOut};
+  const std::vector<TSNLEdgeProxy::Kind> kinds = {
+    TSNLEdgeProxy::Kind::Combinational, TSNLEdgeProxy::Kind::Connectivity,
+    TSNLEdgeProxy::Kind::ClockToOutput, TSNLEdgeProxy::Kind::Connectivity,
+    TSNLEdgeProxy::Kind::Combinational, TSNLEdgeProxy::Kind::Connectivity};
+  for (size_t i = 0; i < cycle.size(); ++i) {
+    auto eid = edge(graph, id(cycle[i]), id(cycle[(i + 1) % cycle.size()]));
+    ASSERT_NE(TGraph::kInvalidEdge, eid);
+    auto* proxy = dynamic_cast<const TSNLEdgeProxy*>(graph.getEdge(eid)->getProxy());
+    ASSERT_NE(nullptr, proxy);
+    EXPECT_EQ(kinds[i], proxy->getKind());
+  }
+
+  //The ordinary graph has a cycle; the connectivity/combinational view does
+  //not. Filtering traversal keeps every physical edge and its identity intact.
+  auto processed = [&](bool includeClockToOutput) {
+    std::vector<size_t> indegree(graph.getNodesStorage().size(), 0);
+    auto follows = [&](const TEdge& candidate) {
+      const auto* proxy = static_cast<const TSNLEdgeProxy*>(candidate.getProxy());
+      return includeClockToOutput || proxy->getKind() != TSNLEdgeProxy::Kind::ClockToOutput;
+    };
+    for (const auto& candidate : graph.getEdgesStorage()) {
+      if (follows(candidate)) ++indegree[candidate.getTarget()];
+    }
+    std::vector<TGraph::NodeId> ready;
+    for (const auto& node : graph.getNodesStorage()) {
+      if (indegree[node.getIndex()] == 0) ready.push_back(node.getIndex());
+    }
+    for (size_t i = 0; i < ready.size(); ++i) {
+      for (auto eid : graph.getNode(ready[i])->getOutEdges()) {
+        const auto& candidate = *graph.getEdge(eid);
+        if (follows(candidate) && --indegree[candidate.getTarget()] == 0) {
+          ready.push_back(candidate.getTarget());
+        }
+      }
+    }
+    return ready.size();
+  };
+  EXPECT_LT(processed(true), graph.getNodesCount());
+  EXPECT_EQ(graph.getNodesCount(), processed(false));
+  for (const auto& candidate : graph.getEdgesStorage()) EXPECT_FALSE(candidate.isDisabled());
+  EXPECT_EQ(14u, graph.getNodesCount());
+  EXPECT_EQ(13u, graph.getEdgesCount());
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGatePreservesPhysicalStructure) {
+  for (bool swapped : {false, true}) {
+    auto* child = SNLDesign::create(library_);
+    auto parts = decomposedGate(child, swapped);
+    auto* wrapper = SNLInstance::create(top_, child);
+    TSNLGraphConstructor constructor(top_);
+    EXPECT_THROW(constructor.getClockGates(), NLException);
+    constructor.construct();
+    auto& graph = constructor.getGraph();
+    auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(SNLPath(wrapper), pin)); };
+    ASSERT_EQ(1u, constructor.getClockGates().size());
+    const auto& gate = constructor.getClockGates().front();
+    EXPECT_EQ(id(parts.clock), gate.clock);
+    EXPECT_EQ(id(parts.data), gate.enable);
+    EXPECT_EQ(id(parts.held), gate.heldEnable);
+    EXPECT_EQ(id(parts.latchGate), gate.latchGate);
+    EXPECT_EQ(id(parts.output), gate.output);
+    EXPECT_EQ(11u, graph.getNodesCount());
+    EXPECT_EQ(10u, graph.getEdgesCount());
+    EXPECT_EQ(1u, graph.getCaptureEdgesCount());
+    EXPECT_TRUE(graph.getNode(gate.heldEnable)->isLatchDataOutput());
+    EXPECT_TRUE(graph.getNode(gate.enable)->isLatchDataInput());
+    auto* proxy = dynamic_cast<const TSNLEdgeProxy*>(graph.getEdge(gate.clockPassEdge)->getProxy());
+    ASSERT_NE(nullptr, proxy);
+    EXPECT_EQ(TSNLEdgeProxy::Kind::ClockPass, proxy->getKind());
+    EXPECT_EQ(gate.clock, graph.getEdge(gate.clockPassEdge)->getSource());
+    EXPECT_EQ(gate.output, graph.getEdge(gate.clockPassEdge)->getTarget());
+    auto heldArc = edge(graph, id(parts.heldInput), id(parts.output));
+    ASSERT_NE(TGraph::kInvalidEdge, heldArc);
+    EXPECT_EQ(TSNLEdgeProxy::Kind::Combinational,
+      static_cast<const TSNLEdgeProxy*>(graph.getEdge(heldArc)->getProxy())->getKind());
+    EXPECT_NE(TGraph::kInvalidEdge, edge(graph, gate.latchGate, gate.heldEnable));
+    EXPECT_EQ(TGraph::kInvalidEdge, edge(graph, gate.enable, gate.heldEnable));
+    const auto* capture = graph.getCaptureEdge(0);
+    EXPECT_EQ(TCaptureEdge::Kind::ClockGateControl, capture->getKind());
+    EXPECT_EQ(gate.clock, capture->getSource());
+    EXPECT_EQ(gate.enable, capture->getTarget());
+    auto a = graph.createClock("a", nullptr, id(parts.clockPort));
+    auto result = TClockPropagator::run(graph);
+    EXPECT_TRUE(result.clockOrigins[gate.output].test(a));
+    EXPECT_TRUE(result.clockOrigins[gate.heldEnable].none());
+    EXPECT_TRUE(graph.getEdge(heldArc)->hasFromClock(a));
+    for (const auto& candidate : graph.getEdgesStorage()) EXPECT_FALSE(candidate.isDisabled());
+    EXPECT_EQ(3u, child->getInstances().size());
+    wrapper->destroy();
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateKeepsSharedDataFanout) {
+  auto parts = decomposedGate(top_);
+  auto* receiver = SNLInstance::create(top_, NLDB0::getDFF(), NLName("receiver"));
+  auto* heldOutput = port(top_, "held", SNLTerm::Direction::Output);
+  heldOutput->setNet(parts.held->getNet());
+  term(receiver, "C")->setNet(parts.clockPort->getNet());
+  term(receiver, "D")->setNet(parts.output->getNet());
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  ASSERT_EQ(1u, constructor.getClockGates().size());
+  auto gate = constructor.getClockGates().front();
+  EXPECT_EQ(15u, graph.getNodesCount());
+  EXPECT_EQ(14u, graph.getEdgesCount());
+  EXPECT_EQ(2u, graph.getCaptureEdgesCount());
+  EXPECT_EQ(2u, graph.getNode(gate.heldEnable)->getOutDegree());
+  EXPECT_EQ(2u, graph.getNode(gate.output)->getOutDegree());
+  EXPECT_NE(TGraph::kInvalidEdge, edge(graph, gate.heldEnable, constructor.getNode(SNLOccurrence(heldOutput))));
+  EXPECT_NE(TGraph::kInvalidEdge, edge(graph, gate.output, constructor.getNode(SNLOccurrence(term(receiver, "D")))));
+  EXPECT_EQ(4u, top_->getInstances().size());
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateAcrossSharedHierarchyAndBuffers) {
+  auto* child = SNLDesign::create(library_, NLName("child"));
+  auto parts = decomposedGate(child);
+  auto* shared = SNLInstance::create(child, NLDB0::getAssign(), NLName("buffer"));
+  auto* bufferIn = shared->getInstTerm(NLDB0::getAssignInput());
+  auto* bufferOut = shared->getInstTerm(NLDB0::getAssignOutput());
+  bufferIn->setNet(parts.held->getNet());
+  connect(child, {bufferOut, parts.heldInput});
+  auto* left = SNLInstance::create(top_, child, NLName("left"));
+  auto* right = SNLInstance::create(top_, child, NLName("right"));
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  ASSERT_EQ(2u, constructor.getClockGates().size());
+  EXPECT_EQ(26u, constructor.getGraph().getNodesCount());
+  EXPECT_NE(constructor.getClockGates()[0].heldEnable, constructor.getClockGates()[1].heldEnable);
+  for (auto* wrapper : {left, right}) {
+    EXPECT_EQ(constructor.getNode(SNLOccurrence(wrapper->getInstTerm(parts.clockPort))),
+      constructor.getNode(SNLOccurrence(SNLPath(wrapper), parts.clockPort)));
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsWrongPhaseOrSource) {
+  for (size_t variant = 0; variant < 5; ++variant) {
+    SCOPED_TRACE(variant);
+    auto* child = SNLDesign::create(library_);
+    auto parts = decomposedGate(child);
+    auto* wrapper = SNLInstance::create(top_, child);
+    if (variant == 0) parts.latchGate->setNet(parts.clockPort->getNet()); //Transparent high.
+    if (variant == 1) parts.invInput->setNet(parts.enablePort->getNet()); //Different source.
+    if (variant == 2) parts.heldInput->setNet(parts.enablePort->getNet()); //No held state.
+    if (variant == 3) parts.invInput->setNet(parts.invOutput->getNet()); //Inverter cycle.
+    if (variant == 4) {
+      auto* invModel = parts.inverter->getModel();
+      auto* second = SNLInstance::create(child, invModel);
+      auto* input = second->getInstTerm(NLDB0::getGateSingleTerm(invModel));
+      auto* output = second->getInstTerm(NLDB0::getGateNTerms(invModel)->getBit(0));
+      input->setNet(parts.held->getNet());
+      connect(child, {output, parts.heldInput}); //Inverted held state.
+    }
+    TSNLGraphConstructor constructor(top_);
+    expectFailure(constructor, "latch analysis is unsupported");
+    wrapper->destroy();
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateFailurePreservesPreviousResult) {
+  auto parts = decomposedGate(top_);
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto* previous = &constructor.getGraph();
+  auto gate = constructor.getClockGates().front();
+  parts.invInput->setNet(parts.enablePort->getNet());
+  EXPECT_THROW(constructor.construct(), NLException);
+  EXPECT_EQ(previous, &constructor.getGraph());
+  ASSERT_EQ(1u, constructor.getClockGates().size());
+  EXPECT_EQ(gate.clock, constructor.getClockGates().front().clock);
+  EXPECT_EQ(gate.enable, constructor.getClockGates().front().enable);
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateTracingIsIterative) {
+  auto parts = decomposedGate(top_);
+  auto* previous = parts.invOutput;
+  constexpr size_t depth = 6000;
+  for (size_t i = 0; i < depth; ++i) {
+    auto* buffer = SNLInstance::create(top_, NLDB0::getAssign());
+    auto* input = buffer->getInstTerm(NLDB0::getAssignInput());
+    auto* output = buffer->getInstTerm(NLDB0::getAssignOutput());
+    input->setNet(previous->getNet());
+    connect(top_, {output});
+    previous = output;
+  }
+  parts.latchGate->setNet(previous->getNet());
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  ASSERT_EQ(1u, constructor.getClockGates().size());
+  EXPECT_EQ(11u + 2 * depth, constructor.getGraph().getNodesCount());
+  EXPECT_EQ(10u + 2 * depth, constructor.getGraph().getEdgesCount());
+  auto& graph = constructor.getGraph();
+  auto c = graph.createClock("root", parts.clockPort, constructor.getNode(SNLOccurrence(parts.clockPort)));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.clockOrigins[constructor.getClockGates().front().output].test(c));
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsOtherLatchModels) {
+  auto* custom = modeledFlop();
+  auto model = SNLDesignModeling::getSequentialModel(custom);
+  model.kind = SNLDesignModeling::SequentialModel::Kind::Latch;
+  SNLDesignModeling::setSequentialModel(custom, model);
+  auto* instance = SNLInstance::create(top_, custom);
+  TSNLGraphConstructor constructor(top_);
+  expectFailure(constructor, "latch analysis is unsupported");
+  instance->destroy();
+  instance = SNLInstance::create(top_, NLDB0::getOrCreateDLatch(2));
+  expectFailure(constructor, "latch analysis is unsupported");
+  instance->destroy();
+  //Do not trust the canonical name alone if the live model was modified.
+  auto* canonical = NLDB0::getDLatch();
+  model = SNLDesignModeling::getSequentialModel(canonical);
+  model.clockedOn.root = model.clockedOn.addOperation(
+    SNLDesignModeling::BooleanExpression::Operator::Not, {model.clockedOn.root});
+  SNLDesignModeling::setSequentialModel(canonical, model);
+  SNLInstance::create(top_, canonical);
+  expectFailure(constructor, "latch analysis is unsupported");
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsAmbiguousHeldInputs) {
+  auto parts = decomposedGate(top_);
+  auto* second = SNLInstance::create(top_, NLDB0::getDLatch());
+  auto* inverse = SNLInstance::create(top_, parts.inverter->getModel());
+  auto* invInput = inverse->getInstTerm(NLDB0::getGateSingleTerm(inverse->getModel()));
+  auto* invOutput = inverse->getInstTerm(NLDB0::getGateNTerms(inverse->getModel())->getBit(0));
+  invInput->setNet(parts.held->getNet());
+  second->getInstTerm(NLDB0::getDLatchData())->setNet(parts.enablePort->getNet());
+  connect(top_, {invOutput, second->getInstTerm(NLDB0::getDLatchEnable())});
+  connect(top_, {second->getInstTerm(NLDB0::getDLatchOutput()), parts.clock, parts.invInput});
+  TSNLGraphConstructor constructor(top_);
+  expectFailure(constructor, "ambiguous clock-gate composition");
+}
+
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateSeparatesControlAndDataPropagation) {
+  auto parts = decomposedGate(top_);
+  auto* otherClock = port(top_, "other", SNLTerm::Direction::Input);
+  auto* enableSource = SNLInstance::create(top_, NLDB0::getDFF(), NLName("source"));
+  auto* receiver = SNLInstance::create(top_, NLDB0::getDFF(), NLName("receiver"));
+  auto* dataReceiver = SNLInstance::create(top_, NLDB0::getDFF(), NLName("data_receiver"));
+  auto* orModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::Or, 2);
+  auto* merge = SNLInstance::create(top_, orModel, NLName("merge"));
+  auto* left = merge->getInstTerm(NLDB0::getGateNTerms(orModel)->getBit(0));
+  auto* right = merge->getInstTerm(NLDB0::getGateNTerms(orModel)->getBit(1));
+  auto* merged = merge->getInstTerm(NLDB0::getGateSingleTerm(orModel));
+  connect(top_, {otherClock, term(enableSource, "C"), term(dataReceiver, "C")});
+  term(enableSource, "D")->setNet(parts.enablePort->getNet());
+  term(receiver, "D")->setNet(parts.enablePort->getNet());
+  term(receiver, "C")->setNet(parts.output->getNet());
+  term(dataReceiver, "D")->setNet(parts.output->getNet());
+  connect(top_, {term(enableSource, "Q"), left});
+  connect(top_, {term(receiver, "Q"), right});
+  connect(top_, {merged, parts.data});
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+  auto a = graph.createClock("a", parts.clockPort, id(parts.clockPort));
+  auto b = graph.createClock("b", otherClock, id(otherClock));
+  auto result = TClockPropagator::run(graph);
+  const auto& gate = constructor.getClockGates().front();
+  for (auto n : {gate.output, id(term(receiver, "C"))}) {
+    EXPECT_EQ(1u, result.clockOrigins[n].count());
+    EXPECT_TRUE(result.clockOrigins[n].test(a));
+    EXPECT_FALSE(result.clockOrigins[n].test(b));
+  }
+  for (auto n : {gate.heldEnable, id(term(receiver, "Q")), id(term(enableSource, "Q"))}) {
+    EXPECT_TRUE(result.clockOrigins[n].none());
+  }
+  auto sourceData = edge(graph, id(term(enableSource, "Q")), id(left));
+  auto feedbackData = edge(graph, id(term(receiver, "Q")), id(right));
+  auto outputAsData = edge(graph, gate.output, id(term(dataReceiver, "D")));
+  ASSERT_NE(TGraph::kInvalidEdge, sourceData);
+  ASSERT_NE(TGraph::kInvalidEdge, feedbackData);
+  ASSERT_NE(TGraph::kInvalidEdge, outputAsData);
+  EXPECT_TRUE(graph.getEdge(sourceData)->hasFromClock(b));
+  EXPECT_TRUE(graph.getEdge(sourceData)->getToClocks().none());
+  EXPECT_TRUE(graph.getEdge(sourceData)->getClockGateControlClocks().test(a));
+  EXPECT_TRUE(graph.getEdge(sourceData)->hasClockGateControlCrossing());
+  EXPECT_TRUE(graph.getEdge(feedbackData)->hasFromClock(a));
+  EXPECT_FALSE(graph.getEdge(feedbackData)->hasClockGateControlCrossing());
+  EXPECT_TRUE(graph.getEdge(outputAsData)->hasFromClock(a));
+  EXPECT_TRUE(graph.getEdge(outputAsData)->hasToClock(b));
+  EXPECT_TRUE(graph.getEdge(outputAsData)->getClockGateControlClocks().none());
+  EXPECT_TRUE(graph.getEdge(outputAsData)->hasClockCrossing());
+  // The held-enable data arc remains a data dependency when G is used as data.
+  auto heldArc = edge(graph, id(parts.heldInput), gate.output);
+  EXPECT_TRUE(graph.getEdge(heldArc)->hasFromClock(a));
+  EXPECT_TRUE(graph.getEdge(heldArc)->hasToClock(b));
+  for (const auto& e : graph.getEdgesStorage()) EXPECT_FALSE(e.isDisabled());
+  auto again = TClockPropagator::run(graph);
+  EXPECT_EQ(result.clockOrigins, again.clockOrigins);
 }

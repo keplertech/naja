@@ -8,26 +8,32 @@
 #include <cstddef>
 #include <vector>
 
+#include "TEdge.h"
+
 namespace naja::TG {
 
 class TGraph;
 
-/// Computes launch (FromClocks) and capture (ToClocks) masks on ordinary edges.
-/// run() breaks loops, propagates clock seeds forward, then seeds capture
-/// endpoints from capture-edge sources and propagates backward, stopping at
-/// flop data outputs. Capture edges never participate in ordinary traversal.
-/// Masks are recomputed on every run; disabled edges have empty masks.
-/// An empty ToClocks means no capture endpoint was reached.
-/// Latch analysis is unsupported and rejected explicitly.
+/// Separate waveform, launch, data-capture and gate-control views of one graph.
+/// State arcs seed Q launch masks from their clock/gate's waveform origins;
+/// waveform propagation never crosses state arcs or DataOnly gate inputs.
+/// Data and control captures stop at state outputs and remain independent.
+/// Enabled combinational cycles are rejected without changing edge enablement.
+/// TLoopBreaker remains an explicit, lossy caller policy, never invoked here.
+/// Masks are recomputed on every run; caller-disabled edges have empty masks.
+/// Only latches classified as recognized clock-gate state are supported.
 class TClockPropagator {
   public:
     TClockPropagator() = delete;
 
-    static void run(TGraph& graph);
+    struct Result {
+      /// Waveform origins indexed by NodeId, including clock pins with no
+      /// outgoing edges. Snapshot of this run; invalidated logically by graph
+      /// mutation or clock registration. Removed slots have empty masks.
+      std::vector<TEdge::ClockMask> clockOrigins;
+    };
 
-  private:
-    static std::vector<std::size_t> propagateForward(TGraph& graph);
-    static void propagateBackward(TGraph& graph, const std::vector<std::size_t>& order);
+    static Result run(TGraph& graph);
 };
 
 }  // namespace naja::TG

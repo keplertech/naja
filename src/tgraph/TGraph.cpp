@@ -50,7 +50,7 @@ TGraph::EdgeId TGraph::createEdge(NodeId source, NodeId target, TEdgeProxy* prox
   return id;
 }
 
-TGraph::CaptureEdgeId TGraph::createCaptureEdge(NodeId source, NodeId target) {
+TGraph::CaptureEdgeId TGraph::createCaptureEdge(NodeId source, NodeId target, TCaptureEdge::Kind kind) {
   if (!isNodeValid(source) || !isNodeValid(target)) {
     return kInvalidCaptureEdge;
   }
@@ -58,10 +58,10 @@ TGraph::CaptureEdgeId TGraph::createCaptureEdge(NodeId source, NodeId target) {
   if (!freeCaptureEdges_.empty()) {
     id = freeCaptureEdges_.back();
     freeCaptureEdges_.pop_back();
-    captureEdges_[id].reset(id, source, target);
+    captureEdges_[id].reset(id, source, target, kind);
   } else {
     id = captureEdges_.size();
-    captureEdges_.push_back(TCaptureEdge(id, source, target));
+    captureEdges_.push_back(TCaptureEdge(id, source, target, kind));
   }
   nodes_[source].addCaptureOutEdge(id);
   nodes_[target].addCaptureInEdge(id);
