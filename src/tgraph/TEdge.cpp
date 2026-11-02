@@ -34,6 +34,8 @@ void TEdge::reset(EdgeId index, NodeId source, NodeId target, TEdgeProxy* proxy)
   proxy_.reset(proxy);
   fromClocks_.clear();
   toClocks_.clear();
+  controlClocks_.clear();
+  kind_ = Kind::Combinational;
   disabled_ = false;
 }
 
@@ -42,6 +44,8 @@ void TEdge::deactivate() {
   proxy_.reset();
   fromClocks_.clear();
   toClocks_.clear();
+  controlClocks_.clear();
+  kind_ = Kind::Combinational;
   disabled_ = false;
 }
 
