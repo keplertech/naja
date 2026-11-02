@@ -5,6 +5,8 @@
 
 #include "TClockPropagator.h"
 
+#include <deque>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -61,6 +63,95 @@ void forward(const TGraph& graph, const std::vector<TGraph::NodeId>& order,
   }
 }
 
+// Summarize the nearest waveform sources without a set per node. Explicit
+// clock seeds take precedence over flop Qs at a merge; otherwise only a sole
+// Q source is classifiable. Distinct Qs meeting without a seed are ambiguous.
+// This join is associative, so neither node nor edge creation order matters.
+void generatedWaveforms(const TGraph& graph,
+    const std::vector<TGraph::NodeId>& order, Masks& origins,
+    std::vector<TEdge::EdgeId>& generated) {
+  using NodeId = TGraph::NodeId;
+  constexpr auto none = std::numeric_limits<NodeId>::max();
+  constexpr auto primary = none - 1;
+  constexpr auto ambiguous = none - 2;
+  std::vector<NodeId> source(origins.size(), none);
+  std::vector<bool> needed(origins.size(), false);
+  for (const auto& node : graph.getNodesStorage()) {
+    if (!node.isAlive()) continue;
+    auto n = node.getIndex();
+    if (node.isFlopDataOutput()) source[n] = n;
+    if (origins[n].any()) source[n] = primary;
+    needed[n] = node.isFlopClock();
+  }
+  for (const auto& capture : graph.getCaptureEdgesStorage()) {
+    if (capture.isAlive()) needed[capture.getSource()] = true;
+  }
+  for (const auto& edge : graph.getEdgesStorage()) {
+    if (edge.isAlive() && !edge.isDisabled() && isState(graph, edge)) {
+      needed[edge.getSource()] = true;
+    }
+  }
+  for (auto n : order) {
+    for (auto id : graph.getNode(n)->getOutEdges()) {
+      const auto& edge = *graph.getEdge(id);
+      if (!traversable(graph, edge, true)) continue;
+      auto& target = source[edge.getTarget()];
+      const auto incoming = source[n];
+      if (target == primary || incoming == none) continue;
+      if (incoming == primary || target == none) target = incoming;
+      else if (target != incoming) target = ambiguous;
+    }
+  }
+  // Restrict inferred Q waveforms to paths actually used as clocks. Data-only
+  // fanout of the same physical Q retains its independent launch semantics.
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    auto n = *it;
+    if (!needed[n] || source[n] == none || source[n] == ambiguous) continue;
+    for (auto id : graph.getNode(n)->getInEdges()) {
+      const auto& edge = *graph.getEdge(id);
+      if (traversable(graph, edge, true) && source[edge.getSource()] == source[n]) {
+        needed[edge.getSource()] = true;
+      }
+    }
+  }
+  std::vector<bool> admitted(graph.getEdgesStorage().size(), false);
+  for (const auto& edge : graph.getEdgesStorage()) {
+    if (!edge.isAlive() || edge.isDisabled()) continue;
+    const auto from = edge.getSource();
+    const auto to = edge.getTarget();
+    if (isState(graph, edge)) {
+      if (needed[to] && graph.getNode(to)->isFlopDataOutput() && source[to] == to) {
+        admitted[edge.getIndex()] = true;
+        generated.push_back(edge.getIndex());
+      }
+    } else if (traversable(graph, edge, true) && source[from] == source[to] &&
+        (source[to] == primary || (needed[to] && source[to] < ambiguous))) {
+      admitted[edge.getIndex()] = true;
+    }
+  }
+  // State feedback may form waveform cycles. A monotone worklist computes the
+  // least union fixed point; each clock bit can enter each node only once.
+  // No recursion, graph mutation, or repeated whole-graph scans are needed.
+  std::deque<NodeId> pending;
+  std::vector<bool> queued(origins.size(), false);
+  for (const auto& clock : graph.getClocksStorage()) {
+    auto n = clock.getNode();
+    if (!queued[n]) { pending.push_back(n); queued[n] = true; }
+  }
+  while (!pending.empty()) {
+    auto n = pending.front();
+    pending.pop_front();
+    queued[n] = false;
+    for (auto id : graph.getNode(n)->getOutEdges()) {
+      if (!admitted[id]) continue;
+      auto to = graph.getEdge(id)->getTarget();
+      if (origins[n].is_subset_of(origins[to])) continue;
+      origins[to] |= origins[n];
+      if (!queued[to]) { pending.push_back(to); queued[to] = true; }
+    }
+  }
+}
+
 }  // namespace
 
 TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
@@ -97,10 +188,17 @@ TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
     origins[clock.getNode()].set(clock.getIndex());
   }
 
-  // Both views must be acyclic before publishing any propagated edge masks.
+  // Reject combinational cycles before publishing propagated edge masks.
+  // Admitted State feedback is handled separately by the waveform worklist.
   const auto clockOrder = topologicalOrder(graph, true);
   const auto dataOrder = topologicalOrder(graph, false);
-  forward(graph, clockOrder, origins, true);
+  Result result;
+  generatedWaveforms(graph, clockOrder, origins, result.generatedClockStateArcs);
+  for (const auto& node : graph.getNodesStorage()) {
+    if (node.isAlive() && node.isFlopClock() && origins[node.getIndex()].none()) {
+      result.unclockedFlopClockPins.push_back(node.getIndex());
+    }
+  }
   Masks launch(size, empty);
   for (const auto& clock : graph.getClocksStorage()) launch[clock.getNode()].set(clock.getIndex());
   for (const auto& edge : graph.getEdgesStorage()) {
@@ -134,7 +232,8 @@ TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
       graph.getEdge(edge.getIndex())->setFromClocks(launch[edge.getSource()]);
     }
   }
-  return {std::move(origins)};
+  result.clockOrigins = std::move(origins);
+  return result;
 }
 
 }  // namespace naja::TG
