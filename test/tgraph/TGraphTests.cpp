@@ -21,6 +21,7 @@
 #include "SNLScalarTerm.h"
 
 #include "TClock.h"
+#include "NLClock.h"
 #include "TClockPropagator.h"
 #include "TEdge.h"
 #include "TEdgeProxy.h"
@@ -406,6 +407,72 @@ TEST_F(TGraphTests, testCreateClockRejectsInvalidNode) {
   EXPECT_THROW(graph.createClock("clk", nullptr, 0), std::invalid_argument);
 }
 
+TEST_F(TGraphTests, testDeclaredClockSeedsShareIdentityAndKeepOneWayAssociation) {
+  auto* other = SNLScalarTerm::create(top_, SNLTerm::Direction::Input, NLName("other"));
+  const auto* declaration = NLClock::createPrimary(top_, NLName("declared"), 12.0, "ns", {topClockTerm_, other});
+  TGraph graph;
+  auto a = graph.createNode(nullptr);
+  auto b = graph.createNode(nullptr);
+  auto qa = graph.createNode(nullptr);
+  auto qb = graph.createNode(nullptr);
+  auto sink = graph.createNode(nullptr);
+  for (auto node : {qa, qb}) {
+    graph.getNode(node)->setCellKind(TNode::CellKind::FlipFlop);
+    graph.getNode(node)->setPinRole(TNode::PinRole::DataOutput);
+  }
+  for (auto pair : {std::make_pair(a, qa), std::make_pair(b, qb)}) {
+    auto edge = graph.createEdge(pair.first, pair.second, nullptr);
+    graph.getEdge(edge)->setKind(TEdge::Kind::State);
+  }
+  auto data = graph.createEdge(qa, sink, nullptr);
+  graph.createCaptureEdge(b, sink);
+  auto receiverClock = graph.createNode(nullptr);
+  graph.getNode(receiverClock)->setCellKind(TNode::CellKind::FlipFlop);
+  graph.getNode(receiverClock)->setPinRole(TNode::PinRole::Clock);
+  graph.createEdge(qb, receiverClock, nullptr);
+  auto id = graph.createClock(*declaration, {a, b});
+  ASSERT_EQ(1u, graph.getClocksCount());
+  auto* clock = graph.getClock(id);
+  EXPECT_EQ(declaration, clock->getNLClock());
+  EXPECT_EQ("declared", clock->getName());
+  ASSERT_EQ(2u, clock->getSeeds().size());
+  EXPECT_EQ(topClockTerm_, clock->getTarget());
+  EXPECT_EQ(a, clock->getNode());
+  EXPECT_EQ(other, clock->getSeeds()[1].target);
+  EXPECT_EQ(b, clock->getSeeds()[1].node);
+  auto result = TClockPropagator::run(graph);
+  for (auto node : {a, b}) {
+    EXPECT_EQ(1u, result.clockOrigins[node].count());
+    EXPECT_TRUE(result.clockOrigins[node].test(id));
+  }
+  EXPECT_TRUE(graph.getEdge(data)->hasFromClock(id));
+  EXPECT_TRUE(graph.getEdge(data)->hasToClock(id));
+  EXPECT_FALSE(graph.getEdge(data)->hasClockCrossing());
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_TRUE(result.clockOrigins[receiverClock].test(id));
+  graph.createClock("internal", nullptr, qb);
+  EXPECT_EQ(nullptr, graph.getClock(1)->getNLClock());
+  EXPECT_EQ(1u, top_->getClocks().size());
+  // Every seed is required, including non-first sources, on repeated runs.
+  ASSERT_TRUE(graph.removeNode(b));
+  EXPECT_THROW(TClockPropagator::run(graph), std::logic_error);
+}
+
+TEST_F(TGraphTests, testDeclaredClockRejectsInvalidBindingsWithoutChangingGraph) {
+  const auto* declaration = NLClock::createPrimary(top_, NLName("declared"), 8.0, "ns", {topClockTerm_});
+  TGraph graph;
+  auto node = graph.createNode(nullptr);
+  auto edge = graph.createEdge(node, node, nullptr);
+  EXPECT_THROW(graph.createClock(*declaration, {}), std::invalid_argument);
+  EXPECT_THROW(graph.createClock(*declaration, {node, node}), std::invalid_argument);
+  EXPECT_THROW(graph.createClock(*declaration, {TGraph::kInvalidNode}), std::invalid_argument);
+  EXPECT_EQ(0u, graph.getClocksCount());
+  EXPECT_EQ(0u, graph.getEdge(edge)->getFromClocks().size());
+  EXPECT_EQ(0u, graph.createClock(*declaration, {node}));
+  EXPECT_EQ(1u, graph.getEdge(edge)->getFromClocks().size());
+  EXPECT_EQ(declaration, graph.getClock(0)->getNLClock());
+}
+
 TEST_F(TGraphTests, testEdgeClockMasksDetectCrossing) {
   TGraph graph;
   auto n0 = graph.createNode(nullptr);
@@ -735,11 +802,11 @@ TEST_F(TGraphTests, testCaptureFanoutAndRecomputation) {
   EXPECT_TRUE(graph.getEdge(shared)->hasToClock(c));
 }
 
-TEST_F(TGraphTests, testClockPropagatorRejectsUnsupportedLatchAndRemovedSeed) {
+TEST_F(TGraphTests, testClockPropagatorAcceptsPlainLatchAndRejectsRemovedSeed) {
   TGraph graph;
   auto node = graph.createNode(nullptr);
   graph.getNode(node)->setCellKind(TNode::CellKind::Latch);
-  EXPECT_THROW(TClockPropagator::run(graph), std::logic_error);
+  EXPECT_NO_THROW(TClockPropagator::run(graph));
   graph.getNode(node)->setCellKind(TNode::CellKind::Unknown);
   graph.createClock("clk", nullptr, node);
   graph.removeNode(node);
@@ -1267,4 +1334,40 @@ TEST_F(TGraphTests, testMuxAdmitsTwoDividersAndReportsSharedControlUse) {
   EXPECT_TRUE(result.clockOrigins[c].test(cb));
   EXPECT_EQ(1u, result.clockOrigins[gate].count());
   EXPECT_TRUE(result.clockOrigins[gate].test(ca));
+}
+
+TEST_F(TGraphTests, testPlainLatchAndAsyncMemoryUseExistingStateAndCaptureSemantics) {
+  for (bool latch : {false, true}) {
+    TGraph graph;
+    auto a = graph.createNode(nullptr), b = graph.createNode(nullptr);
+    auto source = graph.createNode(nullptr), input = graph.createNode(nullptr);
+    auto output = graph.createNode(nullptr), receiver = graph.createNode(nullptr);
+    const auto ca = graph.createClock("a", nullptr, a);
+    const auto cb = graph.createClock("b", nullptr, b);
+    graph.getEdge(graph.createEdge(b, source, nullptr))->setKind(TEdge::Kind::State);
+    auto incoming = graph.createEdge(source, input, nullptr);
+    graph.createCaptureEdge(a, input);
+    graph.getEdge(graph.createEdge(a, output, nullptr))->setKind(TEdge::Kind::State);
+    if (latch) {
+      graph.getNode(a)->setCellKind(TNode::CellKind::Latch);
+      graph.getNode(a)->setPinRole(TNode::PinRole::Gate);
+      graph.getNode(input)->setCellKind(TNode::CellKind::Latch);
+      graph.getNode(input)->setPinRole(TNode::PinRole::DataInput);
+      graph.getNode(output)->setCellKind(TNode::CellKind::Latch);
+      graph.getNode(output)->setPinRole(TNode::PinRole::DataOutput);
+    } else {
+      graph.createEdge(input, output, nullptr); //Asynchronous read address.
+    }
+    auto transfer = graph.createEdge(output, receiver, nullptr);
+    graph.createCaptureEdge(b, receiver);
+    auto result = TClockPropagator::run(graph);
+    EXPECT_TRUE(result.clockOrigins[a].test(ca));
+    EXPECT_TRUE(graph.getEdge(incoming)->getFromClocks().test(cb));
+    EXPECT_TRUE(graph.getEdge(incoming)->getToClocks().test(ca));
+    EXPECT_TRUE(graph.getEdge(incoming)->hasClockCrossing());
+    EXPECT_TRUE(graph.getEdge(transfer)->getFromClocks().test(ca));
+    EXPECT_EQ(!latch, graph.getEdge(transfer)->getFromClocks().test(cb));
+    EXPECT_TRUE(graph.getEdge(transfer)->getToClocks().test(cb));
+    EXPECT_TRUE(graph.getEdge(transfer)->hasClockCrossing());
+  }
 }

@@ -11,6 +11,6 @@ SET(sources
 
 ADD_EXECUTABLE(tgraphTests ${sources})
 
-TARGET_LINK_LIBRARIES(tgraphTests naja_nl naja_tgraph gmock gtest_main)
+TARGET_LINK_LIBRARIES(tgraphTests naja_nl naja_dnl naja_tgraph gmock gtest_main)
 
 GTEST_DISCOVER_TESTS(tgraphTests)

@@ -8,6 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "DNL.h"
+#include "NLUniverse.h"
+#include "NLClock.h"
 #include "NLException.h"
 #include "NLDB0.h"
 #include "SNLBitNet.h"
@@ -25,23 +28,42 @@ using namespace naja::NL;
 using PinRole = TNode::PinRole;
 using CellKind = TNode::CellKind;
 using Model = SNLDesignModeling;
-using NodeMap = std::map<SNLOccurrence, TGraph::NodeId>;
+using Constructor = TSNLGraphConstructor;
+using Reason = Constructor::CoverageReason;
+using Treatment = Constructor::Treatment;
+struct Coverage {
+  std::vector<Constructor::CoverageEntry> entries;
+  void record(const SNLOccurrence& occurrence, const SNLDesign* model, Reason reason,
+      Treatment treatment, const std::string& detail) {
+    entries.push_back({occurrence, model->getName().getString(), reason, treatment, detail});
+  }
+};
+// DNL uses term-range start + model bit-term OrderID for terminal lookup.
+// Mirror that indexing against the graph's DNL-terminal-to-node table, without
+// depending on DNL's global terminal helpers or repeated occurrence searches.
+class LeafNodes {
+  public:
+    LeafNodes(naja::DNL::DNLID first, const std::vector<TGraph::NodeId>& nodes)
+      : first_(first), nodes_(nodes) {}
+    TGraph::NodeId at(const SNLInstTerm* term) const {
+      return nodes_.at(first_ + term->getBitTerm()->getOrderID());
+    }
+  private:
+    naja::DNL::DNLID first_;
+    const std::vector<TGraph::NodeId>& nodes_;
+};
 
 [[noreturn]] void fail(const SNLOccurrence& occurrence, const std::string& reason) {
   throw NLException("TSNLGraphConstructor: " + reason + " at " + occurrence.getDescription());
 }
 
-void checkDirection(const SNLOccurrence& occurrence, SNLTerm::Direction direction) {
+void checkDirection(const SNLOccurrence& occurrence, SNLTerm::Direction direction,
+    const SNLDesign* model, Coverage& coverage) {
   if (direction != SNLTerm::Direction::Input && direction != SNLTerm::Direction::Output) {
-    fail(occurrence, "unsupported terminal direction");
+    coverage.record(occurrence, model, Reason::InOut, Treatment::Bidirectional, "unsupported terminal direction");
   }
 }
 
-TGraph::NodeId addNode(TGraph& graph, NodeMap& nodes, const SNLOccurrence& occurrence) {
-  auto id = graph.createNode(new TSNLNodeProxy(occurrence));
-  nodes.emplace(occurrence, id);
-  return id;
-}
 
 PinRole pinRole(SNLInstTerm* term, bool sequential) {
   if (!sequential) {
@@ -95,7 +117,48 @@ struct Candidates {
   std::vector<Transparent> transparent;
 };
 
-void buildLatch(TGraph& graph, const NodeMap& nodes, const SNLPath& path,
+// Stage one cell's arcs until its complete model is validated. Discarding an
+// unsupported wide cell is linear in its pins/arcs, without repeatedly erasing
+// adjacency lists or leaving holes in the published graph.
+class LeafArcsBuilder {
+  public:
+    struct Arc {
+      TGraph::NodeId source;
+      TGraph::NodeId target;
+      std::unique_ptr<TSNLEdgeProxy> proxy;
+      TEdge::Kind kind {TEdge::Kind::Combinational};
+      void setKind(TEdge::Kind value) { kind = value; }
+    };
+    explicit LeafArcsBuilder(TGraph& graph): graph_(graph) {}
+    TNode* getNode(TGraph::NodeId id) { return graph_.getNode(id); }
+    TGraph::EdgeId createEdge(TGraph::NodeId from, TGraph::NodeId to, TSNLEdgeProxy* proxy) {
+      arcs_.push_back({from, to, std::unique_ptr<TSNLEdgeProxy>(proxy)});
+      return arcs_.size() - 1;
+    }
+    Arc* getEdge(TGraph::EdgeId id) { return &arcs_[id]; }
+    void createCaptureEdge(TGraph::NodeId from, TGraph::NodeId to) {
+      captures_.emplace_back(from, to);
+    }
+    void publish(Candidates& candidates) {
+      std::vector<TGraph::EdgeId> ids;
+      ids.reserve(arcs_.size());
+      for (auto& arc : arcs_) {
+        auto id = graph_.createEdge(arc.source, arc.target, arc.proxy.release());
+        graph_.getEdge(id)->setKind(arc.kind);
+        ids.push_back(id);
+      }
+      for (const auto& capture : captures_) graph_.createCaptureEdge(capture.first, capture.second);
+      for (auto& gate : candidates.conjunctions) {
+        for (auto& arc : gate.arcs) arc = ids[arc];
+      }
+    }
+  private:
+    TGraph& graph_;
+    std::vector<Arc> arcs_;
+    std::vector<std::pair<TGraph::NodeId, TGraph::NodeId>> captures_;
+};
+
+void buildLatch(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& path,
     SNLInstance* instance, const Model::SequentialModel& sequence, Candidates& candidates) {
   using Operator = Model::BooleanExpression::Operator;
   const SNLOccurrence occurrence(path, instance);
@@ -123,7 +186,7 @@ void buildLatch(TGraph& graph, const NodeMap& nodes, const SNLPath& path,
       Model::getTermRole(outputPin) != Model::SNLTermRole::DataOutput ||
       captures.size() != 1 || *captures.begin() != dataPin ||
       outputs.size() != 1 || *outputs.begin() != outputPin) unsupported();
-  auto nodeId = [&](SNLBitTerm* term) { return nodes.at(SNLOccurrence(path, instance->getInstTerm(term))); };
+  auto nodeId = [&](SNLBitTerm* term) { return nodes.at(instance->getInstTerm(term)); };
   Latch latch {nodeId(active->term), nodeId(data->term), nodeId(sequence.outputs.front().term), occurrence};
   for (auto id : {latch.gate, latch.data, latch.output}) graph.getNode(id)->setCellKind(CellKind::Latch);
   graph.getNode(latch.gate)->setPinRole(PinRole::Gate);
@@ -138,20 +201,25 @@ void buildLatch(TGraph& graph, const NodeMap& nodes, const SNLPath& path,
 //Normalize only wires and canonical DB0 buffers/inverters. Memoized iterative
 //walks are linear in nodes plus edges, including shared cones and cycles.
 std::vector<TSNLGraphConstructor::ClockGate> recognizeClockGates(
-    const TGraph& graph, const Candidates& candidates) {
+    TGraph& graph, const Candidates& candidates, Coverage& coverage) {
   if (candidates.latches.empty()) return {};
   const auto size = graph.getNodesStorage().size();
   struct Origin { TGraph::NodeId node {TGraph::kInvalidNode}; bool inverted {false}; };
   std::vector<Origin> predecessor(size), origin(size);
+  std::vector<bool> ambiguous(size, false);
   for (const auto& edge : graph.getEdgesStorage()) {
+    if (!edge.isAlive()) continue;
     const auto* proxy = static_cast<const TSNLEdgeProxy*>(edge.getProxy());
     if (proxy->getKind() == TSNLEdgeProxy::Kind::Connectivity) {
       auto& previous = predecessor[edge.getTarget()];
       if (previous.node != TGraph::kInvalidNode) {
-        throw NLException("TSNLGraphConstructor: ambiguous connectivity during clock-gate recognition");
+        ambiguous[edge.getTarget()] = true;
       }
       previous.node = edge.getSource();
     }
+  }
+  for (size_t i = 0; i < size; ++i) {
+    if (ambiguous[i]) predecessor[i] = {};
   }
   for (const auto& link : candidates.transparent) predecessor[link.output] = {link.input, link.inverted};
   std::vector<unsigned char> color(size, 0);
@@ -163,7 +231,7 @@ std::vector<TSNLGraphConstructor::ClockGate> recognizeClockGates(
       color[current] = 1;
       path.push_back(current);
       if (predecessor[current].node == TGraph::kInvalidNode) {
-        origin[current] = {current, false};
+        origin[current] = ambiguous[current] ? Origin{} : Origin{current, false};
         color[current] = 2;
         break;
       }
@@ -196,27 +264,178 @@ std::vector<TSNLGraphConstructor::ClockGate> recognizeClockGates(
       const auto& latch = candidates.latches[index];
       const auto enable = origin[latch.gate];
       if (enable.node != c.node || enable.inverted == c.inverted) continue;
-      matched[index] = true;
       result.push_back({gate.inputs[1 - held], latch.data, latch.output, latch.gate,
         gate.output, gate.arcs[1 - held]});
     }
     if (result.size() > firstMatch + 1) {
       const auto* proxy = static_cast<const TSNLEdgeProxy*>(graph.getEdge(gate.arcs[0])->getProxy());
-      fail(proxy->getOccurrence(), "ambiguous clock-gate composition: both AND inputs match held states");
+      const auto& occurrence = proxy->getOccurrence();
+      coverage.record(occurrence, static_cast<SNLInstance*>(occurrence.getObject())->getModel(),
+        Reason::AmbiguousClockGate, Treatment::Approximated,
+        "ambiguous clock-gate composition: both AND inputs match held states");
+      result.resize(firstMatch);
     }
   }
+  for (const auto& gate : result) matched[latchAt[gate.heldEnable]] = true;
   for (size_t i = 0; i < matched.size(); ++i) {
-    if (!matched[i]) fail(candidates.latches[i].occurrence,
-      "latch analysis is unsupported: no matching low-phase DB0 latch-and-AND clock gate");
+    if (!matched[i]) {
+      const auto& latch = candidates.latches[i];
+      coverage.record(latch.occurrence, static_cast<SNLInstance*>(latch.occurrence.getObject())->getModel(),
+        Reason::UnsupportedLatch, Treatment::Approximated,
+        "latch analysis is unsupported: no matching low-phase DB0 latch-and-AND clock gate");
+      graph.createCaptureEdge(latch.gate, latch.data);
+    }
   }
   return result;
 }
 
-void buildLeaf(TGraph& graph, NodeMap& nodes, const SNLPath& path, SNLInstance* instance, Candidates& candidates) {
+void buildPlainLatch(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& path,
+    SNLInstance* instance, const Model::SequentialModel& sequence) {
+  const SNLOccurrence occurrence(path, instance);
+  auto root = sequence.clockedOn.root;
+  while (root < sequence.clockedOn.nodes.size() &&
+      sequence.clockedOn.nodes[root].operation == Model::BooleanExpression::Operator::Not &&
+      sequence.clockedOn.nodes[root].operands.size() == 1) {
+    auto next = sequence.clockedOn.nodes[root].operands.front();
+    if (next >= root) fail(occurrence, "latch analysis is unsupported: cyclic gate expression");
+    root = next;
+  }
+  const auto* active = expressionNode(sequence.clockedOn, root, Model::BooleanExpression::Operator::Term, 0);
+  if (!active || !active->term) fail(occurrence, "latch analysis is unsupported: composite gate");
+  auto* gate = instance->getInstTerm(active->term);
+  auto id = [&](SNLInstTerm* term) { return nodes.at(term); };
+  for (auto* term : instance->getInstTerms()) {
+    auto role = pinRole(term, true);
+    if (term == gate) role = PinRole::Gate;
+    if (role == PinRole::Unknown) fail(occurrence, "latch analysis is unsupported: missing role");
+    graph.getNode(id(term))->setCellKind(CellKind::Latch);
+    graph.getNode(id(term))->setPinRole(role);
+  }
+  std::set<SNLBitTerm*> outputs;
+  for (const auto& output : sequence.outputs) {
+    const auto* state = expressionNode(output.function, output.function.root,
+      Model::BooleanExpression::Operator::State, 0);
+    if (!state || state->state >= sequence.states.size())
+      fail(occurrence, "latch analysis is unsupported: non-state output");
+    const auto& value = sequence.states[state->state];
+    if (value.clear || value.preset) fail(occurrence, "latch analysis is unsupported: reset state");
+    outputs.insert(output.term);
+  }
+  for (auto* term : instance->getInstTerms()) {
+    if (term == gate) continue;
+    if (term->getDirection() == SNLTerm::Direction::Output) {
+      if (!outputs.count(term->getBitTerm())) fail(occurrence, "latch analysis is unsupported: missing state");
+      auto edge = graph.createEdge(id(gate), id(term),
+        new TSNLEdgeProxy(TSNLEdgeProxy::Kind::LatchGateToOutput, occurrence));
+      graph.getEdge(edge)->setKind(TEdge::Kind::State);
+    } else if (isCaptureRole(pinRole(term, true))) {
+      graph.createCaptureEdge(id(gate), id(term));
+    } else fail(occurrence, "latch analysis is unsupported: control role");
+  }
+}
+
+void buildMemory(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& path, SNLInstance* instance) {
+  // Use the declared interface, retaining disconnected pins as for flops.
+  const auto memory = Model::getMemoryInterface(instance->getModel());
+  const SNLOccurrence occurrence(path, instance);
+  const bool db0Memory = NLDB0::isMemory(instance->getModel());
+  if (db0Memory &&
+      !(NLDB0::getMemorySignature(instance) == NLDB0::getMemorySignature(instance->getModel())))
+    fail(occurrence, "memory analysis is unsupported: instance signature differs from declared ports");
+  if (!memory.isValid()) fail(occurrence, "memory analysis is unsupported: invalid interface");
+  auto id = [&](SNLBitTerm* term) {
+    return nodes.at(instance->getInstTerm(term));
+  };
+  std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> classified;
+  auto classify = [&](SNLBitTerm* term, PinRole role) {
+    classified.insert(term);
+    graph.getNode(id(term))->setPinRole(role);
+  };
+  std::vector<SNLBitTerm*> clocks;
+  std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> seenClocks;
+  for (const auto& port : memory.writePorts) {
+    auto* clock = port.clock ? port.clock : memory.clock;
+    if (!clock) fail(occurrence, "memory analysis is unsupported: missing write clock");
+    classify(clock, PinRole::Clock);
+    if (seenClocks.insert(clock).second) clocks.push_back(clock);
+    auto capture = [&](const Model::BitTerms& terms, PinRole role) {
+      for (auto* term : terms) {
+        classify(term, role);
+        graph.createCaptureEdge(id(clock), id(term));
+      }
+    };
+    capture(port.address, PinRole::DataInput);
+    capture(port.data, PinRole::DataInput);
+    capture(port.mask, PinRole::Enable);
+    capture(port.enables, PinRole::Enable);
+    for (const auto& extra : port.extraWriteInputs) capture(extra, PinRole::DataInput);
+  }
+  if (memory.clock) classify(memory.clock, PinRole::Clock);
+  // Multi-write-clock DB0 models retain unused legacy CLK/RST terminals.
+  if (db0Memory) {
+    if (auto* clock = NLDB0::getMemoryClock(instance->getModel())) classify(clock, PinRole::Clock);
+    if (!memory.reset) {
+      if (auto* reset = NLDB0::getMemoryReset(instance->getModel())) classify(reset, PinRole::Unknown);
+    }
+  }
+  if (memory.reset) {
+    auto role = PinRole::Unknown;
+    if (memory.resetMode == Model::MemoryResetMode::AsyncLow ||
+        memory.resetMode == Model::MemoryResetMode::AsyncHigh) role = PinRole::AsyncReset;
+    if (memory.resetMode == Model::MemoryResetMode::SyncLow ||
+        memory.resetMode == Model::MemoryResetMode::SyncHigh) role = PinRole::SyncReset;
+    classify(memory.reset, role);
+    if (role == PinRole::SyncReset) {
+      for (auto* clock : clocks) graph.createCaptureEdge(id(clock), id(memory.reset));
+    }
+  }
+  for (const auto& port : memory.readPorts) {
+    for (auto* address : port.address) classify(address, PinRole::DataInput);
+    for (auto* enable : port.enables) classify(enable, PinRole::Enable);
+    std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> allowed;
+    if (!db0Memory) {
+      allowed.insert(port.address.begin(), port.address.end());
+      allowed.insert(port.enables.begin(), port.enables.end());
+    }
+    for (auto* data : port.data) {
+      classify(data, PinRole::DataOutput);
+      // MemoryInterface describes asynchronous reads. Require an explicit
+      // address dependency to avoid mistaking a synchronous macro for one.
+      if (!db0Memory) {
+        const auto inputs = Model::getCombinatorialInputs(data);
+        if (inputs.empty()) fail(occurrence, "memory analysis is unsupported: missing asynchronous read timing");
+        for (auto* input : inputs) {
+          if (!allowed.count(input)) fail(occurrence, "memory analysis is unsupported: mixed read dependency");
+          graph.createEdge(id(input), id(data),
+            new TSNLEdgeProxy(TSNLEdgeProxy::Kind::Combinational, occurrence));
+        }
+      } else {
+        for (const auto& inputs : {port.address, port.enables}) {
+          for (auto* input : inputs) graph.createEdge(id(input), id(data),
+            new TSNLEdgeProxy(TSNLEdgeProxy::Kind::Combinational, occurrence));
+        }
+      }
+      // Unknown cell kind preserves address traversal, unlike implicit flop Q
+      // state boundaries. Explicit State arcs seed stored-data launch origins.
+      for (auto* clock : clocks) {
+        auto edge = graph.createEdge(id(clock), id(data),
+          new TSNLEdgeProxy(TSNLEdgeProxy::Kind::ClockToOutput, occurrence));
+        graph.getEdge(edge)->setKind(TEdge::Kind::State);
+      }
+    }
+  }
+  for (auto* term : instance->getInstTerms()) {
+    if (!classified.count(term->getBitTerm()))
+      fail(occurrence, "memory analysis is unsupported: unclassified pin");
+  }
+}
+
+void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& path, SNLInstance* instance, Candidates& candidates, Coverage& coverage) {
   auto* model = instance->getModel();
   const SNLOccurrence occurrence(path, instance);
   if (Model::hasMemoryInterface(model)) {
-    fail(occurrence, "memory analysis is unsupported");
+    buildMemory(graph, nodes, path, instance);
+    return;
   }
   const bool sequential = Model::isSequential(model);
   SNLInstTerm* clock = nullptr;
@@ -227,7 +446,18 @@ void buildLeaf(TGraph& graph, NodeMap& nodes, const SNLPath& path, SNLInstance* 
     }
     const auto& seq = Model::getSequentialModel(instance);
     if (seq.kind == Model::SequentialModel::Kind::Latch) {
-      buildLatch(graph, nodes, path, instance, seq, candidates);
+      if (NLDB0::isDLatch(model) && instance->getInstTerms().size() == 3) {
+        try {
+          // All recognition validation precedes graph mutation in buildLatch.
+          buildLatch(graph, nodes, path, instance, seq, candidates);
+          return;
+        } catch (const NLException&) {
+          // A valid latch can still be unsuitable for clock-gate recognition.
+        }
+      }
+      buildPlainLatch(graph, nodes, path, instance, seq);
+      coverage.record(occurrence, model, Reason::UnsupportedLatch, Treatment::Approximated,
+        "latch modeled as level-sensitive state without time borrowing");
       return;
     }
     //A single term, optionally inverted, is supported. Composite clock
@@ -273,7 +503,7 @@ void buildLeaf(TGraph& graph, NodeMap& nodes, const SNLPath& path, SNLInstance* 
     fail(occurrence, "leaf cell has no combinational modeling");
   }
 
-  auto nodeId = [&](SNLInstTerm* term) { return nodes.at(SNLOccurrence(path, term)); };
+  auto nodeId = [&](SNLInstTerm* term) { return nodes.at(term); };
   std::set<SNLInstTerm*> outputs;
   std::set<SNLInstTerm*> captures;
   for (auto* term : instance->getInstTerms()) {
@@ -353,80 +583,187 @@ void buildLeaf(TGraph& graph, NodeMap& nodes, const SNLPath& path, SNLInstance* 
   }
 }
 
-void buildNets(TGraph& graph, const NodeMap& nodes, SNLDesign* design, const SNLPath& path) {
-  for (auto* net : design->getBitNets()) {
-    std::vector<TGraph::NodeId> drivers;
-    std::vector<TGraph::NodeId> readers;
-    for (auto* term : net->getBitTerms()) {
-      auto& endpoints = term->getDirection() == SNLTerm::Direction::Input ? drivers : readers;
-      endpoints.push_back(nodes.at(SNLOccurrence(path, term)));
+// DNL supplies every terminal occurrence, including hierarchy boundaries.
+// Partition its bindings by physical net occurrence to retain boundary nodes
+// and exact net provenance, rather than replacing them with all-to-all iso
+// edges. This visits each DNL terminal at most twice and never expands SNL.
+class Connections {
+  public:
+    void add(naja::DNL::DNLID context, const SNLPath& path, SNLBitNet* net,
+        TGraph::NodeId node, SNLTerm::Direction direction, bool internal) {
+      if (!net) return;
+      auto key = std::make_pair(context, net);
+      auto [it, inserted] = indexes_.emplace(key, nets_.size());
+      if (inserted) nets_.push_back({SNLOccurrence(path, net), {}, {}});
+      auto& endpoints = nets_[it->second];
+      const bool input = direction == SNLTerm::Direction::Input;
+      const bool inout = direction == SNLTerm::Direction::InOut;
+      if ((internal ? input : !input) || inout) endpoints.drivers.push_back(node);
+      if ((internal ? !input : input) || inout) endpoints.readers.push_back(node);
     }
-    for (auto* term : net->getInstTerms()) {
-      auto& endpoints = term->getDirection() == SNLTerm::Direction::Output ? drivers : readers;
-      endpoints.push_back(nodes.at(SNLOccurrence(path, term)));
-    }
-    if (drivers.size() > 1 || (net->getType().isDriving() && !drivers.empty())) {
-      fail(SNLOccurrence(path, net), "multiple net drivers are unsupported");
-    }
-    for (auto driver : drivers) {
-      for (auto reader : readers) {
-        graph.createEdge(driver, reader,
-          new TSNLEdgeProxy(TSNLEdgeProxy::Kind::Connectivity, SNLOccurrence(path, net)));
+    void publish(TGraph& graph, Coverage& coverage) const {
+      for (const auto& endpoints : nets_) {
+        auto* net = static_cast<SNLBitNet*>(endpoints.occurrence.getObject());
+        if (endpoints.drivers.size() > 1 || (net->getType().isDriving() && !endpoints.drivers.empty())) {
+          coverage.record(endpoints.occurrence, net->getDesign(), Reason::MultipleDrivers,
+            Treatment::AllDrivers, "multiple net drivers are unsupported");
+        }
+        for (auto driver : endpoints.drivers) {
+          for (auto reader : endpoints.readers) {
+            if (driver == reader) continue;
+            graph.createEdge(driver, reader,
+              new TSNLEdgeProxy(TSNLEdgeProxy::Kind::Connectivity, endpoints.occurrence));
+          }
+        }
       }
     }
-  }
-}
+  private:
+    struct Net {
+      SNLOccurrence occurrence;
+      std::vector<TGraph::NodeId> drivers;
+      std::vector<TGraph::NodeId> readers;
+    };
+    using Key = std::pair<naja::DNL::DNLID, SNLBitNet*>;
+    struct Hash {
+      size_t operator()(const Key& key) const {
+        return std::hash<naja::DNL::DNLID>{}(key.first) ^ (std::hash<SNLBitNet*>{}(key.second) << 1);
+      }
+    };
+    // Identity hashing is used only to find a net partition. The vector, in
+    // first-terminal order, drives every emitted edge and coverage entry.
+    std::unordered_map<Key, size_t, Hash> indexes_;
+    std::vector<Net> nets_;
+};
 
 }  // namespace
 
+size_t TSNLGraphConstructor::OccurrenceHash::operator()(const naja::NL::SNLOccurrence& occurrence) const {
+  if (!occurrence.getObject()) return 0;
+  auto result = std::hash<SNLDesignObject*>{}(occurrence.getObject());
+  for (auto* instance : occurrence.getPath().getInstances()) {
+    result ^= std::hash<SNLInstance*>{}(instance) + 0x9e3779b9u + (result << 6) + (result >> 2);
+  }
+  return result;
+}
+
 void TSNLGraphConstructor::construct() {
-  if (!top_ || top_->isLeaf()) {
+  auto* universe = NLUniverse::get();
+  auto* top = universe ? universe->getTopDesign() : nullptr;
+  if (!top || top->isLeaf()) {
     throw NLException("TSNLGraphConstructor: expected a structural top design");
   }
+  const auto* dnl = naja::DNL::get();
+  if (dnl->getTopDesign() != top) {
+    throw NLException("TSNLGraphConstructor: active DNL has a different top; rebuild DNL");
+  }
+  construct(*dnl);
+}
+
+void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
+  const auto* top = dnl.getTopDesign();
+  if (!top || top->isLeaf()) {
+    throw NLException("TSNLGraphConstructor: expected a structural top design");
+  }
+  const auto& instances = dnl.getDNLInstances();
+  if (instances.size() < 2 || dnl.getDNLTerms().empty()) {
+    throw NLException("TSNLGraphConstructor: expected a processed DNL");
+  }
   auto graph = std::make_unique<TGraph>();
-  NodeMap nodes;
+  decltype(nodes_) nodes;
+  nodes.reserve(dnl.getNBterms());
+  std::vector<TGraph::NodeId> terminalNodes(dnl.getNBterms(), TGraph::kInvalidNode);
   Candidates candidates;
-  for (auto* term : top_->getBitTerms()) {
-    checkDirection(SNLOccurrence(term), term->getDirection());
-    auto id = addNode(*graph, nodes, SNLOccurrence(term));
-    graph->getNode(id)->setPinRole(term->getDirection() == SNLTerm::Direction::Input ?
-      PinRole::DataInput : PinRole::DataOutput);
-  }
-  struct Context { SNLDesign* design; SNLPath path; };
-  std::vector<Context> pending {{top_, SNLPath()}};
-  while (!pending.empty()) {
-    auto context = pending.back();
-    pending.pop_back();
-    for (auto* instance : context.design->getInstances()) {
-      auto* model = instance->getModel();
-      if (model == top_) {
-        fail(SNLOccurrence(context.path, instance), "recursive hierarchy");
+  Coverage coverage;
+  Connections connections;
+  std::vector<SNLPath> paths(instances.size());
+  // DNL orders parents before their children. Cache paths once rather than
+  // asking terminal helpers to walk the global DNL for every occurrence.
+  for (const auto& instance : instances) {
+    if (instance.isNull()) continue;
+    const auto id = instance.getID();
+    auto* snl = instance.getSNLInstance();
+    const auto parent = instance.getParentID();
+    auto* model = snl ? snl->getModel() : top;
+    if (snl) paths[id] = SNLPath(paths[parent], snl);
+    const auto terms = instance.getTermIndexes();
+    if (terms.first == naja::DNL::DNLID_MAX) continue;
+    for (auto termId = terms.first; termId <= terms.second; ++termId) {
+      const auto& term = dnl.getDNLTerminalFromID(termId);
+      auto* bit = term.getSnlBitTerm();
+      auto* pin = term.getSnlTerm();
+      const auto direction = bit->getDirection();
+      const auto occurrence = snl ? SNLOccurrence(paths[parent], pin) : SNLOccurrence(bit);
+      const auto node = graph->createNode(new TSNLNodeProxy(occurrence));
+      terminalNodes[termId] = node;
+      nodes.emplace(occurrence, node);
+      if (!snl || !model->isLeaf()) {
+        checkDirection(occurrence, direction, model, coverage);
+        graph->getNode(node)->setPinRole(direction == SNLTerm::Direction::Input ?
+          PinRole::DataInput : PinRole::DataOutput);
+        if (snl) nodes.emplace(SNLOccurrence(paths[id], bit), node);
+        connections.add(id, paths[id], bit->getNet(), node, direction, true);
       }
-      for (auto* ancestor : context.path.getInstances()) {
-        if (ancestor->getModel() == model) {
-          fail(SNLOccurrence(context.path, instance), "recursive hierarchy");
-        }
-      }
-      SNLPath childPath(context.path, instance);
-      for (auto* term : instance->getInstTerms()) {
-        SNLOccurrence occurrence(context.path, term);
-        checkDirection(occurrence, term->getDirection());
-        auto id = addNode(*graph, nodes, occurrence);
-        if (!model->isLeaf()) {
-          graph->getNode(id)->setPinRole(term->getDirection() == SNLTerm::Direction::Input ?
-            PinRole::DataInput : PinRole::DataOutput);
-          nodes.emplace(SNLOccurrence(childPath, term->getBitTerm()), id);
-        }
-      }
-      if (model->isLeaf()) {
-        buildLeaf(*graph, nodes, context.path, instance, candidates);
-      } else {
-        pending.push_back({model, childPath});
-      }
+      if (snl) connections.add(parent, paths[parent], pin->getNet(), node, direction, false);
     }
-    buildNets(*graph, nodes, context.design, context.path);
   }
-  auto gates = recognizeClockGates(*graph, candidates);
+  // Bind declarations per DNL occurrence; shared models have independent seeds.
+  // Several source terminals of one declaration share one clock-mask bit.
+  for (const auto& instance : instances) {
+    if (instance.isNull()) continue;
+    auto* snl = instance.getSNLInstance();
+    auto* model = snl ? snl->getModel() : top;
+    const auto first = instance.getTermIndexes().first;
+    for (const auto* clock : model->getClocks()) {
+      std::vector<TGraph::NodeId> seeds;
+      for (auto* source : clock->getSources()) {
+        auto* term = dynamic_cast<SNLBitTerm*>(source);
+        if (!term || term->getDesign() != model) {
+          throw NLException("TSNLGraphConstructor: expected an NLClock source terminal of its owning design");
+        }
+        seeds.push_back(terminalNodes.at(first + term->getOrderID()));
+      }
+      graph->createClock(*clock, seeds);
+    }
+  }
+  for (const auto& instance : instances) {
+    if (instance.isNull() || instance.isTop()) continue;
+    auto* snl = instance.getSNLInstance();
+    auto* model = snl->getModel();
+    if (!model->isLeaf()) continue;
+    const auto& path = paths[instance.getParentID()];
+    const LeafNodes leafNodes(instance.getTermIndexes().first, terminalNodes);
+    LeafArcsBuilder leaf(*graph);
+    Candidates localCandidates;
+    try {
+      for (auto* term : snl->getInstTerms()) {
+        if (term->getDirection() == SNLTerm::Direction::InOut)
+          fail(SNLOccurrence(path, snl), "unsupported terminal direction");
+      }
+      buildLeaf(leaf, leafNodes, path, snl, localCandidates, coverage);
+      leaf.publish(localCandidates);
+      candidates.latches.insert(candidates.latches.end(),
+        localCandidates.latches.begin(), localCandidates.latches.end());
+      candidates.conjunctions.insert(candidates.conjunctions.end(),
+        localCandidates.conjunctions.begin(), localCandidates.conjunctions.end());
+      candidates.transparent.insert(candidates.transparent.end(),
+        localCandidates.transparent.begin(), localCandidates.transparent.end());
+    } catch (const NLException& error) {
+      for (auto* term : snl->getInstTerms()) {
+        auto id = leafNodes.at(term);
+        graph->getNode(id)->setCellKind(CellKind::Unknown);
+        graph->getNode(id)->setPinRole(pinRole(term, false));
+      }
+      const std::string detail = error.what();
+      auto reason = Reason::IncompleteModeling;
+      if (Model::hasMemoryInterface(model)) reason = Reason::Memory;
+      else if (detail.find("latch analysis") != std::string::npos) reason = Reason::UnsupportedLatch;
+      else if (detail.find("terminal direction") != std::string::npos) reason = Reason::InOut;
+      else if (detail.find("no combinational modeling") != std::string::npos) reason = Reason::Blackbox;
+      coverage.record(SNLOccurrence(path, snl), model, reason, Treatment::Opaque, detail);
+    }
+  }
+  connections.publish(*graph, coverage);
+  auto gates = recognizeClockGates(*graph, candidates, coverage);
   for (const auto& gate : gates) {
     for (auto id : graph->getNode(gate.output)->getInEdges()) {
       graph->getEdge(id)->setKind(id == gate.clockPassEdge ? TEdge::Kind::ClockPass : TEdge::Kind::DataOnly);
@@ -434,9 +771,23 @@ void TSNLGraphConstructor::construct() {
     static_cast<TSNLEdgeProxy*>(graph->getEdge(gate.clockPassEdge)->getProxy())->kind_ = TSNLEdgeProxy::Kind::ClockPass;
     graph->createCaptureEdge(gate.clock, gate.enable, TCaptureEdge::Kind::ClockGateControl);
   }
+  CoverageCounts counts;
+  for (const auto& entry : coverage.entries) ++counts[entry.reason];
+  coverage_ = std::move(coverage.entries);
+  coverageCounts_ = std::move(counts);
   graph_ = std::move(graph);
   clockGates_ = std::move(gates);
   nodes_ = std::move(nodes);
+}
+
+const std::vector<TSNLGraphConstructor::CoverageEntry>& TSNLGraphConstructor::getCoverageReport() const {
+  getGraph();
+  return coverage_;
+}
+
+const TSNLGraphConstructor::CoverageCounts& TSNLGraphConstructor::getCoverageCounts() const {
+  getGraph();
+  return coverageCounts_;
 }
 
 TGraph& TSNLGraphConstructor::getGraph() {

@@ -158,8 +158,10 @@ void generatedWaveforms(const TGraph& graph,
   std::deque<NodeId> pending;
   std::vector<bool> queued(origins.size(), false);
   for (const auto& clock : graph.getClocksStorage()) {
-    auto n = clock.getNode();
-    if (!queued[n]) { pending.push_back(n); queued[n] = true; }
+    for (const auto& seed : clock.getSeeds()) {
+      auto n = seed.node;
+      if (!queued[n]) { pending.push_back(n); queued[n] = true; }
+    }
   }
   while (!pending.empty()) {
     auto n = pending.front();
@@ -180,35 +182,21 @@ void generatedWaveforms(const TGraph& graph,
 TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
   const TEdge::ClockMask empty(graph.getClocksCount());
   const auto size = graph.getNodesStorage().size();
-  std::vector<bool> gateState(size, false);
   for (const auto& edge : graph.getEdgesStorage()) {
     if (!edge.isAlive()) continue;
     auto* live = graph.getEdge(edge.getIndex());
     live->setFromClocks(empty);
     live->setToClocks(empty);
     live->setClockGateControlClocks(empty);
-    if (edge.getKind() == TEdge::Kind::State &&
-        graph.getNode(edge.getSource())->isLatchGate() &&
-        graph.getNode(edge.getTarget())->isLatchDataOutput()) {
-      gateState[edge.getSource()] = gateState[edge.getTarget()] = true;
-    }
-  }
-  for (const auto& capture : graph.getCaptureEdgesStorage()) {
-    if (capture.isAlive() && capture.getKind() == TCaptureEdge::Kind::ClockGateControl) {
-      gateState[capture.getTarget()] = true;
-    }
-  }
-  for (const auto& node : graph.getNodesStorage()) {
-    if (node.isAlive() && node.isLatch() && !gateState[node.getIndex()]) {
-      throw std::logic_error("TClockPropagator::run: latch analysis is unsupported outside recognized clock gates");
-    }
   }
   Masks origins(size, empty);
   for (const auto& clock : graph.getClocksStorage()) {
-    if (!graph.isNodeValid(clock.getNode())) {
-      throw std::logic_error("TClockPropagator::run: clock seed node was removed");
+    for (const auto& seed : clock.getSeeds()) {
+      if (!graph.isNodeValid(seed.node)) {
+        throw std::logic_error("TClockPropagator::run: clock seed node was removed");
+      }
+      origins[seed.node].set(clock.getIndex());
     }
-    origins[clock.getNode()].set(clock.getIndex());
   }
 
   // Reject combinational cycles before publishing propagated edge masks.
@@ -224,7 +212,9 @@ TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
     }
   }
   Masks launch(size, empty);
-  for (const auto& clock : graph.getClocksStorage()) launch[clock.getNode()].set(clock.getIndex());
+  for (const auto& clock : graph.getClocksStorage()) {
+    for (const auto& seed : clock.getSeeds()) launch[seed.node].set(clock.getIndex());
+  }
   for (const auto& edge : graph.getEdgesStorage()) {
     if (edge.isAlive() && !edge.isDisabled() && isState(graph, edge)) {
       launch[edge.getTarget()] |= origins[edge.getSource()];

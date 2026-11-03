@@ -7,10 +7,12 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace naja::NL {
 
 class SNLNetComponent;
+class NLClock;
 
 }  // namespace naja::NL
 
@@ -24,23 +26,36 @@ class TClock {
     using NodeId = std::size_t;
 
     TClock(ClockId index, const std::string& name, naja::NL::SNLNetComponent* target, NodeId node);
+    /// Binds every declared source, in NLClock source order, to a graph node.
+    /// The declaration and its source terminals must outlive this clock.
+    TClock(ClockId index, const naja::NL::NLClock& clock, const std::vector<NodeId>& nodes);
+
+    struct Seed {
+      naja::NL::SNLNetComponent* target;
+      NodeId node;
+    };
+    /// Null for clocks created without a user declaration. No reverse link.
+    const naja::NL::NLClock* getNLClock() const { return nlClock_; }
+    const std::vector<Seed>& getSeeds() const { return seeds_; }
 
     ClockId getIndex() const { return index_; }
     const std::string& getName() const { return name_; }
 
     /// \return this clock's target: either a top terminal (SNLBitTerm) or
     /// an instance terminal (SNLInstTerm) - both are SNLNetComponent.
-    naja::NL::SNLNetComponent* getTarget() const { return target_; }
+    /// For a multi-source declaration, returns the first source terminal.
+    naja::NL::SNLNetComponent* getTarget() const { return seeds_.front().target; }
 
     /// \return the TGraph node this clock is seeded at - TClockPropagator's
     /// forward pass starts from here.
-    NodeId getNode() const { return node_; }
+    /// For a multi-source declaration, returns the first seed node.
+    NodeId getNode() const { return seeds_.front().node; }
 
   private:
     ClockId index_;
     std::string name_;
-    naja::NL::SNLNetComponent* target_ {nullptr};
-    NodeId node_;
+    const naja::NL::NLClock* nlClock_ {nullptr};
+    std::vector<Seed> seeds_;
 };
 
 }  // namespace naja::TG

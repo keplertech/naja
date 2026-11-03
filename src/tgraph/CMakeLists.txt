@@ -27,9 +27,8 @@ set(GRAPH_HEADERS
 
 add_library(naja_tgraph SHARED ${GRAPH_SOURCES})
 
-# naja_nl is required by TClock, whose target is either a top terminal
-# (SNLBitTerm) or an instance terminal (SNLInstTerm).
-target_link_libraries(naja_tgraph PUBLIC naja_nl)
+# TClock retains SNL terminal identity; the constructor consumes DNL.
+target_link_libraries(naja_tgraph PUBLIC naja_nl naja_dnl)
 
 target_compile_options(naja_tgraph BEFORE PRIVATE ${NAJA_CXX_WARNINGS})
 

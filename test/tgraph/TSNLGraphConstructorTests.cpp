@@ -5,12 +5,17 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 #include <vector>
 
+#include "DNL.h"
 #include "NLDB.h"
+#include "NLClock.h"
 #include "NLDB0.h"
 #include "NLException.h"
 #include "NLLibrary.h"
@@ -40,7 +45,15 @@ class TSNLGraphConstructorTests: public ::testing::Test {
       library_ = NLLibrary::create(db);
       top_ = SNLDesign::create(library_, NLName("top"));
     }
-    void TearDown() override { NLUniverse::get()->destroy(); }
+    void TearDown() override {
+      naja::DNL::destroy();
+      NLUniverse::get()->destroy();
+    }
+    void construct(TSNLGraphConstructor& constructor, SNLDesign* top = nullptr) {
+      naja::DNL::destroy();
+      NLUniverse::get()->setTopDesign(top ? top : top_);
+      constructor.construct(*naja::DNL::get());
+    }
     SNLScalarTerm* port(SNLDesign* design, const char* name, SNLTerm::Direction direction) {
       return SNLScalarTerm::create(design, direction, NLName(name));
     }
@@ -57,14 +70,13 @@ class TSNLGraphConstructorTests: public ::testing::Test {
       }
       return TGraph::kInvalidEdge;
     }
-    void expectFailure(TSNLGraphConstructor& constructor, const std::string& reason) {
-      try {
-        constructor.construct();
-        FAIL() << "Expected construction to fail: " << reason;
-      } catch (const NLException& error) {
-        EXPECT_NE(std::string::npos, std::string(error.what()).find(reason)) << error.what();
-      }
-      EXPECT_THROW(constructor.getGraph(), NLException);
+    void expectCoverage(TSNLGraphConstructor& constructor, const std::string& reason) {
+      ASSERT_NO_THROW(construct(constructor));
+      const auto& report = constructor.getCoverageReport();
+      ASSERT_FALSE(report.empty());
+      EXPECT_TRUE(std::any_of(report.begin(), report.end(), [&](const auto& entry) {
+        return entry.detail.find(reason) != std::string::npos;
+      })) << "Missing coverage diagnostic: " << reason;
     }
     SNLDesign* modeledFlop() {
       using Model = SNLDesignModeling;
@@ -157,9 +169,9 @@ TEST_F(TSNLGraphConstructorTests, registerTransferThroughCombinationalCell) {
   connect(top_, {buffer->getInstTerm(NLDB0::getAssignOutput()), term(capture, "D")});
   connect(top_, {term(capture, "Q"), output});
 
-  TSNLGraphConstructor constructor(top_);
+  TSNLGraphConstructor constructor;
   EXPECT_THROW(constructor.getGraph(), NLException);
-  constructor.construct();
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* component) { return constructor.getNode(SNLOccurrence(component)); };
   EXPECT_EQ(2u, graph.getCaptureEdgesCount());
@@ -202,8 +214,8 @@ TEST_F(TSNLGraphConstructorTests, sharedHierarchyPreservesOccurrencesAndPortAlia
   connect(top_, {root, left->getInstTerm(in)});
   connect(top_, {left->getInstTerm(out), right->getInstTerm(in)});
   connect(top_, {right->getInstTerm(out), sink});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto leftPin = SNLOccurrence(SNLPath(left), buffer->getInstTerm(NLDB0::getAssignInput()));
   auto rightPin = SNLOccurrence(SNLPath(right), buffer->getInstTerm(NLDB0::getAssignInput()));
@@ -225,8 +237,8 @@ TEST_F(TSNLGraphConstructorTests, busFlopsAndControlRoles) {
   auto* synchronous = SNLInstance::create(top_, NLDB0::getDFFSR(), NLName("synchronous"));
   auto* syncSet = SNLInstance::create(top_, NLDB0::getDFFSS(), NLName("sync_set"));
   auto* asyncSet = SNLInstance::create(top_, NLDB0::getDFFS(), NLName("async_set"));
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   for (auto* bit : wideModel->getBusTerm(NLName("D"))->getBits()) {
     auto id = constructor.getNode(SNLOccurrence(wide->getInstTerm(bit)));
@@ -258,8 +270,8 @@ TEST_F(TSNLGraphConstructorTests, parameterizedCombinationalArcsUseInstanceValue
   auto* first = SNLInstance::create(top_, model, NLName("first"));
   auto* second = SNLInstance::create(top_, model, NLName("second"));
   SNLInstParameter::create(second, model->getParameter(NLName("SELECT")), "1");
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLInstance* instance, SNLBitTerm* bit) {
     return constructor.getNode(SNLOccurrence(instance->getInstTerm(bit)));
@@ -270,38 +282,55 @@ TEST_F(TSNLGraphConstructorTests, parameterizedCombinationalArcsUseInstanceValue
   EXPECT_EQ(TGraph::kInvalidEdge, edge(graph, id(second, a), id(second, q)));
 }
 
-TEST_F(TSNLGraphConstructorTests, unsupportedModelsFailWithoutReplacingPreviousGraph) {
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
-  auto* previous = &constructor.getGraph();
+TEST_F(TSNLGraphConstructorTests, unsupportedModelsAreReportedAndInvalidDNLPreservesResult) {
+  using Reason = TSNLGraphConstructor::CoverageReason;
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
   auto* unknown = SNLDesign::create(library_, SNLDesign::Type::UserBlackBox, NLName("unknown"));
   auto* instance = SNLInstance::create(top_, unknown, NLName("instance"));
-  EXPECT_THROW(constructor.construct(), NLException);
-  EXPECT_EQ(previous, &constructor.getGraph());
+  ASSERT_NO_THROW(construct(constructor));
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(Reason::Blackbox, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Opaque, constructor.getCoverageReport().front().treatment);
   instance->destroy();
   instance = SNLInstance::create(top_, NLDB0::getDLatch(), NLName("latch"));
-  EXPECT_THROW(constructor.construct(), NLException);
+  ASSERT_NO_THROW(construct(constructor));
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(Reason::UnsupportedLatch, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Approximated, constructor.getCoverageReport().front().treatment);
   instance->destroy();
   auto* io = port(top_, "io", SNLTerm::Direction::InOut);
-  EXPECT_THROW(constructor.construct(), NLException);
+  ASSERT_NO_THROW(construct(constructor));
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(Reason::InOut, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Bidirectional, constructor.getCoverageReport().front().treatment);
   io->destroy();
   auto* a = port(top_, "a", SNLTerm::Direction::Input);
   auto* b = port(top_, "b", SNLTerm::Direction::Input);
   connect(top_, {a, b});
-  EXPECT_THROW(constructor.construct(), NLException);
+  ASSERT_NO_THROW(construct(constructor));
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(Reason::MultipleDrivers, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::AllDrivers, constructor.getCoverageReport().front().treatment);
+  auto* previous = &constructor.getGraph();
+  naja::DNL::DNLFull unprocessed(top_);
+  EXPECT_THROW(constructor.construct(unprocessed), NLException);
   EXPECT_EQ(previous, &constructor.getGraph());
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(Reason::MultipleDrivers, constructor.getCoverageReport().front().reason);
 }
 
-TEST_F(TSNLGraphConstructorTests, recursiveHierarchyAndInvalidTopAreRejected) {
-  TSNLGraphConstructor nullConstructor(nullptr);
-  EXPECT_THROW(nullConstructor.construct(), NLException);
-  TSNLGraphConstructor leafConstructor(NLDB0::getDFF());
-  EXPECT_THROW(leafConstructor.construct(), NLException);
-  auto* child = SNLDesign::create(library_, NLName("child"));
-  SNLInstance::create(top_, child, NLName("child"));
-  SNLInstance::create(child, top_, NLName("recursive"));
-  TSNLGraphConstructor constructor(top_);
-  EXPECT_THROW(constructor.construct(), NLException);
+TEST_F(TSNLGraphConstructorTests, invalidTopAndUnprocessedDNLAreRejected) {
+  TSNLGraphConstructor constructor;
+  EXPECT_THROW(constructor.construct(), NLException); //No universe top.
+  naja::DNL::DNLFull nullDNL(nullptr);
+  EXPECT_THROW(constructor.construct(nullDNL), NLException);
+  naja::DNL::DNLFull leafDNL(NLDB0::getDFF());
+  EXPECT_THROW(constructor.construct(leafDNL), NLException);
+  naja::DNL::DNLFull unprocessed(top_);
+  EXPECT_THROW(constructor.construct(unprocessed), NLException);
+  EXPECT_THROW(constructor.getGraph(), NLException);
 }
 
 TEST_F(TSNLGraphConstructorTests, constantsAndUnconnectedPinsDoNotInventDependencies) {
@@ -313,8 +342,8 @@ TEST_F(TSNLGraphConstructorTests, constantsAndUnconnectedPinsDoNotInventDependen
   auto* instance = SNLInstance::create(top_, model, NLName("constant"));
   auto* output = port(top_, "out", SNLTerm::Direction::Output);
   connect(top_, {term(instance, "value"), output});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   EXPECT_EQ(3u, graph.getNodesCount());
   EXPECT_EQ(1u, graph.getEdgesCount());
@@ -323,7 +352,7 @@ TEST_F(TSNLGraphConstructorTests, constantsAndUnconnectedPinsDoNotInventDependen
   EXPECT_NO_THROW(TClockPropagator::run(graph));
 }
 
-TEST_F(TSNLGraphConstructorTests, mixedSequentialOutputsAreRejected) {
+TEST_F(TSNLGraphConstructorTests, mixedSequentialOutputsAreReportedOpaque) {
   auto* model = NLDB0::getDFF();
   auto sequence = SNLDesignModeling::getSequentialModel(model);
   sequence.outputs.front().function = {};
@@ -331,9 +360,12 @@ TEST_F(TSNLGraphConstructorTests, mixedSequentialOutputsAreRejected) {
     sequence.outputs.front().function.addTerm(NLDB0::getDFFData());
   SNLDesignModeling::setSequentialModel(model, sequence);
   SNLInstance::create(top_, model, NLName("mixed"));
-  TSNLGraphConstructor constructor(top_);
-  EXPECT_THROW(constructor.construct(), NLException);
-  EXPECT_THROW(constructor.getGraph(), NLException);
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "mixed combinational/sequential output is unsupported");
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Opaque, constructor.getCoverageReport().front().treatment);
+  EXPECT_EQ(0u, constructor.getGraph().getEdgesCount());
+  EXPECT_EQ(0u, constructor.getGraph().getCaptureEdgesCount());
 }
 
 TEST_F(TSNLGraphConstructorTests, invertedClockAndStateOutputPreserveTimingEdges) {
@@ -346,10 +378,10 @@ TEST_F(TSNLGraphConstructorTests, invertedClockAndStateOutputPreserveTimingEdges
   output.root = output.addOperation(Operator::Not, {output.root});
   Model::setSequentialModel(model, sequence);
   auto* instance = SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
+  TSNLGraphConstructor constructor;
   const auto& constConstructor = constructor;
   EXPECT_THROW(constConstructor.getGraph(), NLException);
-  constructor.construct();
+  construct(constructor);
   const auto& graph = constConstructor.getGraph();
   EXPECT_EQ(&constructor.getGraph(), &graph);
   auto clock = constructor.getNode(SNLOccurrence(term(instance, "C")));
@@ -360,18 +392,18 @@ TEST_F(TSNLGraphConstructorTests, invertedClockAndStateOutputPreserveTimingEdges
   EXPECT_EQ(1u, graph.getNode(data)->getCaptureInEdges().size());
 }
 
-TEST_F(TSNLGraphConstructorTests, sequentialTimingWithoutExplicitModelIsRejected) {
+TEST_F(TSNLGraphConstructorTests, sequentialTimingWithoutExplicitModelIsReported) {
   auto* primitives = NLLibrary::create(library_->getDB(), NLLibrary::Type::Primitives);
   auto* model = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("legacy"));
   auto* clock = port(model, "clock", SNLTerm::Direction::Input);
   auto* data = port(model, "data", SNLTerm::Direction::Input);
   SNLDesignModeling::addInputsToClockArcs({data}, clock);
   SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "sequential cell has no explicit flip-flop/latch model");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "sequential cell has no explicit flip-flop/latch model");
 }
 
-TEST_F(TSNLGraphConstructorTests, compositeClockExpressionIsRejected) {
+TEST_F(TSNLGraphConstructorTests, compositeClockExpressionIsReported) {
   using Model = SNLDesignModeling;
   auto* model = NLDB0::getDFF();
   auto sequence = Model::getSequentialModel(model);
@@ -380,54 +412,54 @@ TEST_F(TSNLGraphConstructorTests, compositeClockExpressionIsRejected) {
     Model::BooleanExpression::Operator::And, {sequence.clockedOn.root, data});
   Model::setSequentialModel(model, sequence);
   SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "unsupported clock expression or missing clock role");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "unsupported clock expression or missing clock role");
 }
 
-TEST_F(TSNLGraphConstructorTests, missingClockRoleIsRejected) {
+TEST_F(TSNLGraphConstructorTests, missingClockRoleIsReported) {
   SNLDesignModeling::setTermRole(NLDB0::getDFFClock(), SNLDesignModeling::SNLTermRole::DataInput);
   SNLInstance::create(top_, NLDB0::getDFF(), NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "unsupported clock expression or missing clock role");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "unsupported clock expression or missing clock role");
 }
 
-TEST_F(TSNLGraphConstructorTests, unknownPinRoleIsRejected) {
+TEST_F(TSNLGraphConstructorTests, unknownPinRoleIsReported) {
   auto* model = NLDB0::getDFF();
   port(model, "extra", SNLTerm::Direction::Input);
   SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "unsupported or inconsistent pin role");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "unsupported or inconsistent pin role");
 }
 
-TEST_F(TSNLGraphConstructorTests, clockArcToInputIsRejected) {
+TEST_F(TSNLGraphConstructorTests, clockArcToInputIsReported) {
   auto* model = modeledFlop();
   SNLDesignModeling::addClockToOutputsArcs(
     model->getScalarTerm(NLName("C")), {model->getScalarTerm(NLName("D"))});
   SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "clock-to-output arc targets a non-output role");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "clock-to-output arc targets a non-output role");
 }
 
-TEST_F(TSNLGraphConstructorTests, clockArcWithoutStateOutputIsRejected) {
+TEST_F(TSNLGraphConstructorTests, clockArcWithoutStateOutputIsReported) {
   auto* model = NLDB0::getDFF();
   auto* extra = port(model, "extra", SNLTerm::Direction::Output);
   SNLDesignModeling::setTermRole(extra, SNLDesignModeling::SNLTermRole::DataOutput);
   SNLDesignModeling::addClockToOutputsArcs(NLDB0::getDFFClock(), {extra});
   SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "clock-to-output arc has no sequential state output");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "clock-to-output arc has no sequential state output");
 }
 
-TEST_F(TSNLGraphConstructorTests, capturePinWithoutTimingRelationshipIsRejected) {
+TEST_F(TSNLGraphConstructorTests, capturePinWithoutTimingRelationshipIsReported) {
   auto* model = modeledFlop();
   auto* extra = port(model, "extra", SNLTerm::Direction::Input);
   SNLDesignModeling::setTermRole(extra, SNLDesignModeling::SNLTermRole::DataInput);
   SNLInstance::create(top_, model, NLName("flop"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "missing sequential timing relationship");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "missing sequential timing relationship");
 }
 
-TEST_F(TSNLGraphConstructorTests, outputWithoutDependencyIsRejected) {
+TEST_F(TSNLGraphConstructorTests, outputWithoutDependencyIsReported) {
   auto* primitives = NLLibrary::create(library_->getDB(), NLLibrary::Type::Primitives);
   auto* model = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("partial"));
   auto* input = port(model, "input", SNLTerm::Direction::Input);
@@ -435,26 +467,31 @@ TEST_F(TSNLGraphConstructorTests, outputWithoutDependencyIsRejected) {
   SNLDesignModeling::addCombinatorialArcs({input}, {output});
   port(model, "extra", SNLTerm::Direction::Output);
   SNLInstance::create(top_, model, NLName("buffer"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "output has no dependency model");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "output has no dependency model");
 }
 
-TEST_F(TSNLGraphConstructorTests, combinationalArcFromOutputIsRejected) {
+TEST_F(TSNLGraphConstructorTests, combinationalArcFromOutputIsReported) {
   auto* model = NLDB0::getAssign();
   SNLDesignModeling::addCombinatorialArcs({NLDB0::getAssignOutput()}, {NLDB0::getAssignOutput()});
   SNLInstance::create(top_, model, NLName("buffer"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "combinational arc source is not an input");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "combinational arc source is not an input");
 }
 
-TEST_F(TSNLGraphConstructorTests, recursiveHierarchyBelowTopIsRejected) {
-  auto* child = SNLDesign::create(library_, NLName("child"));
-  auto* descendant = SNLDesign::create(library_, NLName("descendant"));
-  SNLInstance::create(top_, child, NLName("child"));
-  SNLInstance::create(child, descendant, NLName("descendant"));
-  SNLInstance::create(descendant, child, NLName("recursive"));
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "recursive hierarchy");
+TEST_F(TSNLGraphConstructorTests, unprocessedDNLDoesNotTriggerImplicitConstruction) {
+  NLUniverse::get()->setTopDesign(top_);
+  naja::DNL::DNLFull unprocessed(top_);
+  TSNLGraphConstructor constructor;
+  EXPECT_FALSE(naja::DNL::isCreated());
+  try {
+    constructor.construct(unprocessed);
+    FAIL() << "Unprocessed DNL must fail";
+  } catch (const NLException& error) {
+    EXPECT_NE(std::string::npos, std::string(error.what()).find("expected a processed DNL"));
+  }
+  EXPECT_FALSE(naja::DNL::isCreated());
+  EXPECT_THROW(constructor.getGraph(), NLException);
 }
 
 TEST_F(TSNLGraphConstructorTests, clockControlFeedbackSharesStructureWithDataFanout) {
@@ -480,8 +517,8 @@ TEST_F(TSNLGraphConstructorTests, clockControlFeedbackSharesStructureWithDataFan
   connect(top_, {term(state, "Q"), sharedIn});
   connect(top_, {sharedOut, term(gate, "control"), term(sink, "D"), output});
 
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* component) { return constructor.getNode(SNLOccurrence(component)); };
   //One node per terminal, even though the shared output is used for both
@@ -547,9 +584,9 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGatePreservesPhysicalStructure)
     auto* child = SNLDesign::create(library_);
     auto parts = decomposedGate(child, swapped);
     auto* wrapper = SNLInstance::create(top_, child);
-    TSNLGraphConstructor constructor(top_);
+    TSNLGraphConstructor constructor;
     EXPECT_THROW(constructor.getClockGates(), NLException);
-    constructor.construct();
+    construct(constructor);
     auto& graph = constructor.getGraph();
     auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(SNLPath(wrapper), pin)); };
     ASSERT_EQ(1u, constructor.getClockGates().size());
@@ -597,8 +634,8 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateKeepsSharedDataFanout) {
   heldOutput->setNet(parts.held->getNet());
   term(receiver, "C")->setNet(parts.clockPort->getNet());
   term(receiver, "D")->setNet(parts.output->getNet());
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   ASSERT_EQ(1u, constructor.getClockGates().size());
   auto gate = constructor.getClockGates().front();
@@ -622,8 +659,8 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateAcrossSharedHierarchyAndBuf
   connect(child, {bufferOut, parts.heldInput});
   auto* left = SNLInstance::create(top_, child, NLName("left"));
   auto* right = SNLInstance::create(top_, child, NLName("right"));
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   ASSERT_EQ(2u, constructor.getClockGates().size());
   EXPECT_EQ(26u, constructor.getGraph().getNodesCount());
   EXPECT_NE(constructor.getClockGates()[0].heldEnable, constructor.getClockGates()[1].heldEnable);
@@ -633,7 +670,7 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateAcrossSharedHierarchyAndBuf
   }
 }
 
-TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsWrongPhaseOrSource) {
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateReportsWrongPhaseOrSource) {
   for (size_t variant = 0; variant < 5; ++variant) {
     SCOPED_TRACE(variant);
     auto* child = SNLDesign::create(library_);
@@ -651,20 +688,29 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsWrongPhaseOrSource) 
       input->setNet(parts.held->getNet());
       connect(child, {output, parts.heldInput}); //Inverted held state.
     }
-    TSNLGraphConstructor constructor(top_);
-    expectFailure(constructor, "latch analysis is unsupported");
+    TSNLGraphConstructor constructor;
+    expectCoverage(constructor, "latch analysis is unsupported");
     wrapper->destroy();
   }
 }
 
-TEST_F(TSNLGraphConstructorTests, decomposedClockGateFailurePreservesPreviousResult) {
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateRebuildUpdatesCoverageAndPreservesInvalidDNLResult) {
   auto parts = decomposedGate(top_);
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
-  auto* previous = &constructor.getGraph();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto gate = constructor.getClockGates().front();
+  auto* clockNet = parts.invInput->getNet();
   parts.invInput->setNet(parts.enablePort->getNet());
-  EXPECT_THROW(constructor.construct(), NLException);
+  ASSERT_NO_THROW(construct(constructor));
+  EXPECT_TRUE(constructor.getClockGates().empty());
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Approximated, constructor.getCoverageReport().front().treatment);
+  parts.invInput->setNet(clockNet);
+  ASSERT_NO_THROW(construct(constructor));
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  auto* previous = &constructor.getGraph();
+  naja::DNL::DNLFull unprocessed(top_);
+  EXPECT_THROW(constructor.construct(unprocessed), NLException);
   EXPECT_EQ(previous, &constructor.getGraph());
   ASSERT_EQ(1u, constructor.getClockGates().size());
   EXPECT_EQ(gate.clock, constructor.getClockGates().front().clock);
@@ -684,8 +730,8 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateTracingIsIterative) {
     previous = output;
   }
   parts.latchGate->setNet(previous->getNet());
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   ASSERT_EQ(1u, constructor.getClockGates().size());
   EXPECT_EQ(11u + 2 * depth, constructor.getGraph().getNodesCount());
   EXPECT_EQ(10u + 2 * depth, constructor.getGraph().getEdgesCount());
@@ -695,17 +741,17 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateTracingIsIterative) {
   EXPECT_TRUE(result.clockOrigins[constructor.getClockGates().front().output].test(c));
 }
 
-TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsOtherLatchModels) {
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateApproximatesOtherLatchModels) {
   auto* custom = modeledFlop();
   auto model = SNLDesignModeling::getSequentialModel(custom);
   model.kind = SNLDesignModeling::SequentialModel::Kind::Latch;
   SNLDesignModeling::setSequentialModel(custom, model);
   auto* instance = SNLInstance::create(top_, custom);
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "latch analysis is unsupported");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "latch modeled as level-sensitive state without time borrowing");
   instance->destroy();
   instance = SNLInstance::create(top_, NLDB0::getOrCreateDLatch(2));
-  expectFailure(constructor, "latch analysis is unsupported");
+  expectCoverage(constructor, "latch modeled as level-sensitive state without time borrowing");
   instance->destroy();
   //Do not trust the canonical name alone if the live model was modified.
   auto* canonical = NLDB0::getDLatch();
@@ -714,10 +760,10 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsOtherLatchModels) {
     SNLDesignModeling::BooleanExpression::Operator::Not, {model.clockedOn.root});
   SNLDesignModeling::setSequentialModel(canonical, model);
   SNLInstance::create(top_, canonical);
-  expectFailure(constructor, "latch analysis is unsupported");
+  expectCoverage(constructor, "latch modeled as level-sensitive state without time borrowing");
 }
 
-TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsAmbiguousHeldInputs) {
+TEST_F(TSNLGraphConstructorTests, decomposedClockGateReportsAmbiguousHeldInputs) {
   auto parts = decomposedGate(top_);
   auto* second = SNLInstance::create(top_, NLDB0::getDLatch());
   auto* inverse = SNLInstance::create(top_, parts.inverter->getModel());
@@ -727,8 +773,8 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateRejectsAmbiguousHeldInputs)
   second->getInstTerm(NLDB0::getDLatchData())->setNet(parts.enablePort->getNet());
   connect(top_, {invOutput, second->getInstTerm(NLDB0::getDLatchEnable())});
   connect(top_, {second->getInstTerm(NLDB0::getDLatchOutput()), parts.clock, parts.invInput});
-  TSNLGraphConstructor constructor(top_);
-  expectFailure(constructor, "ambiguous clock-gate composition");
+  TSNLGraphConstructor constructor;
+  expectCoverage(constructor, "ambiguous clock-gate composition");
 }
 
 TEST_F(TSNLGraphConstructorTests, decomposedClockGateSeparatesControlAndDataPropagation) {
@@ -750,8 +796,8 @@ TEST_F(TSNLGraphConstructorTests, decomposedClockGateSeparatesControlAndDataProp
   connect(top_, {term(enableSource, "Q"), left});
   connect(top_, {term(receiver, "Q"), right});
   connect(top_, {merged, parts.data});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
   auto a = graph.createClock("a", parts.clockPort, id(parts.clockPort));
@@ -821,8 +867,8 @@ TEST_F(TSNLGraphConstructorTests, dividerChainsPreserveDomainsAndDataFanout) {
       }
       term(sink, "C")->setNet(last->getNet());
       term(fanout, "D")->setNet(last->getNet());
-      TSNLGraphConstructor constructor(design);
-      constructor.construct();
+      TSNLGraphConstructor constructor;
+      construct(constructor, design);
       auto& graph = constructor.getGraph();
       auto id = [&](SNLNetComponent* component) { return constructor.getNode(SNLOccurrence(component)); };
       auto a = graph.createClock("a", root, id(root));
@@ -875,8 +921,8 @@ TEST_F(TSNLGraphConstructorTests, plainGateFeedbackAndForeignEnableKeepWaveforms
     connect(design, {control->getInstTerm(NLDB0::getGateSingleTerm(orModel)), enableIn});
     connect(design, {input, term(flops[0], "D"), term(flops[1], "D"), term(flops[2], "D")});
     term(flops[3], "D")->setNet(term(flops[2], "Q")->getNet());
-    TSNLGraphConstructor constructor(design);
-    constructor.construct();
+    TSNLGraphConstructor constructor;
+    construct(constructor, design);
     auto& graph = constructor.getGraph();
     auto id = [&](SNLNetComponent* component) { return constructor.getNode(SNLOccurrence(component)); };
     auto a = graph.createClock("a", root, id(root));
@@ -949,8 +995,8 @@ TEST_F(TSNLGraphConstructorTests, dividerOccurrencesHaveIndependentOrigins) {
   connect(child, {term(sink, "Q"), output});
   auto* first = SNLInstance::create(top_, child, NLName("first"));
   auto* second = SNLInstance::create(top_, child, NLName("second"));
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLInstance* wrapper, SNLNetComponent* component) {
     return constructor.getNode(SNLOccurrence(SNLPath(wrapper), component));
@@ -973,8 +1019,8 @@ TEST_F(TSNLGraphConstructorTests, combinationalDataCycleRejectedWithoutChangingE
   auto* second = SNLInstance::create(top_, model);
   connect(top_, {first->getInstTerm(NLDB0::getAssignOutput()), second->getInstTerm(NLDB0::getAssignInput())});
   connect(top_, {second->getInstTerm(NLDB0::getAssignOutput()), first->getInstTerm(NLDB0::getAssignInput())});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   EXPECT_THROW(TClockPropagator::run(graph), std::logic_error);
   for (const auto& edge : graph.getEdgesStorage()) EXPECT_FALSE(edge.isDisabled());
@@ -997,8 +1043,8 @@ TEST_F(TSNLGraphConstructorTests, foreignPlainGateEnableDoesNotPolluteDirectDoma
   connect(top_, {gate->getInstTerm(NLDB0::getGateSingleTerm(model)), term(middle, "C")});
   connect(top_, {data, term(middle, "D")});
   connect(top_, {term(middle, "Q"), term(sink, "D")});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* component) { return constructor.getNode(SNLOccurrence(component)); };
   auto ca = graph.createClock("a", a, id(a));
@@ -1047,8 +1093,8 @@ TEST_F(TSNLGraphConstructorTests, muxDataArmsCarryGeneratedClocksAndSelectIsCont
       else connect(design, {selectPort, select});
       connect(design, {out, term(sink, "C")});
       connect(design, {term(source, "Q"), term(sink, "D")});
-      TSNLGraphConstructor constructor(design);
-      constructor.construct();
+      TSNLGraphConstructor constructor;
+      construct(constructor, design);
       auto& graph = constructor.getGraph();
       auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
       auto a = graph.createClock("a", aPort, id(aPort));
@@ -1136,8 +1182,8 @@ TEST_F(TSNLGraphConstructorTests, unclassifiedDividerMergesRemainUnclocked) {
     merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(0))->setNet(term(first, "Q")->getNet());
     merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(1))->setNet(term(second, "Q")->getNet());
     connect(design, {merge->getInstTerm(NLDB0::getGateSingleTerm(model)), term(sink, "C")});
-    TSNLGraphConstructor constructor(design);
-    constructor.construct();
+    TSNLGraphConstructor constructor;
+    construct(constructor, design);
     auto& graph = constructor.getGraph();
     auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
     graph.createClock("a", aPort, id(aPort));
@@ -1165,8 +1211,8 @@ TEST_F(TSNLGraphConstructorTests, dividedClockFeedsRecognizedLatchGate) {
   term(enable, "Q")->setNet(parts.enablePort->getNet());
   parts.enablePort->setNet(nullptr);
   term(sink, "C")->setNet(parts.output->getNet());
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
   auto a = graph.createClock("a", aPort, id(aPort));
@@ -1195,8 +1241,8 @@ TEST_F(TSNLGraphConstructorTests, dividerDataFanoutCrossesOnlyAtForeignCapture) 
   term(sink, "C")->setNet(term(divider, "Q")->getNet());
   term(fanout, "D")->setNet(term(divider, "Q")->getNet());
   connect(top_, {term(source, "Q"), term(sink, "D")});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
   auto a = graph.createClock("a", aPort, id(aPort));
@@ -1232,8 +1278,8 @@ TEST_F(TSNLGraphConstructorTests, generatedClockStateFeedbackUsesFixedPoint) {
   connect(top_, {inverse->getInstTerm(NLDB0::getGateNTerms(invModel)->getBit(0)),
     merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(1))});
   connect(top_, {merge->getInstTerm(NLDB0::getGateSingleTerm(model)), term(first, "D")});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
   auto a = graph.createClock("a", root, id(root));
@@ -1270,8 +1316,8 @@ TEST_F(TSNLGraphConstructorTests, sharedDividerOccurrencesCaptureOppositeDomains
     connect(top_, {roots.back(), wrappers.back()->getInstTerm(root), term(sources.back(), "C")});
   }
   for (unsigned i = 0; i < 2; ++i) connect(top_, {term(sources[1-i], "Q"), wrappers[i]->getInstTerm(data)});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto a = graph.createClock("a", roots[0], constructor.getNode(SNLOccurrence(roots[0])));
   auto b = graph.createClock("b", roots[1], constructor.getNode(SNLOccurrence(roots[1])));
@@ -1316,8 +1362,8 @@ TEST_F(TSNLGraphConstructorTests, nestedClockEnableFeedbackKeepsOneDomain) {
   connect(top_, {out(busy), in(enable, 1)});
   connect(top_, {out(enable), in(gate, 1)});
   connect(top_, {input, in(wake, 0), in(wake, 1), term(flops[0], "D"), term(flops[1], "D"), term(flops[2], "D")});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
   auto a = graph.createClock("a", root, id(root));
@@ -1386,8 +1432,8 @@ TEST_F(TSNLGraphConstructorTests, gateDecomposedMuxReportsSuppressedDivider) {
   connect(top_, {out(left), in(merge, 0)});
   connect(top_, {out(right), in(merge, 1)});
   connect(top_, {out(merge), term(sink, "C")});
-  TSNLGraphConstructor constructor(top_);
-  constructor.construct();
+  TSNLGraphConstructor constructor;
+  construct(constructor);
   auto& graph = constructor.getGraph();
   auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
   auto a = graph.createClock("a", aPort, id(aPort));
@@ -1398,4 +1444,553 @@ TEST_F(TSNLGraphConstructorTests, gateDecomposedMuxReportsSuppressedDivider) {
   EXPECT_EQ(1u, result.clockOrigins[id(term(sink, "C"))].count());
   EXPECT_TRUE(result.clockOrigins[id(term(sink, "C"))].test(b));
   EXPECT_FALSE(result.clockOrigins[id(term(sink, "C"))].test(a));
+}
+
+TEST_F(TSNLGraphConstructorTests, asyncMemoryPreservesWriteDomainAndReadAddressDependency) {
+  auto* write = port(top_, "write", SNLTerm::Direction::Input);
+  auto* read = port(top_, "read", SNLTerm::Direction::Input);
+  auto* address = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* capture = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* memory = SNLInstance::create(top_, NLDB0::getOrCreateMemory({3, 8, 3, 1, 1}));
+  auto* model = memory->getModel();
+  auto* data = memory->getInstTerm(NLDB0::getMemoryReadData(model)->getBit(0));
+  auto* addr = memory->getInstTerm(NLDB0::getMemoryReadAddress(model)->getBit(0));
+  connect(top_, {write, term(memory, "CLK")});
+  connect(top_, {read, term(capture, "C"), term(address, "C")});
+  connect(top_, {term(address, "Q"), addr});
+  connect(top_, {data, term(capture, "D")});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* t) { return constructor.getNode(SNLOccurrence(t)); };
+  const auto w = graph.createClock("write", write, id(write));
+  const auto r = graph.createClock("read", read, id(read));
+  auto result = TClockPropagator::run(graph);
+  auto transfer = edge(graph, id(data), id(term(capture, "D")));
+  ASSERT_NE(TGraph::kInvalidEdge, transfer);
+  EXPECT_TRUE(graph.getEdge(transfer)->getFromClocks().test(w));
+  EXPECT_TRUE(graph.getEdge(transfer)->getFromClocks().test(r));
+  EXPECT_EQ(1u, graph.getEdge(transfer)->getToClocks().count());
+  EXPECT_TRUE(graph.getEdge(transfer)->getToClocks().test(r));
+  EXPECT_TRUE(graph.getEdge(transfer)->hasClockCrossing());
+  EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(addr), id(data)));
+  for (auto* bus : {NLDB0::getMemoryWriteAddress(model), NLDB0::getMemoryWriteData(model),
+      NLDB0::getMemoryWriteEnable(model)}) {
+    for (auto* bit : bus->getBusBits()) {
+      auto* pin = memory->getInstTerm(bit);
+      ASSERT_EQ(1u, graph.getNode(id(pin))->getCaptureInEdges().size());
+      auto* relationship = graph.getCaptureEdge(graph.getNode(id(pin))->getCaptureInEdges().front());
+      EXPECT_EQ(id(term(memory, "CLK")), relationship->getSource());
+    }
+  }
+
+}
+
+TEST_F(TSNLGraphConstructorTests, registeredMemoryReadOnOneClockHasNoCrossing) {
+  auto* clock = port(top_, "clock", SNLTerm::Direction::Input);
+  auto* memory = SNLInstance::create(top_, NLDB0::getOrCreateMemory({3, 8, 3, 1, 1}));
+  auto* output = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* data = memory->getInstTerm(NLDB0::getMemoryReadData(memory->getModel())->getBit(0));
+  connect(top_, {clock, term(memory, "CLK"), term(output, "C")});
+  connect(top_, {data, term(output, "D")});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* t) { return constructor.getNode(SNLOccurrence(t)); };
+  auto c = graph.createClock("clock", clock, id(clock));
+  TClockPropagator::run(graph);
+  auto transfer = edge(graph, id(data), id(term(output, "D")));
+  ASSERT_NE(TGraph::kInvalidEdge, transfer);
+  EXPECT_EQ(1u, graph.getEdge(transfer)->getFromClocks().count());
+  EXPECT_TRUE(graph.getEdge(transfer)->getFromClocks().test(c));
+  EXPECT_EQ(graph.getEdge(transfer)->getFromClocks(), graph.getEdge(transfer)->getToClocks());
+  EXPECT_FALSE(graph.getEdge(transfer)->hasClockCrossing());
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+}
+
+TEST_F(TSNLGraphConstructorTests, inoutHierarchyAndMultipleDriversRetainAllConnectivity) {
+  auto* io = port(top_, "io", SNLTerm::Direction::InOut);
+  auto* other = port(top_, "driver", SNLTerm::Direction::Input);
+  auto* sink = port(top_, "sink", SNLTerm::Direction::Output);
+  auto* child = SNLDesign::create(library_);
+  auto* childIO = port(child, "io", SNLTerm::Direction::InOut);
+  auto* childOut = port(child, "out", SNLTerm::Direction::Output);
+  connect(child, {childIO, childOut});
+  auto* wrapper = SNLInstance::create(top_, child);
+  connect(top_, {io, other, sink, term(wrapper, "io")});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* t) { return constructor.getNode(SNLOccurrence(t)); };
+  for (auto* driver : {io, other}) {
+    EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(driver), id(sink)));
+    EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(driver), id(term(wrapper, "io"))));
+  }
+  EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(term(wrapper, "io")), id(io)));
+  EXPECT_EQ(id(term(wrapper, "io")), constructor.getNode(SNLOccurrence(SNLPath(wrapper), childIO)));
+  EXPECT_EQ(2u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::InOut));
+  EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::MultipleDrivers));
+  for (const auto& e : graph.getEdgesStorage()) EXPECT_NE(e.getSource(), e.getTarget());
+}
+
+TEST_F(TSNLGraphConstructorTests, opaqueBlackboxOutputCanSeedClockAndInoutLeafIsReported) {
+  auto* macro = SNLDesign::create(library_, SNLDesign::Type::UserBlackBox, NLName("macro"));
+  port(macro, "input", SNLTerm::Direction::Input);
+  port(macro, "output", SNLTerm::Direction::Output);
+  auto* source = SNLInstance::create(top_, macro);
+  auto* flop = SNLInstance::create(top_, NLDB0::getDFF());
+  connect(top_, {term(source, "output"), term(flop, "C")});
+  auto* pad = SNLDesign::create(library_, SNLDesign::Type::UserBlackBox, NLName("pad"));
+  port(pad, "io", SNLTerm::Direction::InOut);
+  auto* instance = SNLInstance::create(top_, pad);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  ASSERT_EQ(2u, constructor.getCoverageReport().size());
+  EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::Blackbox));
+  EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::InOut));
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* t) { return constructor.getNode(SNLOccurrence(t)); };
+  auto c = graph.createClock("generated", term(source, "output"), id(term(source, "output")));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.clockOrigins[id(term(flop, "C"))].test(c));
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_EQ(0u, graph.getNode(id(term(source, "input")))->getOutDegree());
+  EXPECT_EQ(0u, graph.getNode(id(term(instance, "io")))->getOutDegree());
+  source->destroy();
+  instance->destroy();
+  construct(constructor);
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  EXPECT_TRUE(constructor.getCoverageCounts().empty());
+}
+
+TEST_F(TSNLGraphConstructorTests, scalarAndBusPlainLatchesCaptureForeignDataBesideClockGate) {
+  for (size_t width : {1u, 2u}) {
+    auto* child = SNLDesign::create(library_);
+    auto parts = decomposedGate(child);
+    auto* foreign = port(child, "foreign", SNLTerm::Direction::Input);
+    auto* source = SNLInstance::create(child, NLDB0::getDFF());
+    auto* latch = SNLInstance::create(child, NLDB0::getOrCreateDLatch(width));
+    auto* sink = SNLInstance::create(child, NLDB0::getDFF());
+    auto* gate = latch->getInstTerm(latch->getModel()->getScalarTerm(NLName("E")));
+    ASSERT_NE(nullptr, gate);
+    gate->setNet(parts.clockPort->getNet());
+    // Source data launches in the foreign domain, latch captures in root.
+    connect(child, {foreign, term(source, "C")});
+    term(sink, "C")->setNet(parts.clockPort->getNet());
+    std::vector<SNLInstTerm*> dataPins, outputPins;
+    for (auto* pin : latch->getInstTerms()) {
+      if (SNLDesignModeling::getTermRole(pin) == SNLDesignModeling::SNLTermRole::DataInput) dataPins.push_back(pin);
+      if (SNLDesignModeling::getTermRole(pin) == SNLDesignModeling::SNLTermRole::DataOutput) outputPins.push_back(pin);
+    }
+    connect(child, {term(source, "Q")});
+    for (auto* pin : dataPins) pin->setNet(term(source, "Q")->getNet());
+    connect(child, {outputPins.front(), term(sink, "D")});
+    auto* wrapper = SNLInstance::create(top_, child);
+    TSNLGraphConstructor constructor;
+    construct(constructor);
+    ASSERT_EQ(1u, constructor.getClockGates().size());
+    ASSERT_EQ(1u, constructor.getCoverageReport().size());
+    EXPECT_EQ(TSNLGraphConstructor::Treatment::Approximated, constructor.getCoverageReport().front().treatment);
+    EXPECT_EQ(SNLOccurrence(SNLPath(wrapper), latch), constructor.getCoverageReport().front().occurrence);
+    auto& graph = constructor.getGraph();
+    auto id = [&](SNLNetComponent* t) { return constructor.getNode(SNLOccurrence(SNLPath(wrapper), t)); };
+    auto a = graph.createClock("root", parts.clockPort, id(parts.clockPort));
+    auto b = graph.createClock("foreign", foreign, id(foreign));
+    TClockPropagator::run(graph);
+    for (auto* pin : dataPins) {
+      auto transfer = edge(graph, id(term(source, "Q")), id(pin));
+      ASSERT_NE(TGraph::kInvalidEdge, transfer);
+      EXPECT_TRUE(graph.getEdge(transfer)->getFromClocks().test(b));
+      EXPECT_TRUE(graph.getEdge(transfer)->getToClocks().test(a));
+      EXPECT_TRUE(graph.getEdge(transfer)->hasClockCrossing());
+    }
+    auto transfer = edge(graph, id(outputPins.front()), id(term(sink, "D")));
+    ASSERT_NE(TGraph::kInvalidEdge, transfer);
+    EXPECT_TRUE(graph.getEdge(transfer)->getFromClocks().test(a));
+    EXPECT_FALSE(graph.getEdge(transfer)->hasClockCrossing());
+    wrapper->destroy();
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, incompleteLeafRollsBackInternalArcsAndPublishesCoverageAtomically) {
+  auto* model = modeledFlop();
+  auto* extra = port(model, "extra", SNLTerm::Direction::Input);
+  SNLDesignModeling::setTermRole(extra, SNLDesignModeling::SNLTermRole::DataInput);
+  auto* instance = SNLInstance::create(top_, model);
+  TSNLGraphConstructor constructor;
+  EXPECT_THROW(constructor.getCoverageReport(), NLException);
+  EXPECT_THROW(constructor.getCoverageCounts(), NLException);
+  construct(constructor);
+  EXPECT_EQ(0u, constructor.getGraph().getEdgesCount());
+  EXPECT_EQ(0u, constructor.getGraph().getCaptureEdgesCount());
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(TSNLGraphConstructor::CoverageReason::IncompleteModeling, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Opaque, constructor.getCoverageReport().front().treatment);
+  EXPECT_EQ("flop", constructor.getCoverageReport().front().modelName);
+  auto* previous = &constructor.getGraph();
+  naja::DNL::DNLFull unprocessed(top_);
+  EXPECT_THROW(constructor.construct(unprocessed), NLException);
+  EXPECT_EQ(previous, &constructor.getGraph());
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(SNLOccurrence(instance), constructor.getCoverageReport().front().occurrence);
+}
+
+TEST_F(TSNLGraphConstructorTests, independentMemoryWriteClocksLaunchEveryAsyncReadOutput) {
+  NLDB0::MemorySignature signature {3, 8, 3, 2, 2};
+  signature.independentWriteClocks = true;
+  auto* model = NLDB0::getOrCreateMemory(signature);
+  auto* memory = SNLInstance::create(top_, model);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLBitTerm* term) { return constructor.getNode(SNLOccurrence(memory->getInstTerm(term))); };
+  auto* clocks = model->getBusTerm(NLName("WCLK"));
+  auto a = graph.createClock("a", memory->getInstTerm(clocks->getBit(0)), id(clocks->getBit(0)));
+  auto b = graph.createClock("b", memory->getInstTerm(clocks->getBit(1)), id(clocks->getBit(1)));
+  std::vector<TGraph::EdgeId> observations;
+  for (auto* bit : NLDB0::getMemoryReadData(model)->getBusBits()) {
+    auto observer = graph.createNode(nullptr);
+    observations.push_back(graph.createEdge(id(bit), observer, nullptr));
+  }
+  TClockPropagator::run(graph);
+  for (auto e : observations) {
+    EXPECT_EQ(2u, graph.getEdge(e)->getFromClocks().count());
+    EXPECT_TRUE(graph.getEdge(e)->getFromClocks().test(a));
+    EXPECT_TRUE(graph.getEdge(e)->getFromClocks().test(b));
+  }
+  for (size_t port = 0; port < 2; ++port) {
+    auto* mask = memory->getInstTerm(model->getBusTerm(NLName("WMASK"))->getBit(port * 3));
+    auto maskId = constructor.getNode(SNLOccurrence(mask));
+    ASSERT_EQ(1u, graph.getNode(maskId)->getCaptureInEdges().size());
+    EXPECT_EQ(id(clocks->getBit(port)), graph.getCaptureEdge(
+      graph.getNode(maskId)->getCaptureInEdges().front())->getSource());
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, memoryResetRoleMatchesFlopWithoutAsyncCapture) {
+  for (auto mode : {NLDB0::MemoryResetMode::AsyncLow, NLDB0::MemoryResetMode::AsyncHigh,
+      NLDB0::MemoryResetMode::SyncLow, NLDB0::MemoryResetMode::SyncHigh}) {
+    NLDB0::MemorySignature signature {3, 8, 3, 1, 1};
+    signature.resetMode = mode;
+    auto* memory = SNLInstance::create(top_, NLDB0::getOrCreateMemory(signature));
+    TSNLGraphConstructor constructor;
+    construct(constructor);
+    EXPECT_TRUE(constructor.getCoverageReport().empty());
+    auto id = constructor.getNode(SNLOccurrence(term(memory, "RST")));
+    const auto* node = constructor.getGraph().getNode(id);
+    bool async = mode == NLDB0::MemoryResetMode::AsyncLow || mode == NLDB0::MemoryResetMode::AsyncHigh;
+    EXPECT_EQ(async ? TNode::PinRole::AsyncReset : TNode::PinRole::SyncReset, node->getPinRole());
+    EXPECT_EQ(async ? 0u : 1u, node->getCaptureInEdges().size());
+    memory->destroy();
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, unsupportedLatchIsOpaqueAndMissingMemoryTimingIsReported) {
+  auto* model = modeledFlop();
+  auto seq = SNLDesignModeling::getSequentialModel(model);
+  seq.kind = SNLDesignModeling::SequentialModel::Kind::Latch;
+  seq.states.front().clear = SNLDesignModeling::BooleanExpression{};
+  SNLDesignModeling::setSequentialModel(model, seq);
+  auto* latch = SNLInstance::create(top_, model);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(TSNLGraphConstructor::CoverageReason::UnsupportedLatch, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Opaque, constructor.getCoverageReport().front().treatment);
+  EXPECT_EQ(0u, constructor.getGraph().getEdgesCount());
+  latch->destroy();
+  // A generic interface has no read-clock field. Missing asynchronous timing
+  // cannot prove a synchronous macro's read clock; report it instead.
+  auto* macro = SNLDesign::create(model->getLibrary(), SNLDesign::Type::Primitive, NLName("memory"));
+  auto* c = port(macro, "c", SNLTerm::Direction::Input);
+  auto* a = port(macro, "a", SNLTerm::Direction::Input);
+  auto* d = port(macro, "d", SNLTerm::Direction::Output);
+  SNLDesignModeling::MemoryInterface memory;
+  memory.width = memory.depth = memory.abits = 1;
+  memory.clock = c;
+  memory.readPorts.push_back({{a}, {d}, {}});
+  SNLDesignModeling::setMemoryInterface(macro, memory);
+  SNLInstance::create(top_, macro);
+  construct(constructor);
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(TSNLGraphConstructor::CoverageReason::Memory, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Opaque, constructor.getCoverageReport().front().treatment);
+  EXPECT_EQ(0u, constructor.getGraph().getEdgesCount());
+}
+
+TEST_F(TSNLGraphConstructorTests, multipleDriversDoNotProveClockGatePhase) {
+  auto parts = decomposedGate(top_);
+  auto* second = port(top_, "second", SNLTerm::Direction::Input);
+  second->setNet(parts.clockPort->getNet());
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_TRUE(constructor.getClockGates().empty());
+  EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::MultipleDrivers));
+  EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::UnsupportedLatch));
+  auto id = [&](SNLNetComponent* term) { return constructor.getNode(SNLOccurrence(term)); };
+  auto& graph = constructor.getGraph();
+  for (auto* input : {parts.clock, parts.invInput}) {
+    EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(parts.clockPort), id(input)));
+    EXPECT_NE(TGraph::kInvalidEdge, edge(graph, id(second), id(input)));
+  }
+  for (const auto& entry : constructor.getCoverageReport()) {
+    if (entry.reason == TSNLGraphConstructor::CoverageReason::MultipleDrivers) {
+      EXPECT_EQ(SNLOccurrence(parts.clockPort->getNet()), entry.occurrence);
+      EXPECT_EQ(TSNLGraphConstructor::Treatment::AllDrivers, entry.treatment);
+    }
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, genericMemoryReadDependenciesMustMatchInterface) {
+  auto* primitives = NLLibrary::create(library_->getDB(), NLLibrary::Type::Primitives);
+  auto* model = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("storage"));
+  auto* clock = port(model, "clock", SNLTerm::Direction::Input);
+  auto* address = port(model, "address", SNLTerm::Direction::Input);
+  auto* input = port(model, "input", SNLTerm::Direction::Input);
+  auto* output = port(model, "output", SNLTerm::Direction::Output);
+  SNLDesignModeling::MemoryInterface memory;
+  memory.width = memory.depth = memory.abits = 1;
+  memory.clock = clock;
+  memory.readPorts.push_back({{address}, {output}, {}});
+  memory.writePorts.push_back({{address}, {input}, {}, {}, {}, nullptr});
+  SNLDesignModeling::setMemoryInterface(model, memory);
+  SNLDesignModeling::addCombinatorialArcs({address}, {output});
+  auto* instance = SNLInstance::create(top_, model);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  EXPECT_EQ(2u, constructor.getGraph().getEdgesCount()); //Address->data and clock->data.
+  EXPECT_EQ(2u, constructor.getGraph().getCaptureEdgesCount());
+  auto id = [&](SNLBitTerm* bit) { return constructor.getNode(SNLOccurrence(instance->getInstTerm(bit))); };
+  EXPECT_NE(TGraph::kInvalidEdge, edge(constructor.getGraph(), id(address), id(output)));
+  // A write-through dependency cannot be silently dropped from a generic macro.
+  SNLDesignModeling::addCombinatorialArcs({input}, {output});
+  construct(constructor);
+  ASSERT_EQ(1u, constructor.getCoverageReport().size());
+  EXPECT_EQ(TSNLGraphConstructor::CoverageReason::Memory, constructor.getCoverageReport().front().reason);
+  EXPECT_EQ(TSNLGraphConstructor::Treatment::Opaque, constructor.getCoverageReport().front().treatment);
+  EXPECT_EQ(0u, constructor.getGraph().getEdgesCount());
+  EXPECT_EQ(0u, constructor.getGraph().getCaptureEdgesCount());
+}
+
+TEST_F(TSNLGraphConstructorTests, onDemandConstructionCreatesAndReusesDNL) {
+  auto* clock = port(top_, "clock", SNLTerm::Direction::Input);
+  auto* flop = SNLInstance::create(top_, NLDB0::getDFF());
+  connect(top_, {clock, term(flop, "C")});
+  NLUniverse::get()->setTopDesign(top_);
+  TSNLGraphConstructor constructor;
+  EXPECT_FALSE(naja::DNL::isCreated());
+  ASSERT_NO_THROW(constructor.construct());
+  ASSERT_TRUE(naja::DNL::isCreated());
+  const auto* dnl = naja::DNL::get();
+  EXPECT_EQ(dnl->getNBterms(), constructor.getGraph().getNodesCount());
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  auto clockPin = constructor.getNode(SNLOccurrence(term(flop, "C")));
+  ASSERT_NO_THROW(constructor.construct(*dnl));
+  EXPECT_EQ(dnl, naja::DNL::get());
+  EXPECT_EQ(clockPin, constructor.getNode(SNLOccurrence(term(flop, "C"))));
+  ASSERT_NO_THROW(constructor.construct());
+  EXPECT_EQ(dnl, naja::DNL::get());
+  // An active DNL for another universe top must not be silently reused.
+  auto* other = SNLDesign::create(library_, NLName("other"));
+  NLUniverse::get()->setTopDesign(other);
+  auto* previous = &constructor.getGraph();
+  EXPECT_THROW(constructor.construct(), NLException);
+  EXPECT_EQ(previous, &constructor.getGraph());
+}
+
+TEST_F(TSNLGraphConstructorTests, explicitDNLSnapshotIsIndependentOfActiveDNLAndGraphOutlivesIt) {
+  auto* clock = port(top_, "clock", SNLTerm::Direction::Input);
+  auto* child = SNLDesign::create(library_, NLName("child"));
+  auto* input = port(child, "clock", SNLTerm::Direction::Input);
+  auto* flop = SNLInstance::create(child, NLDB0::getDFF());
+  connect(child, {input, term(flop, "C")});
+  auto* wrapper = SNLInstance::create(top_, child);
+  connect(top_, {clock, wrapper->getInstTerm(input)});
+  NLUniverse::get()->setTopDesign(top_);
+  TSNLGraphConstructor constructor;
+  {
+    const naja::DNL::DNLFull snapshot(*naja::DNL::get());
+    naja::DNL::destroy();
+    NLUniverse::get()->setTopDesign(SNLDesign::create(library_, NLName("other")));
+    ASSERT_NO_THROW(constructor.construct(snapshot));
+    EXPECT_FALSE(naja::DNL::isCreated());
+    EXPECT_EQ(snapshot.getNBterms(), constructor.getGraph().getNodesCount());
+  }
+  auto& graph = constructor.getGraph();
+  auto root = constructor.getNode(SNLOccurrence(clock));
+  auto pin = constructor.getNode(SNLOccurrence(SNLPath(wrapper), term(flop, "C")));
+  auto c = graph.createClock("clock", clock, root);
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.clockOrigins[pin].test(c));
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  EXPECT_FALSE(naja::DNL::isCreated());
+}
+
+TEST_F(TSNLGraphConstructorTests, nestedSharedOccurrencesKeepIndependentTerminalIdentity) {
+  auto* cell = SNLDesign::create(library_, NLName("cell"));
+  auto* clock = port(cell, "clock", SNLTerm::Direction::Input);
+  auto* flop = SNLInstance::create(cell, NLDB0::getDFF());
+  connect(cell, {clock, term(flop, "C")});
+  auto* branch = SNLDesign::create(library_, NLName("branch"));
+  auto* input = port(branch, "clock", SNLTerm::Direction::Input);
+  auto* first = SNLInstance::create(branch, cell);
+  auto* second = SNLInstance::create(branch, cell);
+  connect(branch, {input, first->getInstTerm(clock), second->getInstTerm(clock)});
+  auto* left = SNLInstance::create(top_, branch);
+  auto* right = SNLInstance::create(top_, branch);
+  auto* a = port(top_, "a", SNLTerm::Direction::Input);
+  auto* b = port(top_, "b", SNLTerm::Direction::Input);
+  connect(top_, {a, left->getInstTerm(input)});
+  connect(top_, {b, right->getInstTerm(input)});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  auto ca = graph.createClock("a", a, constructor.getNode(SNLOccurrence(a)));
+  auto cb = graph.createClock("b", b, constructor.getNode(SNLOccurrence(b)));
+  auto result = TClockPropagator::run(graph);
+  std::vector<TGraph::NodeId> ids;
+  for (auto* outer : {left, right}) {
+    for (auto* inner : {first, second}) {
+      SNLPath path(SNLPath(outer), inner);
+      auto id = constructor.getNode(SNLOccurrence(path, term(flop, "C")));
+      ASSERT_NE(TGraph::kInvalidNode, id);
+      ids.push_back(id);
+      EXPECT_EQ(1u, result.clockOrigins[id].count());
+      EXPECT_TRUE(result.clockOrigins[id].test(outer == left ? ca : cb));
+      EXPECT_EQ(constructor.getNode(SNLOccurrence(SNLPath(outer), inner->getInstTerm(clock))),
+        constructor.getNode(SNLOccurrence(path, clock)));
+    }
+  }
+  std::sort(ids.begin(), ids.end());
+  EXPECT_EQ(ids.end(), std::unique(ids.begin(), ids.end()));
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+#if GTEST_HAS_DEATH_TEST
+  // Re-execute in a fresh process: lookup hashes may change with addresses,
+  // while observable node/edge creation and capture relationships must agree.
+  auto fingerprint = [&]() {
+    uint64_t digest = 1469598103934665603ULL;
+    auto mix = [&](uint64_t value) { digest = (digest ^ value) * 1099511628211ULL; };
+    for (const auto& node : graph.getNodesStorage()) {
+      mix(node.getIndex());
+      mix(static_cast<uint64_t>(node.getCellKind()));
+      mix(static_cast<uint64_t>(node.getPinRole()));
+    }
+    for (const auto& edge : graph.getEdgesStorage()) {
+      mix(edge.getSource());
+      mix(edge.getTarget());
+      mix(static_cast<uint64_t>(edge.getKind()));
+    }
+    for (const auto& capture : graph.getCaptureEdgesStorage()) {
+      mix(capture.getSource());
+      mix(capture.getTarget());
+      mix(static_cast<uint64_t>(capture.getKind()));
+    }
+    return "graph=" + std::to_string(digest);
+  };
+  const auto previousStyle = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT({
+    std::fputs(fingerprint().c_str(), stderr);
+    std::_Exit(0);
+  }, ::testing::ExitedWithCode(0), "^" + fingerprint() + "$");
+  GTEST_FLAG_SET(death_test_style, previousStyle);
+#endif
+}
+
+TEST_F(TSNLGraphConstructorTests, declaredMultiSourceAndGeneratedClocksAreImported) {
+  auto* roots = SNLBusTerm::create(top_, SNLTerm::Direction::Input, 1, 0, NLName("roots"));
+  auto* generated = port(top_, "generated", SNLTerm::Direction::Input);
+  auto* primary = NLClock::createPrimary(top_, NLName("primary"), 10.0, "ns", {roots->getBit(1), roots->getBit(0)});
+  auto* divided = NLClock::createGenerated(top_, NLName("divided"), primary, roots->getBit(1), 2, 1, false, {generated});
+  auto* producer = SNLInstance::create(top_, NLDB0::getDFF(), NLName("producer"));
+  auto* consumer = SNLInstance::create(top_, NLDB0::getDFF(), NLName("consumer"));
+  auto* other = SNLInstance::create(top_, NLDB0::getDFF(), NLName("other"));
+  connect(top_, {roots->getBit(1), term(producer, "C")});
+  connect(top_, {roots->getBit(0), term(consumer, "C")});
+  connect(top_, {generated, term(other, "C")});
+  connect(top_, {term(producer, "Q"), term(consumer, "D"), term(other, "D")});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  ASSERT_EQ(2u, graph.getClocksCount());
+  EXPECT_EQ(primary, graph.getClock(0)->getNLClock());
+  EXPECT_EQ(divided, graph.getClock(1)->getNLClock());
+  EXPECT_EQ(primary, graph.getClock(1)->getNLClock()->getMaster());
+  EXPECT_DOUBLE_EQ(20.0, graph.getClock(1)->getNLClock()->getPeriod());
+  ASSERT_EQ(2u, graph.getClock(0)->getSeeds().size());
+  EXPECT_EQ(constructor.getNode(SNLOccurrence(roots->getBit(0))), graph.getClock(0)->getSeeds()[1].node);
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  auto q = constructor.getNode(SNLOccurrence(term(producer, "Q")));
+  auto d = constructor.getNode(SNLOccurrence(term(consumer, "D")));
+  auto otherD = constructor.getNode(SNLOccurrence(term(other, "D")));
+  auto* same = graph.getEdge(edge(graph, q, d));
+  ASSERT_NE(nullptr, same);
+  EXPECT_TRUE(same->hasFromClock(0));
+  EXPECT_TRUE(same->hasToClock(0));
+  EXPECT_FALSE(same->hasClockCrossing());
+  auto* related = graph.getEdge(edge(graph, q, otherD));
+  ASSERT_NE(nullptr, related);
+  EXPECT_TRUE(related->hasFromClock(0));
+  EXPECT_TRUE(related->hasToClock(1));
+  // Relationship filtering is a separate step: binding does not merge clocks.
+  EXPECT_TRUE(related->hasClockCrossing());
+  EXPECT_TRUE(constructor.getCoverageReport().empty());
+  // Rebuild imports fresh bindings, without accumulating clocks in either layer.
+  construct(constructor);
+  EXPECT_EQ(2u, constructor.getGraph().getClocksCount());
+  EXPECT_EQ(2u, top_->getClocks().size());
+  EXPECT_EQ(primary, constructor.getGraph().getClock(0)->getNLClock());
+}
+
+TEST_F(TSNLGraphConstructorTests, sharedModelClockDeclarationsHaveIndependentOccurrenceBindings) {
+  auto* child = SNLDesign::create(library_, NLName("child"));
+  auto* clock = port(child, "clock", SNLTerm::Direction::Input);
+  auto* declaration = NLClock::createPrimary(child, NLName("local"), 7.0, "ns", {clock});
+  auto* flop = SNLInstance::create(child, NLDB0::getDFF(), NLName("state"));
+  connect(child, {clock, term(flop, "C")});
+  auto* left = SNLInstance::create(top_, child, NLName("left"));
+  auto* right = SNLInstance::create(top_, child, NLName("right"));
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  ASSERT_EQ(2u, graph.getClocksCount());
+  auto result = TClockPropagator::run(graph);
+  size_t index = 0;
+  for (auto* instance : {left, right}) {
+    const auto* binding = graph.getClock(index);
+    ASSERT_NE(nullptr, binding);
+    EXPECT_EQ(declaration, binding->getNLClock());
+    auto seed = constructor.getNode(SNLOccurrence(instance->getInstTerm(clock)));
+    auto pin = constructor.getNode(SNLOccurrence(SNLPath(instance), term(flop, "C")));
+    EXPECT_EQ(seed, binding->getNode());
+    EXPECT_EQ(1u, result.clockOrigins[pin].count());
+    EXPECT_TRUE(result.clockOrigins[pin].test(index));
+    ++index;
+  }
+  EXPECT_NE(graph.getClock(0)->getNode(), graph.getClock(1)->getNode());
+  EXPECT_EQ(1u, child->getClocks().size());
+  EXPECT_TRUE(top_->getClocks().empty());
+#if GTEST_HAS_DEATH_TEST
+  auto signature = [&]() {
+    std::string text;
+    for (const auto& binding : graph.getClocksStorage()) {
+      text += binding.getName() + ":" + std::to_string(binding.getIndex());
+      for (const auto& seed : binding.getSeeds()) text += ":" + std::to_string(seed.node);
+      text += ";";
+    }
+    return text;
+  };
+  const auto previousStyle = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT({
+    std::fputs(signature().c_str(), stderr);
+    std::_Exit(0);
+  }, ::testing::ExitedWithCode(0), "^" + signature() + "$");
+  GTEST_FLAG_SET(death_test_style, previousStyle);
+#endif
 }

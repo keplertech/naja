@@ -196,6 +196,20 @@ TGraph::ClockId TGraph::createClock(const std::string& name, naja::NL::SNLNetCom
   return id;
 }
 
+TGraph::ClockId TGraph::createClock(const naja::NL::NLClock& clock, const std::vector<NodeId>& nodes) {
+  for (auto node : nodes) {
+    if (!isNodeValid(node)) {
+      throw std::invalid_argument("TGraph::createClock: node is not a valid node");
+    }
+  }
+  ClockId id = clocks_.size();
+  clocks_.emplace_back(id, clock, nodes);
+  for (TEdge& edge : edges_) {
+    if (edge.isAlive()) edge.resizeClockMasks(clocks_.size());
+  }
+  return id;
+}
+
 const TClock* TGraph::getClock(ClockId clock) const {
   if (!isClockValid(clock)) {
     return nullptr;

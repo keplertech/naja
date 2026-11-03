@@ -34,7 +34,8 @@ class TGraph;
 /// Source classification uses O(nodes + edges) work and storage. For a fixed
 /// number of clock indices, waveform union propagation is also linear; each
 /// newly added clock bit can schedule a node at most once.
-/// Only latches classified as recognized clock-gate state are supported.
+/// Plain latch State/capture associations use the gate waveform without time
+/// borrowing; recognized clock-gate control captures retain their own view.
 class TClockPropagator {
   public:
     TClockPropagator() = delete;

@@ -6,6 +6,8 @@
 
 #include <map>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "SNLOccurrence.h"
@@ -13,8 +15,11 @@
 #include "TNodeProxy.h"
 #include "TEdgeProxy.h"
 
-namespace naja::NL {
-class SNLDesign;
+namespace naja::DNL {
+class DNLInstanceFull;
+class DNLTerminalFull;
+template<class Instance, class Terminal> class DNL;
+using DNLFull = DNL<DNLInstanceFull, DNLTerminalFull>;
 }
 
 namespace naja::TG {
@@ -46,14 +51,15 @@ class TSNLEdgeProxy final: public TEdgeProxy {
     naja::NL::SNLOccurrence occurrence_;
 };
 
-/// Builds an occurrence-aware graph from a structural SNL design.
+/// Builds an occurrence-aware graph from a processed DNL of a structural SNL design.
 /// Hierarchical instance terminals and their internal port occurrences share
 /// one node. Leaf nodes use instance-selected modeling roles and timing arcs.
 /// Recognizes scalar canonical DB0 latch-plus-AND gates whose latch enable
 /// is the inverse of the AND's clock input, through wires and DB0 buffers or
-/// inverters. Physical nodes and edges are retained. Other latches, memories,
-/// inouts, recursive hierarchy, ambiguous drivers and incomplete modeling fail.
-/// Clock definitions are not registered by this constructor.
+/// inverters. Physical nodes and edges are retained. Unsupported elements are
+/// reported and left opaque. Hierarchy expansion/validation belongs to DNL.
+/// Imports NLClock declarations per hierarchy occurrence, with one clock
+/// identity for all sources of a declaration. Declarations must outlive the graph.
 class TSNLGraphConstructor {
   public:
     /// Analysis association over existing terminals, not a replacement cell.
@@ -65,10 +71,36 @@ class TSNLGraphConstructor {
       TGraph::NodeId output;      //AND output.
       TGraph::EdgeId clockPassEdge;
     };
-    explicit TSNLGraphConstructor(naja::NL::SNLDesign* top): top_(top) {}
-    /// Replaces the previous result only on success. Rebuilding invalidates
-    /// references to that previous graph. Netlist edits require rebuilding.
+    enum class CoverageReason {
+      Memory, InOut, Blackbox, UnsupportedLatch, MultipleDrivers,
+      IncompleteModeling, AmbiguousClockGate
+    };
+    enum class Treatment { Opaque, Approximated, Bidirectional, AllDrivers };
+    struct CoverageEntry {
+      naja::NL::SNLOccurrence occurrence;
+      std::string modelName;
+      CoverageReason reason;
+      Treatment treatment;
+      std::string detail;
+    };
+    /// Counts are entry counts, not pin counts; absent reasons have zero entries.
+    using CoverageCounts = std::map<CoverageReason, size_t>;
+    TSNLGraphConstructor() = default;
+    /// Published atomically with the graph; entries retain netlist occurrences.
+    /// Throws before the first successful construct(). An empty report means
+    /// every element was modeled. Fully modeled DB0 memories are not reported.
+    /// Opaque entries describe whole cells; inout entries describe boundary pins.
+    /// MultipleDrivers entries describe bit-net occurrences.
+    const std::vector<CoverageEntry>& getCoverageReport() const;
+    const CoverageCounts& getCoverageCounts() const;
+    /// Obtains the active DNL on demand from the universe's top design.
+    /// Callers must invalidate/rebuild DNL after SNL edits.
     void construct();
+    /// Consumes an already processed DNL. No hierarchy expansion or validation
+    /// is performed here. The DNL is only needed during construction; referenced
+    /// SNL objects must outlive the resulting graph. Replaces the previous
+    /// result only on success, invalidating references to that previous result.
+    void construct(const naja::DNL::DNLFull& dnl);
     TGraph& getGraph();
     const TGraph& getGraph() const;
     /// Lookup top ports or instance terminals in their containing path.
@@ -80,9 +112,14 @@ class TSNLGraphConstructor {
     const std::vector<ClockGate>& getClockGates() const;
 
   private:
-    naja::NL::SNLDesign* top_;
+    std::vector<CoverageEntry> coverage_;
+    CoverageCounts coverageCounts_;
     std::unique_ptr<TGraph> graph_;
-    std::map<naja::NL::SNLOccurrence, TGraph::NodeId> nodes_;
+    struct OccurrenceHash {
+      size_t operator()(const naja::NL::SNLOccurrence& occurrence) const;
+    };
+    // Lookup only: creation and emission always follow DNL table order.
+    std::unordered_map<naja::NL::SNLOccurrence, TGraph::NodeId, OccurrenceHash> nodes_;
     std::vector<ClockGate> clockGates_;
 };
 
