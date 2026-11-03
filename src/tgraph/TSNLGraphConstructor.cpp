@@ -336,6 +336,10 @@ void buildLeaf(TGraph& graph, NodeMap& nodes, const SNLPath& path, SNLInstance* 
         inputIds.push_back(nodeId(input));
         arcs.push_back(graph.createEdge(nodeId(input), nodeId(output),
           new TSNLEdgeProxy(TSNLEdgeProxy::Kind::Combinational, occurrence)));
+        if (NLDB0::isMux2(model)) {
+          graph.getEdge(arcs.back())->setKind(input->getBitTerm() == NLDB0::getMux2Select(model) ?
+            TEdge::Kind::DataOnly : TEdge::Kind::ClockPass);
+        }
       }
       if (NLDB0::isDB0Primitive(model)) {
         if (NLDB0::isGate(model) && table.isAnd() && table.size() == 2 && inputs.size() == 2) {

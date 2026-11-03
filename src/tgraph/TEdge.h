@@ -25,8 +25,10 @@ class TEdge {
     using ClockMask = boost::dynamic_bitset<>;
 
     /// Analysis semantics of an existing physical dependency. State associates
-    /// a clock/gate with Q; DataOnly excludes a held-enable AND input from the
-    /// clock-waveform view while preserving its ordinary data dependency.
+    /// a clock/gate with Q. ClockPass explicitly carries a classifiable waveform
+    /// through a cell (mux data arm or recognized gate clock). DataOnly excludes
+    /// mux selects and held-enable inputs from the waveform view while preserving
+    /// their ordinary data dependencies.
     enum class Kind { Combinational, State, ClockPass, DataOnly };
     Kind getKind() const { return kind_; }
     void setKind(Kind kind) { kind_ = kind; }

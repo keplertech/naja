@@ -1143,7 +1143,8 @@ TEST_F(TGraphTests, testPlainForeignEnableAndUnclockedReportLifecycle) {
   }
   graph.getNode(middleC)->setCellKind(TNode::CellKind::FlipFlop);
   graph.getNode(middleC)->setPinRole(TNode::PinRole::Clock);
-  graph.getEdge(graph.createEdge(a, enableQ, nullptr))->setKind(TEdge::Kind::State);
+  auto enableState = graph.createEdge(a, enableQ, nullptr);
+  graph.getEdge(enableState)->setKind(TEdge::Kind::State);
   auto clockPass = graph.createEdge(b, gate, nullptr);
   graph.createEdge(enableQ, gate, nullptr);
   graph.createEdge(gate, middleC, nullptr);
@@ -1155,6 +1156,7 @@ TEST_F(TGraphTests, testPlainForeignEnableAndUnclockedReportLifecycle) {
   EXPECT_EQ(1u, result.clockOrigins[middleC].count());
   EXPECT_TRUE(result.clockOrigins[middleC].test(cb));
   EXPECT_TRUE(result.generatedClockStateArcs.empty());
+  EXPECT_EQ(std::vector<TEdge::EdgeId>({enableState}), result.controlStateArcs);
   EXPECT_TRUE(result.unclockedFlopClockPins.empty());
   EXPECT_TRUE(graph.getEdge(data)->hasFromClock(cb));
   EXPECT_TRUE(graph.getEdge(data)->hasToClock(cb));
@@ -1163,6 +1165,7 @@ TEST_F(TGraphTests, testPlainForeignEnableAndUnclockedReportLifecycle) {
   graph.getEdge(clockPass)->setDisabled(true);
   result = TClockPropagator::run(graph);
   EXPECT_EQ(1u, result.generatedClockStateArcs.size());
+  EXPECT_TRUE(result.controlStateArcs.empty());
   EXPECT_TRUE(result.unclockedFlopClockPins.empty());
   EXPECT_TRUE(result.clockOrigins[middleC].test(0));
   // Removing its seed association leaves the inferred path visible but unseeded.
@@ -1176,4 +1179,92 @@ TEST_F(TGraphTests, testPlainForeignEnableAndUnclockedReportLifecycle) {
   EXPECT_TRUE(result.unclockedFlopClockPins.empty());
   EXPECT_TRUE(result.clockOrigins[middleC].none());
   EXPECT_EQ(std::vector<TEdge::NodeId>({middleC}), snapshot.unclockedFlopClockPins);
+}
+
+TEST_F(TGraphTests, testMuxGeneratedDataAndStateSelectAreOrderIndependent) {
+  std::mt19937 random(467);
+  for (bool stateSelect : {false, true}) {
+    for (unsigned trial = 0; trial < 40; ++trial) {
+      TGraph graph;
+      std::array<TGraph::NodeId, 9> n;
+      for (auto& node : n) node = graph.createNode(nullptr);
+      auto a = graph.createClock("a", nullptr, n[0]);
+      auto b = graph.createClock("b", nullptr, n[1]);
+      auto c = graph.createClock("c", nullptr, n[2]);
+      graph.getNode(n[3])->setCellKind(TNode::CellKind::FlipFlop);
+      graph.getNode(n[3])->setPinRole(TNode::PinRole::DataOutput);
+      graph.getNode(n[7])->setCellKind(TNode::CellKind::FlipFlop);
+      graph.getNode(n[7])->setPinRole(TNode::PinRole::Clock);
+      struct Arc { unsigned from, to; TEdge::Kind kind; };
+      using K = TEdge::Kind;
+      std::vector<Arc> arcs {{stateSelect ? 2u : 0u,3,K::State},
+        {stateSelect ? 0u : 3u,4,K::Combinational}, {1,5,K::Combinational},
+        {4,6,K::ClockPass}, {5,6,K::ClockPass},
+        {stateSelect ? 3u : 2u,6,K::DataOnly}, {6,7,K::Combinational},
+        {1,8,K::Combinational}};
+      std::shuffle(arcs.begin(), arcs.end(), random);
+      TEdge::EdgeId state = TGraph::kInvalidEdge, data = TGraph::kInvalidEdge;
+      for (const auto& arc : arcs) {
+        auto id = graph.createEdge(n[arc.from], n[arc.to], nullptr);
+        graph.getEdge(id)->setKind(arc.kind);
+        if (arc.kind == K::State) state = id;
+        if (arc.to == 8) data = id;
+      }
+      graph.createCaptureEdge(n[7], n[8]);
+      auto result = TClockPropagator::run(graph);
+      EXPECT_EQ(2u, result.clockOrigins[n[7]].count());
+      EXPECT_TRUE(result.clockOrigins[n[7]].test(a));
+      EXPECT_TRUE(result.clockOrigins[n[7]].test(b));
+      EXPECT_FALSE(result.clockOrigins[n[7]].test(c));
+      EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+      EXPECT_EQ(stateSelect ? std::vector<TEdge::EdgeId>{} : std::vector<TEdge::EdgeId>{state},
+        result.generatedClockStateArcs);
+      EXPECT_EQ(stateSelect ? std::vector<TEdge::EdgeId>{state} : std::vector<TEdge::EdgeId>{},
+        result.controlStateArcs);
+      EXPECT_TRUE(graph.getEdge(data)->hasFromClock(b));
+      EXPECT_EQ(2u, graph.getEdge(data)->getToClocks().count());
+      EXPECT_TRUE(graph.getEdge(data)->hasToClock(a));
+      EXPECT_TRUE(graph.getEdge(data)->hasToClock(b));
+      EXPECT_TRUE(graph.getEdge(data)->hasClockCrossing());
+      auto again = TClockPropagator::run(graph);
+      EXPECT_EQ(result.clockOrigins, again.clockOrigins);
+      EXPECT_EQ(result.controlStateArcs, again.controlStateArcs);
+      graph.getEdge(state)->setDisabled(true);
+      EXPECT_TRUE(TClockPropagator::run(graph).controlStateArcs.empty());
+      graph.removeEdge(state);
+      EXPECT_TRUE(TClockPropagator::run(graph).controlStateArcs.empty());
+    }
+  }
+}
+
+TEST_F(TGraphTests, testMuxAdmitsTwoDividersAndReportsSharedControlUse) {
+  TGraph graph;
+  auto a = graph.createNode(nullptr), b = graph.createNode(nullptr);
+  auto qa = graph.createNode(nullptr), qb = graph.createNode(nullptr);
+  auto mux = graph.createNode(nullptr), gate = graph.createNode(nullptr);
+  auto c = graph.createNode(nullptr);
+  auto ca = graph.createClock("a", nullptr, a);
+  auto cb = graph.createClock("b", nullptr, b);
+  for (auto q : {qa, qb}) {
+    graph.getNode(q)->setCellKind(TNode::CellKind::FlipFlop);
+    graph.getNode(q)->setPinRole(TNode::PinRole::DataOutput);
+  }
+  graph.getNode(c)->setCellKind(TNode::CellKind::FlipFlop);
+  graph.getNode(c)->setPinRole(TNode::PinRole::Clock);
+  auto sa = graph.createEdge(a, qa, nullptr), sb = graph.createEdge(b, qb, nullptr);
+  for (auto state : {sa, sb}) graph.getEdge(state)->setKind(TEdge::Kind::State);
+  for (auto q : {qa, qb}) graph.getEdge(graph.createEdge(q, mux, nullptr))->setKind(TEdge::Kind::ClockPass);
+  graph.createEdge(a, gate, nullptr);
+  graph.createEdge(qa, gate, nullptr);
+  graph.createEdge(mux, c, nullptr);
+  graph.createCaptureEdge(gate, graph.createNode(nullptr));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_EQ(std::vector<TEdge::EdgeId>({sa, sb}), result.generatedClockStateArcs);
+  EXPECT_EQ(std::vector<TEdge::EdgeId>({sa}), result.controlStateArcs);
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_EQ(2u, result.clockOrigins[c].count());
+  EXPECT_TRUE(result.clockOrigins[c].test(ca));
+  EXPECT_TRUE(result.clockOrigins[c].test(cb));
+  EXPECT_EQ(1u, result.clockOrigins[gate].count());
+  EXPECT_TRUE(result.clockOrigins[gate].test(ca));
 }

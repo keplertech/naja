@@ -16,10 +16,15 @@ class TGraph;
 
 /// Separate waveform, launch, data-capture and gate-control views of one graph.
 /// State arcs seed Q launch masks from their clock/gate's waveform origins.
-/// A flop Q used as the sole inferred waveform source on a clock path inherits
-/// its C origins. At merges, explicit seed waveforms take precedence over Q
-/// controls; multiple distinct Q sources without a seed are left unresolved.
-/// Recognized gate latch state and DataOnly inputs never pass waveforms.
+/// A sole inferred flop Q waveform inherits its C origins. ClockPass inputs
+/// (DB0 mux data arms and recognized gate clocks) admit each classifiable source
+/// and union their origins, including Qs alongside explicit seeds. DataOnly
+/// inputs (mux selects and held gate enables) never pass waveforms. At other
+/// merges, seeds/classified waveforms dominate Qs; distinct unclassified Qs
+/// without such a waveform remain ambiguous. Gate-decomposed/custom muxes are
+/// not recognized; their suppressed Qs are reported as controlStateArcs, not
+/// proof that those Qs are enables. Ambiguous/unseeded clock pins are reported
+/// in unclockedFlopClockPins. Recognized gate latch state never passes waveforms.
 /// Data and control captures stop at state outputs and remain independent.
 /// Enabled combinational cycles are rejected without changing edge enablement.
 /// TLoopBreaker remains an explicit, lossy caller policy, never invoked here.
@@ -46,6 +51,12 @@ class TClockPropagator {
       /// order (including legacy implicit State arcs targeting flop outputs).
       /// Admission does not guarantee a seeded origin; see unclockedFlopClockPins.
       std::vector<TEdge::EdgeId> generatedClockStateArcs;
+      /// Enabled flop C->Q associations whose Q reaches a clock-use cone through
+      /// a DataOnly input or is suppressed at a seed/classified-waveform merge,
+      /// in EdgeId order. This is conservative control classification, not proof
+      /// of enable function. A Q used as both waveform and control may appear in
+      /// both reports. Disabled and removed associations are excluded.
+      std::vector<TEdge::EdgeId> controlStateArcs;
     };
 
     static Result run(TGraph& graph);
