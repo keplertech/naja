@@ -34,8 +34,10 @@ static PyObject* PySNLTerm_getContentHash(PySNLTerm* self) {
   METHOD_HEAD("SNLTerm.getContentHash()")
   TRY
   return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  // LCOV_EXCL_START Defensive handlers: valid terms have no hash error path.
   NLCATCH
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyMethodDef PySNLTerm_Methods[] = {

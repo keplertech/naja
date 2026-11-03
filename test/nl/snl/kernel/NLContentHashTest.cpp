@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <functional>
+#include <set>
 #include "NLUniverse.h"
 #include "NLDB.h"
 #include "NLLibrary.h"
@@ -108,6 +109,54 @@ TEST_F(NLContentHashTest, Sensitivity) {
   changes([&] { SNLParameter::create(top, NLName("SIZE"), SNLParameter::Type::Decimal); });
   auto bus = SNLBusTerm::create(top, SNLTerm::Direction::Input, 3, -1, NLName("bus"));
   changes([&] { bus->setMSB(2); });
+}
+
+TEST_F(NLContentHashTest, DirectionAndNetTypeCodes) {
+  std::set<ContentHash> hashes;
+  for (auto direction : {SNLTerm::Direction::Input, SNLTerm::Direction::Output,
+      SNLTerm::Direction::InOut, SNLTerm::Direction::Undefined}) {
+    term->setDirection(direction);
+    EXPECT_TRUE(hashes.insert(term->getContentHash()).second);
+  }
+  hashes.clear();
+  for (auto type : {SNLNet::Type::Standard, SNLNet::Type::Assign0,
+      SNLNet::Type::Assign1, SNLNet::Type::Supply0, SNLNet::Type::Supply1,
+      SNLNet::Type::AssignX, SNLNet::Type::AssignZ}) {
+    net->setType(type);
+    EXPECT_TRUE(hashes.insert(net->getContentHash()).second);
+  }
+}
+
+TEST_F(NLContentHashTest, DesignAndParameterTypeCodes) {
+  std::set<ContentHash> hashes;
+  for (auto type : {SNLDesign::Type::Standard, SNLDesign::Type::UserBlackBox,
+      SNLDesign::Type::AutoBlackBox}) {
+    // Keep identity and contents fixed so only the design type differs.
+    auto design = SNLDesign::create(library, 10, type, NLName("typed"));
+    EXPECT_TRUE(hashes.insert(design->getContentHash()).second);
+    design->destroy();
+  }
+  hashes.clear();
+  for (auto type : {SNLParameter::Type::Decimal, SNLParameter::Type::Binary,
+      SNLParameter::Type::Boolean, SNLParameter::Type::String}) {
+    auto parameter = SNLParameter::create(top, NLName("VALUE"), type, "1");
+    EXPECT_TRUE(hashes.insert(top->getContentHash()).second);
+    parameter->destroy();
+  }
+}
+
+TEST_F(NLContentHashTest, ExplicitExcludedLibraryHashes) {
+  auto primitiveBefore = primitives->getContentHash();
+  auto db0Library = NLLibrary::create(NLUniverse::getDB0(), NLLibrary::Type::InDB0, NLName("internal"));
+  ASSERT_EQ(NLLibrary::Type::InDB0, db0Library->getType());
+  auto db0Before = db0Library->getContentHash();
+  EXPECT_EQ(primitiveBefore, ContentHasher().hash(primitives));
+  EXPECT_EQ(db0Before, ContentHasher().hash(db0Library));
+  EXPECT_NE(primitiveBefore, db0Before);
+  SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("extra"));
+  SNLAttributes::addAttribute(model, SNLAttribute(NLName("keep")));
+  EXPECT_EQ(primitiveBefore, primitives->getContentHash());
+  EXPECT_EQ(db0Before, db0Library->getContentHash());
 }
 
 TEST_F(NLContentHashTest, AttributeRegistry) {

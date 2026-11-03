@@ -1005,7 +1005,7 @@ static PyObject* PyNLDB_getContentHash(PyNLDB* self) {
   TRY
   return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
   NLCATCH
-  return nullptr;
+  return nullptr; // LCOV_EXCL_LINE Unreachable: the success path and every NLCATCH handler return.
 }
 
 PyMethodDef PyNLDB_Methods[] = {

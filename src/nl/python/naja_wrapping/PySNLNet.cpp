@@ -68,8 +68,10 @@ static PyObject* PySNLNet_getContentHash(PySNLNet* self) {
   METHOD_HEAD("SNLNet.getContentHash()")
   TRY
   return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  // LCOV_EXCL_START Defensive handlers: valid nets have no hash error path.
   NLCATCH
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyMethodDef PySNLNet_Methods[] = {

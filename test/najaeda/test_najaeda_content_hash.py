@@ -64,6 +64,20 @@ class ContentHashTest(unittest.TestCase):
             for old, new in zip(before, after):
                 self.assertNotEqual(old, new)
 
+    def test_raw_binding_cycle_errors_and_recovery(self):
+        universe, db, library, top, _, _, _, _ = self.fixture()
+        leaf = naja.SNLDesign.create(library, "leaf")
+        child = naja.SNLInstance.create(top, leaf, "child")
+        objects = (universe, db, library, top, child)
+        expected = [obj.getContentHash() for obj in objects]
+        cycle = naja.SNLInstance.create(leaf, top, "back")
+        for name, obj in zip(("universe", "db", "library", "design", "instance"), objects):
+            with self.subTest(binding=name):
+                with self.assertRaisesRegex(RuntimeError, "acyclic design hierarchy"):
+                    obj.getContentHash()
+        cycle.destroy()
+        self.assertEqual(expected, [obj.getContentHash() for obj in objects])
+
     def test_primitive_content_excluded(self):
         universe, db, library, top, model, instance, term, net = self.fixture()
         before = universe.getContentHash()
