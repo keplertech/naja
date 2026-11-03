@@ -57,9 +57,41 @@ jobs:
         PYTHONMALLOC: malloc
       run: valgrind --error-exitcode=1 --show-leak-kinds=definite --leak-check=full --errors-for-leak-kinds=definite ./snlTestsWithPyLoader
 
+    - name: TestTGraph
+      working-directory: ${{github.workspace}}/build/test/tgraph
+      run: valgrind --error-exitcode=1 --show-leak-kinds=all --leak-check=full --errors-for-leak-kinds=all ./tgraphTests
+
     - name: TestSNLDump
       working-directory: ${{github.workspace}}/build/test/nl/snl/serialization/capnp
-      run: valgrind --error-exitcode=1 --show-leak-kinds=all --leak-check=full --errors-for-leak-kinds=all ./snlCapnPTests
+      # The full audit matrix and combined artifact fixture remain in normal CTest.
+      run: >-
+        valgrind --error-exitcode=1 --show-leak-kinds=all --leak-check=full --errors-for-leak-kinds=all
+        ./snlCapnPTests
+        --gtest_filter='*-CanonicalFamilies/SNLCapnPPrimitiveAuditTest.*:SNLCapnPPrimitiveIdentityTest.AllFamiliesArtifacts'
+
+    - name: TestSNLDumpPrimitiveAudit
+      working-directory: ${{github.workspace}}/build/test/nl/snl/serialization/capnp
+      shell: bash
+      run: |
+        # Each family at width 1, including reset/initialization variants, both
+        # parameter modes, and wide shift counts/vector addresses. Keep selected
+        # width-65 cases for multiword boundaries without the full wide matrix.
+        cases=(
+          assign fa mux1 latch1 'dff*1' multiply1 add1 subtract1 '*divmod1'
+          and1 nand1 or1 nor1 xor1 xnor1 buf1 not1
+          'shift1c*m*' 'vector_update1a*s*' 'vector_select1a*s*'
+          table1 'memory1r*' rom1 masked1
+          mux65 dff65 shift65c80m2 vector_update65a80s1 vector_select65a80s1
+        )
+        filters=()
+        for primitive in "${cases[@]}"; do
+          filters+=("CanonicalFamilies/SNLCapnPPrimitiveAuditTest.*RoundTrip/${primitive}")
+        done
+        # One wide RAM case retains full memory-port allocation/reload coverage.
+        filters+=("CanonicalFamilies/SNLCapnPPrimitiveAuditTest.InheritedRoundTrip/memory65r0")
+        printf -v filter '%s:' "${filters[@]}"
+        valgrind --error-exitcode=1 --show-leak-kinds=all --leak-check=full --errors-for-leak-kinds=all \
+          ./snlCapnPTests --gtest_filter="${filter%:}"
 
     - name: TestSNLNetlists
       working-directory: ${{github.workspace}}/build/test/nl/netlists
