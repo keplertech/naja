@@ -20,6 +20,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/nl/netlist:naja_nl",
+        "//src/dnl:naja_dnl",
         "@boost.dynamic_bitset",
     ],
 )

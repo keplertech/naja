@@ -93,6 +93,10 @@ class TGraph {
     /// getClocksCount().
     /// \throws std::invalid_argument if `node` is not a valid node.
     ClockId createClock(const std::string& name, naja::NL::SNLNetComponent* target, NodeId node);
+    /// One clock identity seeded at all declaration sources, in source order.
+    /// NLClock is referenced, never modified, and must outlive the graph.
+    /// Throws for missing/invalid seed nodes. Does not infer clock relations.
+    ClockId createClock(const naja::NL::NLClock& clock, const std::vector<NodeId>& nodes);
 
     const TClock* getClock(ClockId clock) const;
     std::size_t getClocksCount() const { return clocks_.size(); }

@@ -12,6 +12,7 @@ cc_test(
     ],
     deps = [
         "//src/nl/netlist:naja_nl",
+        "//src/dnl:naja_dnl",
         "//src/tgraph:naja_tgraph",
         "@googletest//:gtest_main",
     ],
