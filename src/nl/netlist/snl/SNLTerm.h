@@ -4,6 +4,7 @@
 
 
 #pragma once
+#include "NLContentHash.h"
 #include <boost/intrusive/set.hpp>
 
 #include "NLName.h"
@@ -16,6 +17,9 @@ class SNLBundleTerm;
 
 class SNLTerm: public SNLNetComponent {
   public:
+    /// Deterministic versioned SHA-256 of this object and its descendants.
+    ContentHash getContentHash() const;
+
     friend class SNLDesign;
     using super = SNLNetComponent;
     

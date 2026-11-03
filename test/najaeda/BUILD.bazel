@@ -81,3 +81,34 @@ sh_test(
         "@rules_python//python:current_py_toolchain",
     ],
 )
+
+# Same contract and Python runtime as the full suite, independently selectable.
+sh_test(
+    name = "najaeda_content_hash_tests",
+    srcs = ["run_najaeda_tests.sh"],
+    tags = ["content_hash"],
+    args = [
+        "src/najaeda/najaeda",
+        "$(rootpath //src/nl/python/naja_wrapping:naja.so)",
+        "$(rootpath //src/nl/python/naja_wrapping:naja_runtime)",
+        "$(PYTHON3_ROOTPATH)",
+        "test/najaeda",
+        "test/nl/formats/verilog/benchmarks",
+        "test/nl/formats/systemverilog/benchmarks",
+        "test/nl/formats/liberty/benchmarks",
+        "test_najaeda_content_hash.py",
+    ],
+    env = {"NAJA_DB0_AUDIT_BINARY": "$(rootpath //test/nl/snl/serialization/capnp:snlCapnPTests)"},
+    toolchains = ["@rules_python//python:current_py_toolchain"],
+    data = [
+        ":test_sources",
+        "//test/nl/snl/serialization/capnp:snlCapnPTests",
+        "//src/najaeda/najaeda:sources",
+        "//src/nl/python/naja_wrapping:naja.so",
+        "//src/nl/python/naja_wrapping:naja_runtime",
+        "//test/nl/formats/liberty:benchmarks",
+        "//test/nl/formats/systemverilog:benchmarks",
+        "//test/nl/formats/verilog:benchmarks",
+        "@rules_python//python:current_py_toolchain",
+    ],
+)

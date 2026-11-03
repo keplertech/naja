@@ -136,7 +136,18 @@ GetContainerMethod(SNLInstance, SNLInstParameter*, SNLInstParameters, InstParame
 
 DirectGetNumericMethod(PySNLInstance_getID, getID, PySNLInstance, SNLInstance)
 
+static PyObject* PySNLInstance_getContentHash(PySNLInstance* self) {
+  METHOD_HEAD("SNLInstance.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  NLCATCH
+  return nullptr; // LCOV_EXCL_LINE Unreachable: the success path and every NLCATCH handler return.
+}
+
 PyMethodDef PySNLInstance_Methods[] = {
+  { "getContentHash", (PyCFunction)PySNLInstance_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   { "getMemoryInterface", (PyCFunction)PySNLInstance_getMemoryInterface, METH_NOARGS,
     "Return the memory interface dictionary; raise RuntimeError if absent."},
   { "getSequentialModel", (PyCFunction)PySNLInstance_getSequentialModel, METH_NOARGS,

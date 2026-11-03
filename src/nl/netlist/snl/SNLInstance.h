@@ -4,6 +4,7 @@
 
 
 #pragma once
+#include "NLContentHash.h"
 #include <vector>
 #include <map>
 #include <boost/intrusive/set.hpp>
@@ -26,6 +27,9 @@ class SNLBusTerm;
 
 class SNLInstance final: public SNLDesignObject {
   public:
+    /// Deterministic versioned SHA-256 of this object and its descendants.
+    ContentHash getContentHash() const;
+
     friend class SNLDesign;
     friend class SNLInstParameter;
     friend class SNLSharedPath;

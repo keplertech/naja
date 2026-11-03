@@ -30,7 +30,20 @@ GetNameMethod(SNLTerm)
 GetContainerMethodWithMethodName(Term, BitTerm, getBits)
 DirectGetNumericMethod(PySNLTerm_getWidth, getWidth, PySNLTerm, SNLTerm)
 
+static PyObject* PySNLTerm_getContentHash(PySNLTerm* self) {
+  METHOD_HEAD("SNLTerm.getContentHash()")
+  TRY
+  return PyUnicode_FromString(toHex(selfObject->getContentHash()).c_str());
+  // LCOV_EXCL_START Defensive handlers: valid terms have no hash error path.
+  NLCATCH
+  return nullptr;
+  // LCOV_EXCL_STOP
+}
+
 PyMethodDef PySNLTerm_Methods[] = {
+  { "getContentHash", (PyCFunction)PySNLTerm_getContentHash, METH_NOARGS,
+    "Return the versioned content SHA-256 as lowercase hex."},
+
   { "getName", (PyCFunction)PySNLTerm_getName, METH_NOARGS,
     "get SNLNet name"},
   { "getWidth", (PyCFunction)PySNLTerm_getWidth, METH_NOARGS,

@@ -15,6 +15,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 cc_library(
     name = "naja_nl",
     srcs = [
+        "core/NLContentHash.cpp",
         "core/NLName.cpp",
         "core/NLObject.cpp",
         "core/NLUniverse.cpp",
@@ -82,6 +83,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/core:naja_core",
+        "//thirdparty/sha256",
         "@spdlog",
         "@boost.intrusive",
     ],

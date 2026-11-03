@@ -1270,6 +1270,14 @@ class Instance:
         if self.inst:
             self.SNLID = self.inst.getModel().getNLID()
 
+    def get_content_hash(self) -> str:
+        """Return the content SHA-256 of this instance's model design.
+
+        Includes descendants, names, IDs, connectivity and registered attributes.
+        Primitive definitions and modeling are excluded from version 1.
+        """
+        return self.__get_snl_model().getContentHash()
+
     def get_lowering_efficiency_report(self, *, warn_threshold=256):
         """Report avoidable mux work in reachable models and optionally warn.
 
@@ -2134,6 +2142,18 @@ def reset():
     u = naja.NLUniverse.get()
     if u is not None:
         u.destroy()
+
+
+def get_content_hash() -> str:
+    """Return the current universe's content SHA-256 as lowercase hex.
+
+    Raises RuntimeError if no universe exists. See ``naja.getContentHashVersion``
+    for the format version. Primitive definitions and modeling are excluded.
+    """
+    universe = naja.NLUniverse.get()
+    if universe is None:
+        raise RuntimeError("Cannot hash a netlist without a universe")
+    return universe.getContentHash()
 
 
 def get_top():

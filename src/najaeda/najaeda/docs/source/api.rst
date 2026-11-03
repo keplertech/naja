@@ -19,6 +19,25 @@ supported subset. ``Instance.dump_gate_level_verilog`` and ``GateLevelVerilogDum
 structural netlists, including after RTL elaboration; they do not reconstruct
 the original behavioral RTL. See :doc:`loading`.
 
+Content identity
+----------------
+
+``netlist.get_content_hash()`` returns the current universe's content SHA-256
+as a 64-character lowercase hexadecimal string; it raises ``RuntimeError`` if
+no universe exists. ``Instance.get_content_hash()`` hashes its model design
+and descendants. Unchanged model designs keep their hash when a parent is edited.
+Names, IDs, connectivity, explicit instance parameters and the case-sensitive
+attributes ``keep``, ``dont_touch``, ``keep_hierarchy`` count as content.
+Source metadata and producer version/Git hash do not.
+
+Primitive definitions and modeling are excluded. Instances still identify their
+primitive models by reference, name and type and include their pin connections.
+This identifies the loaded ID namespace, not logical equivalence; separately
+identify primitive libraries when their semantics matter. Different model IDs
+remain different even when a library is loaded from another source.
+Use ``naja.getContentHashVersion()`` (currently 1) alongside stored hashes.
+For individual native objects and parent-side instance wiring, see :doc:`raw_api`.
+
 Lowering efficiency audit
 -------------------------
 

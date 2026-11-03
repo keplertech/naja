@@ -4,6 +4,7 @@
 
 
 #pragma once
+#include "NLContentHash.h"
 #include "NLObject.h"
 #include "NLLibrary.h"
 #include "NLClock.h"
@@ -14,6 +15,9 @@ class NLUniverse;
 
 class NLDB final: public NLObject {
   public:
+    /// Deterministic versioned SHA-256 of this object and its descendants.
+    ContentHash getContentHash() const;
+
     friend class NLUniverse;
     friend class NLLibrary;
     using super = NLObject;

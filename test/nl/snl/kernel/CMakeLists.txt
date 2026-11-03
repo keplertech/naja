@@ -5,6 +5,7 @@
 INCLUDE(GoogleTest)
 
 SET(snl_tests
+  NLContentHashTest.cpp
   NLIDTest.cpp
   NLNameTest.cpp
   NLUniverseTest.cpp NLDBTest.cpp NLLibraryTest.cpp

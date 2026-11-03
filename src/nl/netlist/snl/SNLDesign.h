@@ -4,6 +4,7 @@
 
 
 #pragma once
+#include "NLContentHash.h"
 #include <map>
 #include <vector>
 
@@ -35,6 +36,9 @@ class SNLRTLInfos;
  */
 class SNLDesign final: public NLObject {
   public:
+    /// Deterministic versioned SHA-256 of this object and its descendants.
+    ContentHash getContentHash() const;
+
     friend class NLLibrary;
     friend class SNLScalarTerm;
     friend class SNLBusTerm;

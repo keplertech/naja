@@ -42,3 +42,13 @@ set_tests_properties(najaeda-python-determinism-tests PROPERTIES
   TIMEOUT 300
   ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};NAJA_DB0_AUDIT_BINARY=$<TARGET_FILE:snlCapnPTests>;NAJAEDA_TEST_PATH=${CMAKE_CURRENT_BINARY_DIR}"
 )
+
+add_test(NAME najaeda-python-content-hash-tests
+  COMMAND "${NAJA_PYTHON_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/test_najaeda_content_hash.py -v
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(najaeda-python-content-hash-tests PROPERTIES
+  FIXTURES_REQUIRED najaeda-test-env
+  LABELS content_hash
+  ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}"
+)

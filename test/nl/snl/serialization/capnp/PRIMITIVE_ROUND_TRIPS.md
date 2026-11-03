@@ -47,6 +47,27 @@ and all NajaIF bytes. The focused native cases cover width 65. SV and VHDL
 fixtures additionally check frontend-created models, including VHDL-inferred
 memory with inherited reset fields. Every HDL fixture also has a fresh reader.
 
+## Valgrind selection
+
+Normal CTest and determinism runs retain the complete audit matrix and the
+combined `AllFamiliesArtifacts` fixture. The Valgrind workflow runs the other
+serialization/identity/error-path tests unchanged, then selects a smaller
+primitive audit set. It covers every family at width 1, both inherited and
+explicit round trips, all memory reset modes, ROM and masked multi-clock RAM,
+and wide shift-count/vector-address configurations.
+
+Selected width-65 mux, flop, shift, vector-update and vector-select cases retain
+multiword-boundary coverage in both parameter modes. One inherited width-65 RAM
+case also retains wide memory-port allocation/reload coverage. The remaining
+width-5/65 matrix and `AllFamiliesArtifacts` are omitted only from Valgrind:
+repeated full memory-interface queries dominate their instrumented runtime.
+No native test assertions or ordinary CTest registrations are removed.
+
+The selection is maintained in `.github/workflows/valgrind.yml`. When adding a
+primitive family, extend that selection alongside the full audit inventory.
+The same workflow also runs the complete `tgraphTests` executable with full
+leak checking and errors for every leak kind.
+
 ## Defects and ownership
 
 These defects belong to Naja's serialization integration. No naja-if dependency,
