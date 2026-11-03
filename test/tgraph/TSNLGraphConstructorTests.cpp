@@ -25,6 +25,7 @@
 #include "SNLParameter.h"
 #include "SNLPath.h"
 #include "SNLScalarNet.h"
+#include "SNLBitNet.h"
 #include "SNLScalarTerm.h"
 #include "TClockPropagator.h"
 #include "TSNLGraphConstructor.h"
@@ -87,6 +88,15 @@ class TSNLGraphConstructorTests: public ::testing::Test {
       Model::addInputsToClockArcs({data}, clock);
       Model::addClockToOutputsArcs(clock, {output});
       return model;
+    }
+    SNLInstance* toggler(SNLDesign* design, SNLBitNet* clockNet) {
+      auto* flop = SNLInstance::create(design, NLDB0::getDFF());
+      auto* model = NLDB0::getOrCreateNOutputGate(NLDB0::GateType::Not, 1);
+      auto* inverter = SNLInstance::create(design, model);
+      term(flop, "C")->setNet(clockNet);
+      connect(design, {term(flop, "Q"), inverter->getInstTerm(NLDB0::getGateSingleTerm(model))});
+      connect(design, {inverter->getInstTerm(NLDB0::getGateNTerms(model)->getBit(0)), term(flop, "D")});
+      return flop;
     }
     struct GateParts {
       SNLInstance* latch;
@@ -996,6 +1006,8 @@ TEST_F(TSNLGraphConstructorTests, foreignPlainGateEnableDoesNotPolluteDirectDoma
   auto result = TClockPropagator::run(graph);
   EXPECT_TRUE(result.unclockedFlopClockPins.empty());
   EXPECT_TRUE(result.generatedClockStateArcs.empty());
+  EXPECT_EQ(std::vector<TEdge::EdgeId>({edge(graph, id(term(source, "C")), id(term(source, "Q")))}),
+    result.controlStateArcs);
   EXPECT_TRUE(result.clockOrigins[id(term(source, "C"))].test(ca));
   for (auto* flop : {middle, sink}) {
     const auto& mask = result.clockOrigins[id(term(flop, "C"))];
@@ -1007,4 +1019,383 @@ TEST_F(TSNLGraphConstructorTests, foreignPlainGateEnableDoesNotPolluteDirectDoma
   EXPECT_TRUE(transfer->hasFromClock(cb));
   EXPECT_TRUE(transfer->hasToClock(cb));
   EXPECT_FALSE(transfer->hasClockCrossing());
+}
+
+TEST_F(TSNLGraphConstructorTests, muxDataArmsCarryGeneratedClocksAndSelectIsControl) {
+  // primary/primary, divided/primary, and primary/primary with a state select.
+  for (unsigned mode = 0; mode < 3; ++mode) {
+    for (unsigned width : {1u, 3u}) {
+      auto* design = SNLDesign::create(library_);
+      auto* aPort = port(design, "a", SNLTerm::Direction::Input);
+      auto* bPort = port(design, "b", SNLTerm::Direction::Input);
+      auto* selectPort = port(design, "select", SNLTerm::Direction::Input);
+      auto* source = SNLInstance::create(design, NLDB0::getDFF());
+      auto* sink = SNLInstance::create(design, NLDB0::getDFF());
+      connect(design, {aPort});
+      connect(design, {bPort});
+      term(source, "C")->setNet(mode == 0 ? aPort->getNet() : bPort->getNet());
+      auto* divider = toggler(design, aPort->getNet());
+      auto* model = NLDB0::getOrCreateMux2(width);
+      auto* mux = SNLInstance::create(design, model);
+      auto* left = mux->getInstTerm(NLDB0::getMux2InputA(model)->getBit(0));
+      auto* right = mux->getInstTerm(NLDB0::getMux2InputB(model)->getBit(0));
+      auto* select = mux->getInstTerm(NLDB0::getMux2Select(model));
+      auto* out = mux->getInstTerm(NLDB0::getMux2Output(model)->getBit(0));
+      left->setNet(mode == 1 ? term(divider, "Q")->getNet() : aPort->getNet());
+      right->setNet(bPort->getNet());
+      if (mode == 2) select->setNet(term(divider, "Q")->getNet());
+      else connect(design, {selectPort, select});
+      connect(design, {out, term(sink, "C")});
+      connect(design, {term(source, "Q"), term(sink, "D")});
+      TSNLGraphConstructor constructor(design);
+      constructor.construct();
+      auto& graph = constructor.getGraph();
+      auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+      auto a = graph.createClock("a", aPort, id(aPort));
+      auto b = graph.createClock("b", bPort, id(bPort));
+      EXPECT_EQ(TEdge::Kind::ClockPass, graph.getEdge(edge(graph, id(left), id(out)))->getKind());
+      EXPECT_EQ(TEdge::Kind::ClockPass, graph.getEdge(edge(graph, id(right), id(out)))->getKind());
+      EXPECT_EQ(TEdge::Kind::DataOnly, graph.getEdge(edge(graph, id(select), id(out)))->getKind());
+      auto result = TClockPropagator::run(graph);
+      auto state = edge(graph, id(term(divider, "C")), id(term(divider, "Q")));
+      EXPECT_EQ(mode == 1 ? std::vector<TEdge::EdgeId>{state} : std::vector<TEdge::EdgeId>{},
+        result.generatedClockStateArcs);
+      EXPECT_EQ(mode == 2 ? std::vector<TEdge::EdgeId>{state} : std::vector<TEdge::EdgeId>{},
+        result.controlStateArcs);
+      EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+      const auto& clocks = result.clockOrigins[id(term(sink, "C"))];
+      EXPECT_EQ(2u, clocks.count());
+      EXPECT_TRUE(clocks.test(a));
+      EXPECT_TRUE(clocks.test(b));
+      EXPECT_EQ(mode == 1, result.clockOrigins[id(term(divider, "Q"))].any());
+      auto* data = graph.getEdge(edge(graph, id(term(source, "Q")), id(term(sink, "D"))));
+      EXPECT_EQ(1u, data->getFromClocks().count());
+      EXPECT_TRUE(data->hasFromClock(mode == 0 ? a : b));
+      EXPECT_EQ(clocks, data->getToClocks());
+      EXPECT_TRUE(data->hasClockCrossing());
+      if (mode == 1 && width == 1) {
+        std::mt19937 random(184);
+        std::vector<TEdge::EdgeId> order(graph.getEdgesCount());
+        std::iota(order.begin(), order.end(), 0);
+        for (unsigned trial = 0; trial < 32; ++trial) {
+          std::shuffle(order.begin(), order.end(), random);
+          TGraph replay;
+          for (const auto& node : graph.getNodesStorage()) {
+            auto n = replay.createNode(nullptr);
+            replay.getNode(n)->setCellKind(node.getCellKind());
+            replay.getNode(n)->setPinRole(node.getPinRole());
+          }
+          std::vector<TEdge::EdgeId> mapping(order.size());
+          for (auto original : order) {
+            const auto* arc = graph.getEdge(original);
+            auto copy = replay.createEdge(arc->getSource(), arc->getTarget(), nullptr);
+            replay.getEdge(copy)->setKind(arc->getKind());
+            mapping[original] = copy;
+          }
+          for (const auto& capture : graph.getCaptureEdgesStorage()) {
+            replay.createCaptureEdge(capture.getSource(), capture.getTarget(), capture.getKind());
+          }
+          replay.createClock("a", nullptr, id(aPort));
+          replay.createClock("b", nullptr, id(bPort));
+          auto shuffled = TClockPropagator::run(replay);
+          EXPECT_EQ(result.clockOrigins, shuffled.clockOrigins);
+          EXPECT_EQ(result.unclockedFlopClockPins, shuffled.unclockedFlopClockPins);
+          EXPECT_EQ(std::vector<TEdge::EdgeId>{mapping[state]}, shuffled.generatedClockStateArcs);
+          EXPECT_EQ(result.controlStateArcs, shuffled.controlStateArcs);
+          for (const auto& arc : graph.getEdgesStorage()) {
+            auto* copy = replay.getEdge(mapping[arc.getIndex()]);
+            EXPECT_EQ(arc.getFromClocks(), copy->getFromClocks());
+            EXPECT_EQ(arc.getToClocks(), copy->getToClocks());
+            EXPECT_EQ(arc.getClockGateControlClocks(), copy->getClockGateControlClocks());
+            EXPECT_FALSE(copy->isDisabled());
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, unclassifiedDividerMergesRemainUnclocked) {
+  for (bool exclusiveOr : {false, true}) {
+    auto* design = SNLDesign::create(library_);
+    auto* aPort = port(design, "a", SNLTerm::Direction::Input);
+    auto* bPort = port(design, "b", SNLTerm::Direction::Input);
+    connect(design, {aPort});
+    connect(design, {bPort});
+    auto* first = toggler(design, aPort->getNet());
+    auto* second = exclusiveOr ? toggler(design, bPort->getNet()) : SNLInstance::create(design, NLDB0::getDFF());
+    if (!exclusiveOr) {
+      term(second, "C")->setNet(aPort->getNet());
+      auto* control = port(design, "control", SNLTerm::Direction::Input);
+      connect(design, {control, term(second, "D")});
+      connect(design, {term(second, "Q")});
+    }
+    auto* model = NLDB0::getOrCreateNInputGate(exclusiveOr ? NLDB0::GateType::Xor : NLDB0::GateType::And, 2);
+    auto* merge = SNLInstance::create(design, model);
+    auto* sink = SNLInstance::create(design, NLDB0::getDFF());
+    merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(0))->setNet(term(first, "Q")->getNet());
+    merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(1))->setNet(term(second, "Q")->getNet());
+    connect(design, {merge->getInstTerm(NLDB0::getGateSingleTerm(model)), term(sink, "C")});
+    TSNLGraphConstructor constructor(design);
+    constructor.construct();
+    auto& graph = constructor.getGraph();
+    auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+    graph.createClock("a", aPort, id(aPort));
+    graph.createClock("b", bPort, id(bPort));
+    auto result = TClockPropagator::run(graph);
+    EXPECT_EQ(std::vector<TGraph::NodeId>{id(term(sink, "C"))}, result.unclockedFlopClockPins);
+    EXPECT_TRUE(result.clockOrigins[id(term(sink, "C"))].none());
+    EXPECT_TRUE(result.generatedClockStateArcs.empty());
+    EXPECT_TRUE(result.controlStateArcs.empty());
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, dividedClockFeedsRecognizedLatchGate) {
+  auto parts = decomposedGate(top_);
+  auto* aPort = port(top_, "a", SNLTerm::Direction::Input);
+  auto* bPort = port(top_, "b", SNLTerm::Direction::Input);
+  connect(top_, {aPort});
+  auto* divider = toggler(top_, aPort->getNet());
+  // Preserve all physical gate wiring; drive the former root net from Q.
+  for (auto* pin : {parts.clock, parts.invInput}) pin->setNet(term(divider, "Q")->getNet());
+  parts.clockPort->setNet(nullptr);
+  auto* enable = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* sink = SNLInstance::create(top_, NLDB0::getDFF());
+  connect(top_, {bPort, term(enable, "C")});
+  term(enable, "Q")->setNet(parts.enablePort->getNet());
+  parts.enablePort->setNet(nullptr);
+  term(sink, "C")->setNet(parts.output->getNet());
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+  auto a = graph.createClock("a", aPort, id(aPort));
+  auto b = graph.createClock("b", bPort, id(bPort));
+  auto result = TClockPropagator::run(graph);
+  ASSERT_EQ(1u, constructor.getClockGates().size());
+  EXPECT_EQ(1u, result.generatedClockStateArcs.size());
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_EQ(1u, result.clockOrigins[id(term(sink, "C"))].count());
+  EXPECT_TRUE(result.clockOrigins[id(term(sink, "C"))].test(a));
+  auto* control = graph.getEdge(edge(graph, id(term(enable, "Q")), id(parts.data)));
+  EXPECT_TRUE(control->hasFromClock(b));
+  EXPECT_TRUE(control->getClockGateControlClocks().test(a));
+  EXPECT_TRUE(control->hasClockGateControlCrossing());
+}
+
+TEST_F(TSNLGraphConstructorTests, dividerDataFanoutCrossesOnlyAtForeignCapture) {
+  auto* aPort = port(top_, "a", SNLTerm::Direction::Input);
+  auto* bPort = port(top_, "b", SNLTerm::Direction::Input);
+  auto* source = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* sink = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* fanout = SNLInstance::create(top_, NLDB0::getDFF());
+  connect(top_, {aPort, term(source, "C")});
+  connect(top_, {bPort, term(fanout, "C")});
+  auto* divider = toggler(top_, aPort->getNet());
+  term(sink, "C")->setNet(term(divider, "Q")->getNet());
+  term(fanout, "D")->setNet(term(divider, "Q")->getNet());
+  connect(top_, {term(source, "Q"), term(sink, "D")});
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+  auto a = graph.createClock("a", aPort, id(aPort));
+  auto b = graph.createClock("b", bPort, id(bPort));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_EQ(1u, result.generatedClockStateArcs.size());
+  EXPECT_EQ(1u, result.clockOrigins[id(term(sink, "C"))].count());
+  EXPECT_TRUE(result.clockOrigins[id(term(sink, "C"))].test(a));
+  auto crossing = edge(graph, id(term(divider, "Q")), id(term(fanout, "D")));
+  EXPECT_TRUE(graph.getEdge(crossing)->hasFromClock(a));
+  EXPECT_TRUE(graph.getEdge(crossing)->hasToClock(b));
+  for (const auto& arc : graph.getEdgesStorage()) EXPECT_EQ(arc.getIndex() == crossing, arc.hasClockCrossing());
+}
+
+TEST_F(TSNLGraphConstructorTests, generatedClockStateFeedbackUsesFixedPoint) {
+  auto* root = port(top_, "root", SNLTerm::Direction::Input);
+  connect(top_, {root});
+  auto* first = toggler(top_, root->getNet());
+  auto* second = toggler(top_, term(first, "Q")->getNet());
+  auto* sink = SNLInstance::create(top_, NLDB0::getDFF());
+  auto* source = SNLInstance::create(top_, NLDB0::getDFF());
+  term(sink, "C")->setNet(term(second, "Q")->getNet());
+  term(source, "C")->setNet(root->getNet());
+  connect(top_, {term(source, "Q"), term(sink, "D")});
+  auto* model = NLDB0::getOrCreateNInputGate(NLDB0::GateType::Xor, 2);
+  auto* merge = SNLInstance::create(top_, model);
+  // Replace first's feedback with Q1 xor ~Q2. The old inverter remains physical.
+  auto* invModel = NLDB0::getOrCreateNOutputGate(NLDB0::GateType::Not, 1);
+  auto* inverse = SNLInstance::create(top_, invModel);
+  inverse->getInstTerm(NLDB0::getGateSingleTerm(invModel))->setNet(term(second, "Q")->getNet());
+  merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(0))->setNet(term(first, "Q")->getNet());
+  connect(top_, {inverse->getInstTerm(NLDB0::getGateNTerms(invModel)->getBit(0)),
+    merge->getInstTerm(NLDB0::getGateNTerms(model)->getBit(1))});
+  connect(top_, {merge->getInstTerm(NLDB0::getGateSingleTerm(model)), term(first, "D")});
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+  auto a = graph.createClock("a", root, id(root));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_EQ(2u, result.generatedClockStateArcs.size());
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  for (auto* flop : {first, second, sink, source}) {
+    EXPECT_EQ(1u, result.clockOrigins[id(term(flop, "C"))].count());
+    EXPECT_TRUE(result.clockOrigins[id(term(flop, "C"))].test(a));
+  }
+  for (const auto& arc : graph.getEdgesStorage()) {
+    EXPECT_FALSE(arc.hasClockCrossing());
+    EXPECT_FALSE(arc.isDisabled());
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, sharedDividerOccurrencesCaptureOppositeDomains) {
+  auto* child = SNLDesign::create(library_);
+  auto* root = port(child, "root", SNLTerm::Direction::Input);
+  auto* data = port(child, "data", SNLTerm::Direction::Input);
+  auto* output = port(child, "out", SNLTerm::Direction::Output);
+  connect(child, {root});
+  auto* divider = toggler(child, root->getNet());
+  auto* sink = SNLInstance::create(child, NLDB0::getDFF());
+  term(sink, "C")->setNet(term(divider, "Q")->getNet());
+  connect(child, {data, term(sink, "D")});
+  connect(child, {term(sink, "Q"), output});
+  std::vector<SNLInstance*> wrappers, sources;
+  std::vector<SNLScalarTerm*> roots;
+  for (unsigned i = 0; i < 2; ++i) {
+    wrappers.push_back(SNLInstance::create(top_, child));
+    sources.push_back(SNLInstance::create(top_, NLDB0::getDFF()));
+    roots.push_back(SNLScalarTerm::create(top_, SNLTerm::Direction::Input));
+    connect(top_, {roots.back(), wrappers.back()->getInstTerm(root), term(sources.back(), "C")});
+  }
+  for (unsigned i = 0; i < 2; ++i) connect(top_, {term(sources[1-i], "Q"), wrappers[i]->getInstTerm(data)});
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto a = graph.createClock("a", roots[0], constructor.getNode(SNLOccurrence(roots[0])));
+  auto b = graph.createClock("b", roots[1], constructor.getNode(SNLOccurrence(roots[1])));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_EQ(2u, result.generatedClockStateArcs.size());
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  for (unsigned i = 0; i < 2; ++i) {
+    auto c = constructor.getNode(SNLOccurrence(SNLPath(wrappers[i]), term(sink, "C")));
+    auto d = constructor.getNode(SNLOccurrence(SNLPath(wrappers[i]), term(sink, "D")));
+    EXPECT_EQ(1u, result.clockOrigins[c].count());
+    EXPECT_TRUE(result.clockOrigins[c].test(i == 0 ? a : b));
+    ASSERT_EQ(1u, graph.getNode(d)->getInEdges().size());
+    auto* transfer = graph.getEdge(*graph.getNode(d)->getInEdges().begin());
+    EXPECT_TRUE(transfer->hasFromClock(i == 0 ? b : a));
+    EXPECT_TRUE(transfer->hasToClock(i == 0 ? a : b));
+    EXPECT_TRUE(transfer->hasClockCrossing());
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, nestedClockEnableFeedbackKeepsOneDomain) {
+  auto* root = port(top_, "root", SNLTerm::Direction::Input);
+  auto* input = port(top_, "input", SNLTerm::Direction::Input);
+  std::vector<SNLInstance*> flops;
+  for (unsigned i = 0; i < 4; ++i) flops.push_back(SNLInstance::create(top_, NLDB0::getDFF()));
+  auto* andModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::And, 2);
+  auto* orModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::Or, 2);
+  auto* wakeModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::Or, 3);
+  auto* gate = SNLInstance::create(top_, andModel);
+  auto* enable = SNLInstance::create(top_, andModel);
+  auto* busy = SNLInstance::create(top_, orModel);
+  auto* wake = SNLInstance::create(top_, wakeModel);
+  auto in = [&](SNLInstance* cell, unsigned bit) {
+    return cell->getInstTerm(NLDB0::getGateNTerms(cell->getModel())->getBit(bit));
+  };
+  auto out = [&](SNLInstance* cell) { return cell->getInstTerm(NLDB0::getGateSingleTerm(cell->getModel())); };
+  connect(top_, {root, term(flops[0], "C"), term(flops[1], "C"), in(gate, 0)});
+  connect(top_, {out(gate), term(flops[2], "C"), term(flops[3], "C")});
+  connect(top_, {term(flops[0], "Q"), in(enable, 0)});
+  connect(top_, {term(flops[1], "Q"), in(busy, 1)});
+  connect(top_, {term(flops[2], "Q"), in(wake, 2), term(flops[3], "D")});
+  connect(top_, {out(wake), in(busy, 0)});
+  connect(top_, {out(busy), in(enable, 1)});
+  connect(top_, {out(enable), in(gate, 1)});
+  connect(top_, {input, in(wake, 0), in(wake, 1), term(flops[0], "D"), term(flops[1], "D"), term(flops[2], "D")});
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+  auto a = graph.createClock("a", root, id(root));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.unclockedFlopClockPins.empty());
+  EXPECT_TRUE(result.generatedClockStateArcs.empty());
+  std::vector<TEdge::EdgeId> controls;
+  for (unsigned i = 0; i < 3; ++i) controls.push_back(edge(graph, id(term(flops[i], "C")), id(term(flops[i], "Q"))));
+  std::sort(controls.begin(), controls.end());
+  EXPECT_EQ(controls, result.controlStateArcs);
+  for (auto* flop : flops) {
+    EXPECT_EQ(1u, result.clockOrigins[id(term(flop, "C"))].count());
+    EXPECT_TRUE(result.clockOrigins[id(term(flop, "C"))].test(a));
+  }
+  std::mt19937 random(643);
+  std::vector<TEdge::EdgeId> order(graph.getEdgesCount());
+  std::iota(order.begin(), order.end(), 0);
+  for (unsigned trial = 0; trial < 32; ++trial) {
+    std::shuffle(order.begin(), order.end(), random);
+    TGraph replay;
+    for (const auto& node : graph.getNodesStorage()) {
+      auto n = replay.createNode(nullptr);
+      replay.getNode(n)->setCellKind(node.getCellKind());
+      replay.getNode(n)->setPinRole(node.getPinRole());
+    }
+    for (auto original : order) {
+      auto* arc = graph.getEdge(original);
+      auto copy = replay.createEdge(arc->getSource(), arc->getTarget(), nullptr);
+      replay.getEdge(copy)->setKind(arc->getKind());
+    }
+    for (const auto& capture : graph.getCaptureEdgesStorage()) replay.createCaptureEdge(capture.getSource(), capture.getTarget());
+    replay.createClock("a", nullptr, id(root));
+    auto shuffled = TClockPropagator::run(replay);
+    EXPECT_EQ(result.clockOrigins, shuffled.clockOrigins);
+    EXPECT_TRUE(shuffled.generatedClockStateArcs.empty());
+    EXPECT_TRUE(shuffled.unclockedFlopClockPins.empty());
+    EXPECT_EQ(3u, shuffled.controlStateArcs.size());
+    EXPECT_TRUE(std::is_sorted(shuffled.controlStateArcs.begin(), shuffled.controlStateArcs.end()));
+    for (const auto& arc : replay.getEdgesStorage()) {
+      EXPECT_FALSE(arc.hasClockCrossing());
+      EXPECT_FALSE(arc.isDisabled());
+    }
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, gateDecomposedMuxReportsSuppressedDivider) {
+  auto* aPort = port(top_, "a", SNLTerm::Direction::Input);
+  auto* bPort = port(top_, "b", SNLTerm::Direction::Input);
+  auto* select = port(top_, "select", SNLTerm::Direction::Input);
+  connect(top_, {aPort});
+  auto* divider = toggler(top_, aPort->getNet());
+  auto* invModel = NLDB0::getOrCreateNOutputGate(NLDB0::GateType::Not, 1);
+  auto* andModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::And, 2);
+  auto* orModel = NLDB0::getOrCreateNInputGate(NLDB0::GateType::Or, 2);
+  auto* inverse = SNLInstance::create(top_, invModel);
+  auto* left = SNLInstance::create(top_, andModel);
+  auto* right = SNLInstance::create(top_, andModel);
+  auto* merge = SNLInstance::create(top_, orModel);
+  auto* sink = SNLInstance::create(top_, NLDB0::getDFF());
+  auto in = [&](SNLInstance* cell, unsigned bit) { return cell->getInstTerm(NLDB0::getGateNTerms(cell->getModel())->getBit(bit)); };
+  auto out = [&](SNLInstance* cell) { return cell->getInstTerm(NLDB0::getGateSingleTerm(cell->getModel())); };
+  in(left, 0)->setNet(term(divider, "Q")->getNet());
+  connect(top_, {bPort, in(right, 0)});
+  connect(top_, {select, in(left, 1), inverse->getInstTerm(NLDB0::getGateSingleTerm(invModel))});
+  connect(top_, {inverse->getInstTerm(NLDB0::getGateNTerms(invModel)->getBit(0)), in(right, 1)});
+  connect(top_, {out(left), in(merge, 0)});
+  connect(top_, {out(right), in(merge, 1)});
+  connect(top_, {out(merge), term(sink, "C")});
+  TSNLGraphConstructor constructor(top_);
+  constructor.construct();
+  auto& graph = constructor.getGraph();
+  auto id = [&](SNLNetComponent* pin) { return constructor.getNode(SNLOccurrence(pin)); };
+  auto a = graph.createClock("a", aPort, id(aPort));
+  auto b = graph.createClock("b", bPort, id(bPort));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.generatedClockStateArcs.empty());
+  EXPECT_EQ(std::vector<TEdge::EdgeId>({edge(graph, id(term(divider, "C")), id(term(divider, "Q")))}), result.controlStateArcs);
+  EXPECT_EQ(1u, result.clockOrigins[id(term(sink, "C"))].count());
+  EXPECT_TRUE(result.clockOrigins[id(term(sink, "C"))].test(b));
+  EXPECT_FALSE(result.clockOrigins[id(term(sink, "C"))].test(a));
 }

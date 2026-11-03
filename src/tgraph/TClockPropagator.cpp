@@ -64,12 +64,14 @@ void forward(const TGraph& graph, const std::vector<TGraph::NodeId>& order,
 }
 
 // Summarize the nearest waveform sources without a set per node. Explicit
-// clock seeds take precedence over flop Qs at a merge; otherwise only a sole
-// Q source is classifiable. Distinct Qs meeting without a seed are ambiguous.
+// seeds and classified ClockPass outputs take precedence over unclassified
+// flop Q inputs. ClockPass explicitly admits each classifiable input; otherwise
+// only a sole Q source is classifiable. Distinct Qs are ambiguous.
 // This join is associative, so neither node nor edge creation order matters.
 void generatedWaveforms(const TGraph& graph,
-    const std::vector<TGraph::NodeId>& order, Masks& origins,
-    std::vector<TEdge::EdgeId>& generated) {
+    const std::vector<TGraph::NodeId>& order,
+    const std::vector<TGraph::NodeId>& dataOrder, Masks& origins,
+    std::vector<TEdge::EdgeId>& generated, std::vector<TEdge::EdgeId>& controls) {
   using NodeId = TGraph::NodeId;
   constexpr auto none = std::numeric_limits<NodeId>::max();
   constexpr auto primary = none - 1;
@@ -91,27 +93,48 @@ void generatedWaveforms(const TGraph& graph,
       needed[edge.getSource()] = true;
     }
   }
+  auto passes = [&](const TEdge& edge) {
+    const auto incoming = source[edge.getSource()];
+    return edge.getKind() == TEdge::Kind::ClockPass &&
+      incoming != none && incoming != ambiguous;
+  };
   for (auto n : order) {
     for (auto id : graph.getNode(n)->getOutEdges()) {
       const auto& edge = *graph.getEdge(id);
       if (!traversable(graph, edge, true)) continue;
       auto& target = source[edge.getTarget()];
-      const auto incoming = source[n];
+      const auto incoming = passes(edge) ? primary : source[n];
       if (target == primary || incoming == none) continue;
       if (incoming == primary || target == none) target = incoming;
       else if (target != incoming) target = ambiguous;
     }
   }
-  // Restrict inferred Q waveforms to paths actually used as clocks. Data-only
-  // fanout of the same physical Q retains its independent launch semantics.
-  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+  // Follow accepted waveform paths and rejected control paths separately.
+  // The latter includes DataOnly dependencies, but stops at state outputs.
+  auto clockPath = needed;
+  std::vector<bool> control(origins.size(), false);
+  auto accepts = [&](const TEdge& edge) {
+    const auto from = source[edge.getSource()];
+    const auto to = source[edge.getTarget()];
+    return traversable(graph, edge, true) &&
+      (passes(edge) || (from == to && to != none && to != ambiguous));
+  };
+  // Data order is also a valid waveform order, and includes DataOnly inputs.
+  for (auto it = dataOrder.rbegin(); it != dataOrder.rend(); ++it) {
     auto n = *it;
-    if (!needed[n] || source[n] == none || source[n] == ambiguous) continue;
+    if (!needed[n] && !clockPath[n] && !control[n]) continue;
     for (auto id : graph.getNode(n)->getInEdges()) {
       const auto& edge = *graph.getEdge(id);
-      if (traversable(graph, edge, true) && source[edge.getSource()] == source[n]) {
-        needed[edge.getSource()] = true;
+      if (!traversable(graph, edge, false)) continue;
+      auto from = edge.getSource();
+      const bool accepted = accepts(edge);
+      if (needed[n] && accepted) needed[from] = true;
+      if (clockPath[n]) {
+        clockPath[from] = true;
+        if (edge.getKind() == TEdge::Kind::DataOnly ||
+            (source[n] == primary && !accepted)) control[from] = true;
       }
+      if (control[n]) control[from] = true;
     }
   }
   std::vector<bool> admitted(graph.getEdgesStorage().size(), false);
@@ -120,12 +143,12 @@ void generatedWaveforms(const TGraph& graph,
     const auto from = edge.getSource();
     const auto to = edge.getTarget();
     if (isState(graph, edge)) {
+      if (graph.getNode(to)->isFlopDataOutput() && control[to]) controls.push_back(edge.getIndex());
       if (needed[to] && graph.getNode(to)->isFlopDataOutput() && source[to] == to) {
         admitted[edge.getIndex()] = true;
         generated.push_back(edge.getIndex());
       }
-    } else if (traversable(graph, edge, true) && source[from] == source[to] &&
-        (source[to] == primary || (needed[to] && source[to] < ambiguous))) {
+    } else if (accepts(edge) && (source[from] == primary || needed[to])) {
       admitted[edge.getIndex()] = true;
     }
   }
@@ -193,7 +216,8 @@ TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
   const auto clockOrder = topologicalOrder(graph, true);
   const auto dataOrder = topologicalOrder(graph, false);
   Result result;
-  generatedWaveforms(graph, clockOrder, origins, result.generatedClockStateArcs);
+  generatedWaveforms(graph, clockOrder, dataOrder, origins,
+    result.generatedClockStateArcs, result.controlStateArcs);
   for (const auto& node : graph.getNodesStorage()) {
     if (node.isAlive() && node.isFlopClock() && origins[node.getIndex()].none()) {
       result.unclockedFlopClockPins.push_back(node.getIndex());
