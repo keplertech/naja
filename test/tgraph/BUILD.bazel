@@ -7,6 +7,7 @@ load("@rules_cc//cc:cc_test.bzl", "cc_test")
 cc_test(
     name = "tgraphTests",
     srcs = [
+        "TGraphTestMain.cpp",
         "TGraphTests.cpp",
         "TSNLGraphConstructorTests.cpp",
     ],
@@ -14,6 +15,7 @@ cc_test(
         "//src/nl/netlist:naja_nl",
         "//src/dnl:naja_dnl",
         "//src/tgraph:naja_tgraph",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest",
+        "@onetbb//:tbb",
     ],
 )
