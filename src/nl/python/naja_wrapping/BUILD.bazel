@@ -23,6 +23,8 @@ load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 cc_library(
     name = "naja_python",
     srcs = [
+        "PySNLTimingAnalysis.cpp",
+        "PyNetlistState.cpp",
         "PyNLID.cpp",
         "PyNLUniverse.cpp",
         "PyNLDB.cpp",
@@ -87,6 +89,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/metrics:naja_metrics",
+        "//src/tgraph:naja_tgraph",
         "//src/nl/formats/hdl:naja_snl_hdl",
         "//src/nl/formats/liberty:naja_snl_liberty",
         "//src/nl/formats/systemverilog:naja_snl_systemverilog",
@@ -107,6 +110,7 @@ cc_shared_library(
         "//src/core:naja_core",
         "//src/dnl:naja_dnl",
         "//src/metrics:naja_metrics",
+        "//src/tgraph:naja_tgraph",
         "//src/nl/formats/hdl:naja_snl_hdl",
         "//src/nl/formats/liberty:naja_snl_liberty",
         "//src/nl/formats/systemverilog:naja_snl_systemverilog",

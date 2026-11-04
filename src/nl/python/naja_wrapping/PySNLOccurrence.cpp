@@ -4,10 +4,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PySNLOccurrence.h"
+#include "PySNLTimingAnalysis.h"
 #include "PyInterface.h"
 #include "PySNLDesign.h"
 #include "SNLDesignObject.h"
 #include "PySNLDesignObject.h"
+#include "PySNLNet.h"
+#include "PySNLNetComponent.h"
+#include "SNLNet.h"
+#include "SNLNetComponent.h"
 #include "PySNLPath.h"
 #include "PySNLInstance.h"
 #include "PySNLInstTerm.h"
@@ -21,7 +26,60 @@ namespace PYNAJA {
 
 using namespace naja::NL;
 
-#define METHOD_HEAD(function) GENERIC_METHOD_HEAD(SNLOccurrence, function)
+#define METHOD_HEAD(function) \
+  if (!PySNLTimingAnalysis_checkOccurrence(reinterpret_cast<PyObject*>(self))) return nullptr; \
+  GENERIC_METHOD_HEAD(SNLOccurrence, function)
+
+namespace {
+PyObject* occurrenceOwners(const SNLOccurrence& occurrence) {
+  auto path = occurrence.getPath();
+  auto* tuple = PyTuple_New(path.size() + (occurrence.isValid() ? 1 : 0));
+  if (!tuple) return nullptr;
+  Py_ssize_t index = 0;
+  if (auto* object = occurrence.getObject()) {
+    PyObject* linked = nullptr;
+    if (auto* component = dynamic_cast<SNLNetComponent*>(object)) linked = PySNLNetComponent_Link(component);
+    else if (auto* net = dynamic_cast<SNLNet*>(object)) linked = PySNLNet_Link(net);
+    else if (auto* instance = dynamic_cast<SNLInstance*>(object)) linked = PySNLInstance_Link(instance);
+    if (!linked) {
+      if (!PyErr_Occurred()) setError("Unsupported occurrence object");
+      Py_DECREF(tuple); return nullptr;
+    }
+    PyTuple_SET_ITEM(tuple, index++, linked);
+  }
+  for (auto* instance: path.getInstances()) {
+    auto* linked = PySNLInstance_Link(instance);
+    if (!linked) { Py_DECREF(tuple); return nullptr; }
+    PyTuple_SET_ITEM(tuple, index++, linked);
+  }
+  return tuple;
+}
+}
+bool PySNLOccurrence_isAlive(PyObject* object) {
+  if (!IsPySNLOccurrence(object)) return true;
+  auto* self = PYSNLOccurrence(object);
+  if (!self->owners_) return true;
+  for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(self->owners_); ++i) {
+    if (!PYSNLDesignObject_O(PyTuple_GET_ITEM(self->owners_, i))) {
+      setError("Occurrence references a destroyed netlist object"); return false;
+    }
+  }
+  return true;
+}
+int PySNLOccurrence_set(PySNLOccurrence* self, const SNLOccurrence& occurrence) {
+  auto* owners = occurrenceOwners(occurrence);
+  if (!owners) return -1;
+  SNLOccurrence* copy = nullptr;
+  try { copy = new SNLOccurrence(occurrence); }
+  catch (...) { Py_DECREF(owners); PyErr_NoMemory(); return -1; }
+  delete self->object_;
+  Py_XDECREF(self->owners_);
+  self->object_ = copy;
+  self->owners_ = owners;
+  self->generation_ = pythonNetlistGeneration();
+  self->hasPath_ = !occurrence.getPath().empty();
+  return 0;
+}
 
 static int PySNLOccurrence_Init(PySNLOccurrence* self, PyObject* args, PyObject* kwargs) {
   SNLOccurrence* snlOccurrence = nullptr;
@@ -48,14 +106,22 @@ static int PySNLOccurrence_Init(PySNLOccurrence* self, PyObject* args, PyObject*
     setError("invalid number of parameters for Occurrence constructor.");
     return -1;
   }
-  self->object_ = snlOccurrence;
-  return 0;
+  int status = PySNLOccurrence_set(self, *snlOccurrence);
+  delete snlOccurrence;
+  return status;
 }
 
-//LCOV_EXCL_START
-ManagedTypeLinkCreateMethod(SNLOccurrence) 
-//LCOV_EXCL_STOP
-ManagedTypeDeallocMethod(SNLOccurrence)
+PyObject* PySNLOccurrence_Link(const SNLOccurrence& occurrence) {
+  auto* object = reinterpret_cast<PySNLOccurrence*>(PyTypeSNLOccurrence.tp_alloc(&PyTypeSNLOccurrence, 0));
+  if (!object) return nullptr;
+  if (PySNLOccurrence_set(object, occurrence) < 0) { Py_DECREF(object); return nullptr; }
+  return reinterpret_cast<PyObject*>(object);
+}
+static void PySNLOccurrence_DeAlloc(PySNLOccurrence* self) {
+  delete self->object_;
+  Py_XDECREF(self->owners_);
+  Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
+}
 
 static Py_uhash_t hashSNLPathForOccurrence(const SNLPath& path) {
   Py_uhash_t seed = 0;
@@ -76,6 +142,7 @@ static Py_uhash_t hashSNLOccurrence(const SNLOccurrence& occurrence) {
 }
 
 static Py_hash_t PySNLOccurrence_Hash(PySNLOccurrence* self) {
+  if (!PySNLTimingAnalysis_checkOccurrence(reinterpret_cast<PyObject*>(self))) return -1;
   if (not self->ACCESS_OBJECT) {
     setError("Attempt to call SNLOccurrence.__hash__() on an unbound object");
     return -1;
@@ -110,7 +177,14 @@ static PyObject* PySNLOccurrence_getResetActiveLevel(PySNLOccurrence* self) {
   NLCATCH
 }
 
+static PyObject* PySNLOccurrence_getDrivingClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 0); }
+static PyObject* PySNLOccurrence_getReceivingClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 1); }
+static PyObject* PySNLOccurrence_getWaveformClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 2); }
+
 PyMethodDef PySNLOccurrence_Methods[] = {
+  {"getDrivingClocks", (PyCFunction)PySNLOccurrence_getDrivingClocks, METH_NOARGS, "Return occurrence-specific clock domains from cached timing analysis."},
+  {"getReceivingClocks", (PyCFunction)PySNLOccurrence_getReceivingClocks, METH_NOARGS, "Return occurrence-specific clock domains from cached timing analysis."},
+  {"getWaveformClocks", (PyCFunction)PySNLOccurrence_getWaveformClocks, METH_NOARGS, "Return occurrence-specific clock domains from cached timing analysis."},
   {"getRole", (PyCFunction)PySNLOccurrence_getRole, METH_NOARGS,
     "get the role of the referenced term in its instance context (Other for non-terms)."},
   {"getResetActiveLevel", (PyCFunction)PySNLOccurrence_getResetActiveLevel, METH_NOARGS,

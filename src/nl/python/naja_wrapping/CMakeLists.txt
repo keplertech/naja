@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set(SOURCES
+  PySNLTimingAnalysis.cpp PyNetlistState.cpp
   PyNLID.cpp
   PyNLUniverse.cpp
   PyNLDB.cpp PyNLLibrary.cpp
@@ -43,6 +44,7 @@ if (BUILD_NAJA_PYTHON)
     naja_snl_verilog naja_snl_systemverilog naja_snl_vhdl naja_snl_liberty naja_snl_visual
     naja_opt
     naja_metrics
+    naja_tgraph
     Python3::Module
   )
 else(BUILD_NAJA_PYTHON)
@@ -52,6 +54,7 @@ else(BUILD_NAJA_PYTHON)
     naja_snl_verilog naja_snl_systemverilog naja_snl_vhdl naja_snl_liberty naja_snl_visual
     naja_opt
     naja_metrics
+    naja_tgraph
     Python3::Python
   )
 endif(BUILD_NAJA_PYTHON)
