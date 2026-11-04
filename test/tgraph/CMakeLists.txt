@@ -5,12 +5,13 @@
 INCLUDE(GoogleTest)
 
 SET(sources
+  TGraphTestMain.cpp
   TGraphTests.cpp
   TSNLGraphConstructorTests.cpp
 )
 
 ADD_EXECUTABLE(tgraphTests ${sources})
 
-TARGET_LINK_LIBRARIES(tgraphTests naja_nl naja_dnl naja_tgraph gmock gtest_main)
+TARGET_LINK_LIBRARIES(tgraphTests naja_nl naja_dnl naja_tgraph TBB::tbb gmock gtest)
 
 GTEST_DISCOVER_TESTS(tgraphTests)
