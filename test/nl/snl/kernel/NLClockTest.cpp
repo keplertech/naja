@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <limits>
 
 #include "NLUniverse.h"
 #include "NLDB.h"
@@ -102,6 +103,87 @@ TEST_F(NLClockTest, testGeneratedClockMultiply) {
   EXPECT_EQ(2u, multiplied->getMultiplyBy());
 }
 
+TEST_F(NLClockTest, testGeneratedWaveformsFollowDivisionAndMultiplication) {
+  auto* master = NLClock::createPrimary(top_, NLName("root"), 12.0, "ns", {clk_});
+  master->setWaveform(3.0, 7.0);
+  struct Case { unsigned divide; unsigned multiply; double period; double high; };
+  for (const auto& entry : {Case{1, 1, 12.0, 4.0}, Case{2, 1, 24.0, 12.0},
+      Case{3, 1, 36.0, 12.0}, Case{6, 1, 72.0, 36.0},
+      Case{1, 2, 6.0, 2.0}, Case{3, 2, 18.0, 6.0}, Case{2, 3, 8.0, 4.0}}) {
+    for (bool invert : {false, true}) {
+      auto name = "g" + std::to_string(entry.divide) + "_" + std::to_string(entry.multiply)
+        + (invert ? "_inv" : "");
+      auto* clock = NLClock::createGenerated(top_, NLName(name), master, clk_,
+        entry.divide, entry.multiply, invert, {clk2_, clk_});
+      EXPECT_DOUBLE_EQ(entry.period, clock->getPeriod());
+      EXPECT_EQ("ns", clock->getTimeUnit());
+      EXPECT_DOUBLE_EQ(3.0 + (invert ? entry.high : 0.0), clock->getRiseAt());
+      EXPECT_DOUBLE_EQ(3.0 + (invert ? entry.period : entry.high), clock->getFallAt());
+      EXPECT_EQ(master, clock->getMaster());
+      EXPECT_EQ(clk_, clock->getMasterSource());
+      EXPECT_EQ(NLName(name), clock->getName());
+      EXPECT_EQ(top_, clock->getDesign());
+      const auto sources = clock->getSources();
+      EXPECT_EQ((std::vector<NLObject*>{clk2_, clk_}),
+        (std::vector<NLObject*>(sources.begin(), sources.end())));
+      EXPECT_THROW(clock->setWaveform(0.0, entry.period / 2), NLException);
+    }
+  }
+}
+
+TEST_F(NLClockTest, testGeneratedChainsObserveMasterWaveformChanges) {
+  auto* root = NLClock::createPrimary(top_, NLName("root"), 12.0, "ps", {clk_});
+  root->setWaveform(3.0, 7.0);
+  auto* inverted = NLClock::createGenerated(top_, NLName("inverted"), root, clk_, 1, 1, true, {clk2_});
+  auto* divided = NLClock::createGenerated(top_, NLName("divided"), inverted, clk2_, 3, 1, false, {clk_});
+  auto* multiplied = NLClock::createGenerated(top_, NLName("multiplied"), divided, clk_, 1, 2, true, {clk2_});
+  EXPECT_DOUBLE_EQ(7.0, inverted->getRiseAt());
+  EXPECT_DOUBLE_EQ(15.0, inverted->getFallAt()); // inversion wraps beyond the period
+  EXPECT_DOUBLE_EQ(7.0, divided->getRiseAt());
+  EXPECT_DOUBLE_EQ(31.0, divided->getFallAt());
+  EXPECT_DOUBLE_EQ(18.0, multiplied->getPeriod());
+  EXPECT_DOUBLE_EQ(19.0, multiplied->getRiseAt());
+  EXPECT_DOUBLE_EQ(25.0, multiplied->getFallAt());
+  EXPECT_EQ(root, multiplied->getRootClock());
+  EXPECT_TRUE(multiplied->isSynchronousWith(root));
+  EXPECT_EQ("ps", multiplied->getTimeUnit());
+
+  root->setWaveform(1.0, 9.0);
+  EXPECT_DOUBLE_EQ(9.0, inverted->getRiseAt());
+  EXPECT_DOUBLE_EQ(13.0, inverted->getFallAt());
+  EXPECT_DOUBLE_EQ(9.0, divided->getRiseAt());
+  EXPECT_DOUBLE_EQ(21.0, divided->getFallAt());
+  EXPECT_DOUBLE_EQ(15.0, multiplied->getRiseAt());
+  EXPECT_DOUBLE_EQ(27.0, multiplied->getFallAt());
+  EXPECT_DOUBLE_EQ(18.0, multiplied->getPeriod());
+  EXPECT_DOUBLE_EQ(1.0 / 18.0, multiplied->getFrequency());
+  // A permitted full-period primary high pulse becomes a zero-width inverted pulse.
+  root->setWaveform(0.0, 12.0);
+  EXPECT_DOUBLE_EQ(12.0, inverted->getRiseAt());
+  EXPECT_DOUBLE_EQ(12.0, inverted->getFallAt());
+  EXPECT_DOUBLE_EQ(12.0, divided->getFallAt());
+}
+
+TEST_F(NLClockTest, testEvenDividerRetainsHalfDutyAfterMasterChanges) {
+  auto* root = NLClock::createPrimary(top_, NLName("root"), 12.0, "ns", {clk_});
+  auto* divided = NLClock::createGenerated(top_, NLName("divided"), root, clk_, 2, 1, false, {clk2_});
+  root->setWaveform(2.0, 5.0);
+  EXPECT_DOUBLE_EQ(2.0, divided->getRiseAt());
+  EXPECT_DOUBLE_EQ(14.0, divided->getFallAt());
+  root->setWaveform(4.0, 11.0);
+  EXPECT_DOUBLE_EQ(4.0, divided->getRiseAt());
+  EXPECT_DOUBLE_EQ(16.0, divided->getFallAt());
+}
+
+TEST_F(NLClockTest, testDerivedRangeValidationBeforeRegistration) {
+  auto* root = NLClock::createPrimary(top_, NLName("root"), std::numeric_limits<double>::max(), "ns", {clk_});
+  EXPECT_THROW(NLClock::createGenerated(top_, NLName("overflow"), root, clk_, 2, 1, false, {clk2_}), NLException);
+  EXPECT_EQ(1u, top_->getClocks().size());
+  // Equal factors preserve a representable period without an overflowing P*D intermediate.
+  auto* balanced = NLClock::createGenerated(top_, NLName("balanced"), root, clk_, 3, 3, false, {clk2_});
+  EXPECT_DOUBLE_EQ(root->getPeriod(), balanced->getPeriod());
+}
+
 TEST_F(NLClockTest, testUnrelatedClocksAreNotSynchronous) {
   NLClock* sys = NLClock::createPrimary(top_, NLName("sys"), 20.0, "ns", {clk_});
   NLClock* other = NLClock::createPrimary(top_, NLName("other"), 20.0, "ns", {clk2_});
@@ -167,7 +249,7 @@ TEST_F(NLClockTest, testGeneratedClockDebugDump) {
   for (bool invert : {false, true}) {
     const std::string name = invert ? "inverted" : "plain";
     auto* clock = NLClock::createGenerated(top_, NLName(name), master, clk_, 3, 2, invert, {clk2_});
-    clock->setWaveform(1.0, 8.0);
+    EXPECT_THROW(clock->setWaveform(1.0, 8.0), NLException);
     EXPECT_STREQ("NLClock", clock->getTypeName());
     EXPECT_EQ(name, clock->getString());
     EXPECT_EQ("NLClock " + name + " (period 18.000000 ps)", clock->getDescription());
@@ -175,8 +257,8 @@ TEST_F(NLClockTest, testGeneratedClockDebugDump) {
     clock->debugDump(0, true, stream);
     EXPECT_EQ("NLClock " + name + " (period 18.000000 ps)\n"
               "  kind: generated\n"
-              "  waveform: 1 8\n"
-              "  source: " + clk2_->getDescription() + "\n"
+              "  waveform: " + std::string(invert ? "9 18\n" : "0 9\n")
+              + "  source: " + clk2_->getDescription() + "\n"
               "  master: sys divide 3 multiply 2" + (invert ? " inverted\n" : "\n"), stream.str());
   }
 }

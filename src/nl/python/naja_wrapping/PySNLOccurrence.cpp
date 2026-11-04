@@ -42,8 +42,12 @@ PyObject* occurrenceOwners(const SNLOccurrence& occurrence) {
     else if (auto* net = dynamic_cast<SNLNet*>(object)) linked = PySNLNet_Link(net);
     else if (auto* instance = dynamic_cast<SNLInstance*>(object)) linked = PySNLInstance_Link(instance);
     if (!linked) {
+      // Known object families are dispatched above; this requires allocation
+      // failure or an unsupported native SNLDesignObject subclass.
+      // LCOV_EXCL_START
       if (!PyErr_Occurred()) setError("Unsupported occurrence object");
       Py_DECREF(tuple); return nullptr;
+      // LCOV_EXCL_STOP
     }
     PyTuple_SET_ITEM(tuple, index++, linked);
   }
@@ -71,7 +75,7 @@ int PySNLOccurrence_set(PySNLOccurrence* self, const SNLOccurrence& occurrence) 
   if (!owners) return -1;
   SNLOccurrence* copy = nullptr;
   try { copy = new SNLOccurrence(occurrence); }
-  catch (...) { Py_DECREF(owners); PyErr_NoMemory(); return -1; }
+  catch (...) { Py_DECREF(owners); PyErr_NoMemory(); return -1; } // LCOV_EXCL_LINE C++ allocation failure while copying an occurrence.
   delete self->object_;
   Py_XDECREF(self->owners_);
   self->object_ = copy;

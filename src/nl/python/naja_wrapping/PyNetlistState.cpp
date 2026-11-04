@@ -43,8 +43,12 @@ int trackNetlistMethods(PyTypeObject* type) {
   for (auto* method = type->tp_methods; method && method->ml_name; ++method) {
     if (readOnly(method->ml_name)) continue;
     if (count == capacity || (method->ml_flags & METH_FASTCALL)) {
+      // Fixed module method tables fit capacity and do not use FASTCALL.
+      // This protects against unsupported native build configurations.
+      // LCOV_EXCL_START
       PyErr_SetString(PyExc_RuntimeError, "Cannot track raw netlist editing method");
       return -1;
+      // LCOV_EXCL_STOP
     }
     originals[count] = method->ml_meth;
     method->ml_meth = (method->ml_flags & METH_KEYWORDS) ? keywordDispatch[count] : dispatch[count];

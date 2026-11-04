@@ -233,6 +233,9 @@ class TimingAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(len(memory_inputs), 3)
         self.assertTrue(all(e.getReceivingClocks() == {clocks["clock"]} for e in memory_inputs))
         self.assertTrue(any(e.getReceivingClocks() == {clocks["gate"]} for e in endpoints))
+        self.assertIn(("unsupported_latch", "approximated"),
+                      {(row["reason"], row["treatment"])
+                       for row in top.getTimingCoverageReport()})
 
     def test_late_declaration_and_rebuild(self):
         top = self.crossing()
@@ -304,6 +307,8 @@ class TimingAnalysisTests(unittest.TestCase):
         for name in ("TGraph", "TSNLGraphConstructor", "TClockPropagator", "TNode", "TEdge", "TClock"):
             self.assertFalse(hasattr(naja, name))
         self.assertFalse(hasattr(top, "getGraph"))
+        with self.assertRaises(TypeError):
+            naja.SNLClockDomain()
         with self.assertRaises(RuntimeError):
             naja.SNLOccurrence().getDrivingClocks()
         with self.assertRaises(RuntimeError):
@@ -440,6 +445,120 @@ class TimingAnalysisTests(unittest.TestCase):
         elapsed = time.perf_counter() - start
         self.assertEqual([], top.getCaptureEndpoints())
         print(f"analyzeTiming large_hier_gates: {elapsed:.3f}s", flush=True)
+
+
+    def test_occurrence_value_protocols(self):
+        top = self.crossing()
+        self.analyze()
+        source = top.getClockDomains()[0].getSources()[0]
+        endpoint = top.getCaptureEndpoints()[0]
+        for occurrence in (source, endpoint):
+            with self.subTest(occurrence=str(occurrence)):
+                self.assertTrue(repr(occurrence))
+                self.assertEqual(str(occurrence), repr(occurrence))
+                self.assertEqual(hash(occurrence), hash(occurrence))
+                self.assertEqual(1, len({occurrence, occurrence}))
+        same_endpoint = top.getCaptureEndpoints()[0]
+        self.assertEqual(endpoint, same_endpoint)
+        self.assertEqual(hash(endpoint), hash(same_endpoint))
+
+    def test_analyze_rejects_non_top_and_primitive_designs(self):
+        top = self.crossing()
+        other = top.clone("other")
+        with self.assertRaisesRegex(RuntimeError, "requires the active top design"):
+            other.analyzeTiming()
+        library = naja.NLLibrary.createPrimitives(self.db)
+        primitive = naja.SNLDesign.createPrimitive(library, "cell")
+        self.universe.setTopDesign(primitive)
+        with self.assertRaisesRegex(RuntimeError, "expected a structural top design"):
+            primitive.analyzeTiming()
+
+    def test_whole_instance_timing_query_is_rejected(self):
+        top = self.crossing()
+        occurrence = naja.SNLOccurrence(next(iter(top.getInstances())))
+        self.analyze()
+        with self.assertRaisesRegex(RuntimeError, "single-bit terminal or net occurrence"):
+            occurrence.getDrivingClocks()
+
+    def test_caller_hierarchical_occurrence_requires_refresh(self):
+        top = self.load("""module child(input a, output y); assign y = a; endmodule
+            module sample(input a, output y); child cell0(a, y); endmodule""")
+        self.primary(top, "clock", "a")
+        instance = top.getInstance("cell0")
+        term = instance.getModel().getScalarTerm("a")
+        path = naja.SNLPath(instance)
+        occurrence = naja.SNLOccurrence(path, term)
+        self.analyze()
+        self.assertEqual(1, len(occurrence.getWaveformClocks()))
+        top.getScalarTerm("a").setName("input_data")
+        top.analyzeTiming()
+        with self.assertRaisesRegex(RuntimeError, "Stale hierarchical occurrence"):
+            occurrence.getWaveformClocks()
+        refreshed = naja.SNLOccurrence(path, term)
+        self.assertEqual(1, len(refreshed.getWaveformClocks()))
+
+    def test_coverage_inout_and_multiple_drivers(self):
+        top = self.crossing()
+        naja.SNLScalarTerm.create(top, naja.SNLTerm.Direction.InOut, "io")
+        first = naja.SNLScalarTerm.create(top, naja.SNLTerm.Direction.Input, "x")
+        second = naja.SNLScalarTerm.create(top, naja.SNLTerm.Direction.Input, "y")
+        net = naja.SNLScalarNet.create(top, "shared")
+        first.setNet(net)
+        second.setNet(net)
+        self.analyze()
+        report = top.getTimingCoverageReport()
+        treatments = {(row["reason"], row["treatment"]) for row in report}
+        self.assertIn(("inout", "bidirectional"), treatments)
+        self.assertIn(("multiple_drivers", "all_drivers"), treatments)
+        counts = top.getTimingCoverageCounts()
+        self.assertEqual(1, counts["inout"])
+        self.assertEqual(1, counts["multiple_drivers"])
+
+    def test_bidirectional_cycle_diagnostic_role(self):
+        designs = naja.NLLibrary.create(self.db)
+        primitives = naja.NLLibrary.createPrimitives(self.db)
+        top = naja.SNLDesign.create(designs, "sample")
+        model = naja.SNLDesign.createPrimitive(primitives, "bidirectional")
+        a = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.InOut, "a")
+        b = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.InOut, "b")
+        naja.SNLDesign.addCombinatorialArcs([a], [b])
+        naja.SNLDesign.addCombinatorialArcs([b], [a])
+        left = naja.SNLInstance.create(top, model, "left")
+        right = naja.SNLInstance.create(top, model, "right")
+        for name, source, target in (("n0", a, b), ("n1", b, a)):
+            net = naja.SNLScalarNet.create(top, name)
+            left.getInstTerm(source).setNet(net)
+            right.getInstTerm(target).setNet(net)
+        self.universe.setTopDesign(top)
+        with self.assertRaises(naja.SNLTimingCycleError) as caught:
+            top.analyzeTiming()
+        self.assertEqual("load", caught.exception.role)
+        self.assertIn("(" + caught.exception.role + ")", caught.exception.description)
+        self.assertIsInstance(caught.exception.occurrence, naja.SNLOccurrence)
+
+    def test_bidirectional_cycle_drive_diagnostic(self):
+        designs = naja.NLLibrary.create(self.db)
+        primitives = naja.NLLibrary.createPrimitives(self.db)
+        top = naja.SNLDesign.create(designs, "sample")
+        model = naja.SNLDesign.createPrimitive(primitives, "bidirectional")
+        terms = [naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.InOut, name)
+                 for name in ("a", "b", "c", "d")]
+        # Two feedback paths share a drive-side node. The diagnostic must retain
+        # its drive role instead of treating every split pin as a load.
+        for source, target in ((0, 2), (1, 2), (1, 3)):
+            naja.SNLDesign.addCombinatorialArcs([terms[source]], [terms[target]])
+        left = naja.SNLInstance.create(top, model, "left")
+        right = naja.SNLInstance.create(top, model, "right")
+        for i in range(4):
+            net = naja.SNLScalarNet.create(top, "n" + str(i))
+            left.getInstTerm(terms[i]).setNet(net)
+            right.getInstTerm(terms[3 - i]).setNet(net)
+        self.universe.setTopDesign(top)
+        with self.assertRaises(naja.SNLTimingCycleError) as caught:
+            top.analyzeTiming()
+        self.assertEqual("drive", caught.exception.role)
+        self.assertIn("(drive)", caught.exception.description)
+        self.assertIsInstance(caught.exception.occurrence, naja.SNLOccurrence)
 
 
 if __name__ == "__main__":

@@ -764,7 +764,7 @@ semantic source of truth.
    * - :class:`najaeda.naja.SNLParameter`
      - :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`, :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`, :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`, :meth:`createString <najaeda.naja.SNLParameter.createString>` (optional default value), :meth:`hasDefaultValue <najaeda.naja.SNLParameter.hasDefaultValue>`, :meth:`getValue <najaeda.naja.SNLParameter.getValue>`, :meth:`getName <najaeda.naja.SNLParameter.getName>`, :meth:`getDesign <najaeda.naja.SNLParameter.getDesign>`, :meth:`destroy <najaeda.naja.SNLParameter.destroy>`
    * - :class:`najaeda.naja.NLClock`
-     - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
+     - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform (primary only) <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
    * - ``SNLDesign`` timing analysis
      - ``analyzeTiming()``, ``getClockDomains()``, ``getCaptureEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
    * - ``SNLOccurrence`` timing queries
@@ -1312,10 +1312,42 @@ design, and :meth:`najaeda.naja.NLDB.getClocks` lists every clock in the
 database.
 
 ``createPrimary`` follows SDC ``create_clock``: a period in a time unit, and
-sources.  ``createGenerated`` follows ``createGenerated_clock``: its period is
-``master period * divide_by / multiply_by``, and it is synchronous with its
-master.  ``isSynchronousWith`` is true when two clocks share the same root
-primary clock.
+ordered sources. Primary clocks own their period, unit and waveform, initially
+``(0, period / 2)``. ``setWaveform(rise, fall)`` requires finite values with
+``0 <= rise < fall <= period``.
+
+``createGenerated`` represents the supported SDC ``create_generated_clock``
+subset: master, master-source terminal, positive integer divide/multiply
+factors, inversion and ordered sources. It stores only these declaration
+inputs. Period, time unit and waveform are derived on every read, including
+through generated-clock chains. ``setWaveform`` on a generated clock raises
+``RuntimeError`` (``NLException`` in C++); change the primary master's waveform
+instead. ``isSynchronousWith`` continues to compare root primary clocks.
+
+Naja uses edge-based division anchored at the master's first rise, following
+the even/odd division convention documented by
+`Quartus create_generated_clock <https://resources.altera.com/quartushelp/current/tafs/tafs/tcl_pkg_sdc_ver_1.5_cmd_create_generated_clock.htm>`_.
+For the immediate master's period ``P`` and edges ``(R, F)``, divide factor
+``D`` and multiply factor ``M``, the resulting period is ``Q = P * D / M``.
+The high time ``H`` is ``Q / 2`` for even ``D``, or
+``(F - R) * D / M`` for odd ``D`` (including one). Multiplication preserves
+the duty cycle produced by division. The waveform is ``(R, R + H)``;
+inversion then gives ``(R + H, R + Q)``. Chains apply this rule at each master
+reference, so division and multiplication must not be canceled before deriving
+the waveform.
+
+For example, a 12 ns primary with waveform ``(3, 7)`` produces ``(3, 15)``
+when divided by two, ``(3, 9)`` when divided by three and multiplied by two,
+and ``(9, 21)`` when that last result is inverted. A later primary waveform
+change is immediately reflected by all derived getters.
+
+``getRiseAt()`` and ``getFallAt()`` describe a chronological rise and its next
+fall, without reducing timestamps modulo the period. Generated timestamps can
+exceed their period, particularly after inversion or in chains. Inverting a
+full-period high pulse produces coincident edges (zero high time). Values
+outside the finite floating-point range raise rather than being stored as
+invalid derived timing. The master must outlive its generated clocks.
+There are no explicit edge lists, edge shifts, duty-cycle or phase controls.
 
 First-pass restrictions: sources and the master source must be top-level
 terminals (``SNLBitTerm``) of the owning design.  Instance terminals are

@@ -39,7 +39,7 @@ class TimingProperty final: public naja::NajaPrivateProperty {
  public:
   static constexpr const char* Name = "Naja::PythonTimingAnalysis";
   std::string getName() const override { return Name; }
-  std::string getString() const override { return Name; }
+  std::string getString() const override { return Name; } // LCOV_EXCL_LINE Private-property debug hook, not exposed to Python.
   static TimingProperty* create(SNLDesign* design, std::shared_ptr<SNLTimingAnalysis> state) {
     auto* property = new TimingProperty;
     property->state = std::move(state);
@@ -69,8 +69,11 @@ PyObject* cycleError = nullptr;
 
 SNLTimingAnalysis* checked(View* self) {
   if (!self->state || !*self->state) {
+    // Views are private factory products; Python cannot construct an unbound view.
+    // LCOV_EXCL_START
     setError("Unbound timing view");
     return nullptr;
+    // LCOV_EXCL_STOP
   }
   auto& state = **self->state;
   // Validate the native owner/cache before touching borrowed SNL objects.
@@ -92,10 +95,10 @@ PyObject* view(PyTypeObject& type, const std::shared_ptr<SNLTimingAnalysis>& sta
   try {
     object->state = new std::shared_ptr<SNLTimingAnalysis>(state);
     object->index = index;
-  } catch (...) {
+  } catch (...) { // LCOV_EXCL_START C++ allocation failure.
     Py_DECREF(object);
     return PyErr_NoMemory();
-  }
+  } // LCOV_EXCL_STOP
   return reinterpret_cast<PyObject*>(object);
 }
 const TSNLNodeProxy* proxy(SNLTimingAnalysis& state, size_t id) {
@@ -107,7 +110,7 @@ const char* roleName(TNodeProxy::Role role) {
     case TNodeProxy::Role::Drive: return "drive";
     case TNodeProxy::Role::Load: return "load";
   }
-  return "unknown";
+  return "unknown"; // LCOV_EXCL_LINE Defensive fallback; all enum values handled above.
 }
 bool validOccurrence(OccurrenceView* self) {
   View temporary {};
@@ -143,10 +146,10 @@ PyObject* linkedOccurrence(View* self, const SNLOccurrence& occurrence) {
   try {
     if (PySNLOccurrence_set(&object->base, occurrence) < 0) { Py_DECREF(object); return nullptr; }
     object->state = new std::shared_ptr<SNLTimingAnalysis>(*self->state);
-  } catch (...) {
+  } catch (...) { // LCOV_EXCL_START C++ allocation failure.
     Py_DECREF(object);
     return PyErr_NoMemory();
-  }
+  } // LCOV_EXCL_STOP
   return reinterpret_cast<PyObject*>(object);
 }
 PyObject* occurrence(View* self, size_t id) {
@@ -171,7 +174,7 @@ PyObject* clocks(View* self, const TEdge::ClockMask& mask) {
   for (auto i = mask.find_first(); i != TEdge::ClockMask::npos; i = mask.find_next(i)) {
     auto* clock = view(clockType, *self->state, i);
     if (!clock || PySet_Add(set, clock) < 0) {
-      Py_XDECREF(clock); Py_DECREF(set); return nullptr;
+      Py_XDECREF(clock); Py_DECREF(set); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
     Py_DECREF(clock);
   }
@@ -188,7 +191,7 @@ const char* reasonName(TSNLGraphConstructor::CoverageReason reason) {
     case R::IncompleteModeling: return "incomplete_modeling";
     case R::AmbiguousClockGate: return "ambiguous_clock_gate";
   }
-  return "unknown";
+  return "unknown"; // LCOV_EXCL_LINE Defensive fallback; all enum values handled above.
 }
 const char* treatmentName(TSNLGraphConstructor::Treatment treatment) {
   using T = TSNLGraphConstructor::Treatment;
@@ -198,7 +201,7 @@ const char* treatmentName(TSNLGraphConstructor::Treatment treatment) {
     case T::Bidirectional: return "bidirectional";
     case T::AllDrivers: return "all_drivers";
   }
-  return "unknown";
+  return "unknown"; // LCOV_EXCL_LINE Defensive fallback; all enum values handled above.
 }
 PyObject* coverage(View* self, PyObject*) {
   VIEW_HEAD
@@ -213,7 +216,7 @@ PyObject* coverage(View* self, PyObject*) {
     if (!append(list, dict)) { Py_DECREF(list); return nullptr; }
   }
   return list;
-  NLCATCH
+  NLCATCH // LCOV_EXCL_LINE Allocation/library failures while formatting checked analysis state.
 }
 PyObject* coverageCounts(View* self, PyObject*) {
   VIEW_HEAD
@@ -226,11 +229,11 @@ PyObject* coverageCounts(View* self, PyObject*) {
        R::MultipleDrivers, R::IncompleteModeling, R::AmbiguousClockGate}) {
     auto it = counts.find(reason);
     if (!put(dict, reasonName(reason), PyLong_FromSize_t(it == counts.end() ? 0 : it->second))) {
-      Py_DECREF(dict); return nullptr;
+      Py_DECREF(dict); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
   }
   return dict;
-  NLCATCH
+  NLCATCH // LCOV_EXCL_LINE Allocation/library failures while formatting checked analysis state.
 }
 PyObject* nlClock(View* self, PyObject*) {
   VIEW_HEAD
@@ -318,7 +321,7 @@ PyObject* associations(View* self, bool generated) {
     if (!dict || !put(dict, "clockPin", occurrence(self, edge->getSource())) ||
         !put(dict, "output", occurrence(self, edge->getTarget())) ||
         !put(dict, "clocks", clocks(self, state.result->clockOrigins[edge->getSource()]))) {
-      Py_XDECREF(dict); Py_DECREF(list); return nullptr;
+      Py_XDECREF(dict); Py_DECREF(list); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
     if (!append(list, dict)) { Py_DECREF(list); return nullptr; }
   }
@@ -382,9 +385,9 @@ PyObject* PySNLDesign_analyzeTiming(PyObject* object, PyObject*) {
     return nullptr;
   } catch (const NLException& error) {
     setError(error.getReason()); return nullptr;
-  } catch (const std::exception& error) {
+  } catch (const std::exception& error) { // LCOV_EXCL_START Allocation/library failures; public validation uses NLException.
     setError(error.what()); return nullptr;
-  }
+  } // LCOV_EXCL_STOP
 }
 PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
   auto* design = PYSNLDesign_O(object);
@@ -417,7 +420,7 @@ PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
   if (!put(dict, "unclockedClockPins", unclocked(&temporary)) ||
       !put(dict, "generatedClocks", associations(&temporary, true)) ||
       !put(dict, "clockControls", associations(&temporary, false))) {
-    Py_DECREF(dict); return nullptr;
+    Py_DECREF(dict); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
   return dict;
   NLCATCH
@@ -475,6 +478,13 @@ int PySNLTimingAnalysis_addTypes(PyObject* module) {
   if (PyModule_AddType(module, &clockType) < 0) return -1;
   cycleError = PyErr_NewException("naja.SNLTimingCycleError", PyExc_RuntimeError, nullptr);
   if (!cycleError) return -1;
-  return PyModule_AddObjectRef(module, "SNLTimingCycleError", cycleError);
+  // Python 3.9 has no PyModule_AddObjectRef. Keep our reference while giving
+  // the module its own; PyModule_AddObject steals it only on success.
+  Py_INCREF(cycleError);
+  int status = PyModule_AddObject(module, "SNLTimingCycleError", cycleError);
+  if (status < 0) {
+    Py_DECREF(cycleError);
+  }
+  return status;
 }
 }
