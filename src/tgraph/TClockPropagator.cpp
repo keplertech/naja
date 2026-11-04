@@ -46,7 +46,40 @@ std::vector<TGraph::NodeId> topologicalOrder(const TGraph& graph, bool waveform)
     }
   }
   if (order.size() != graph.getNodesCount()) {
-    throw std::logic_error("TClockPropagator::run: enabled combinational cycle; no edges were disabled");
+    // Iterative DFS on Kahn's residual finds a node on an actual cycle.
+    // A residual node alone may merely be downstream of a rejected SCC.
+    std::vector<unsigned char> color(degree.size(), 0);
+    std::vector<std::pair<TGraph::NodeId, size_t>> stack;
+    for (const auto& node : graph.getNodesStorage()) {
+      auto start = node.getIndex();
+      if (!node.isAlive() || !degree[start] || color[start]) continue;
+      stack.emplace_back(start, 0);
+      color[start] = 1;
+      while (!stack.empty()) {
+        auto& [source, next] = stack.back();
+        const auto& edges = graph.getNode(source)->getOutEdges();
+        if (next == edges.size()) {
+          color[source] = 2;
+          stack.pop_back();
+          continue;
+        }
+        const auto& edge = *graph.getEdge(edges[next++]);
+        auto target = edge.getTarget();
+        if (!traversable(graph, edge, waveform) || !degree[target]) continue;
+        if (color[target] == 1) {
+          const auto* proxy = graph.getNode(target)->getProxy();
+          auto description = proxy ? proxy->getDescription() : std::string{};
+          if (description.empty()) description = "node " + std::to_string(target);
+          throw TClockPropagator::CycleError(target, description,
+            proxy ? proxy->getRole() : TNodeProxy::Role::Single);
+        }
+        if (!color[target]) {
+          color[target] = 1;
+          stack.emplace_back(target, 0);
+        }
+      }
+    }
+    throw std::logic_error("TClockPropagator::run: inconsistent cycle traversal");
   }
   return order;
 }

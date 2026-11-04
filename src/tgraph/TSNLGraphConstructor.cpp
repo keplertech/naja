@@ -4,6 +4,7 @@
 
 #include "TSNLGraphConstructor.h"
 
+#include <algorithm>
 #include <set>
 #include <utility>
 #include <vector>
@@ -60,14 +61,14 @@ class LeafNodes {
 void checkDirection(const SNLOccurrence& occurrence, SNLTerm::Direction direction,
     const SNLDesign* model, Coverage& coverage) {
   if (direction != SNLTerm::Direction::Input && direction != SNLTerm::Direction::Output) {
-    coverage.record(occurrence, model, Reason::InOut, Treatment::Bidirectional, "unsupported terminal direction");
+    coverage.record(occurrence, model, Reason::InOut, Treatment::Bidirectional, "inout terminal (load/drive roles)");
   }
 }
 
 
 PinRole pinRole(SNLInstTerm* term, bool sequential) {
   if (!sequential) {
-    return term->getDirection() == SNLTerm::Direction::Input ? PinRole::DataInput : PinRole::DataOutput;
+    return term->getDirection() == SNLTerm::Direction::Output ? PinRole::DataOutput : PinRole::DataInput;
   }
   switch (Model::getTermRole(term)) {
     case Model::SNLTermRole::Clock: return PinRole::Clock;
@@ -143,12 +144,18 @@ class LeafArcsBuilder {
       std::vector<TGraph::EdgeId> ids;
       ids.reserve(arcs_.size());
       for (auto& arc : arcs_) {
-        auto id = graph_.createEdge(arc.source, arc.target, arc.proxy.release());
+        const auto* proxy = graph_.getNode(arc.target)->getProxy();
+        auto target = proxy ? proxy->getDriverNode(arc.target) : arc.target;
+        auto id = graph_.createEdge(arc.source, target, arc.proxy.release());
         graph_.getEdge(id)->setKind(arc.kind);
         ids.push_back(id);
       }
       for (const auto& capture : captures_) graph_.createCaptureEdge(capture.first, capture.second);
+      auto driver = [&](TGraph::NodeId id) { return graph_.getNode(id)->getProxy()->getDriverNode(id); };
+      for (auto& latch : candidates.latches) latch.output = driver(latch.output);
+      for (auto& transparent : candidates.transparent) transparent.output = driver(transparent.output);
       for (auto& gate : candidates.conjunctions) {
+        gate.output = driver(gate.output);
         for (auto& arc : gate.arcs) arc = ids[arc];
       }
     }
@@ -511,7 +518,8 @@ void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& pa
     node->setCellKind(sequential ? CellKind::FlipFlop : CellKind::Combinational);
     auto role = pinRole(term, sequential);
     if (role == PinRole::Unknown ||
-        (term->getDirection() == SNLTerm::Direction::Output) != (role == PinRole::DataOutput) ||
+        (term->getDirection() != SNLTerm::Direction::InOut &&
+          (term->getDirection() == SNLTerm::Direction::Output) != (role == PinRole::DataOutput)) ||
         (role == PinRole::Clock && term != clock)) {
       fail(SNLOccurrence(path, term), "unsupported or inconsistent pin role");
     }
@@ -546,7 +554,7 @@ void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& pa
     }
   } else {
     for (auto* output : instance->getInstTerms()) {
-      if (output->getDirection() != SNLTerm::Direction::Output) {
+      if (output->getDirection() == SNLTerm::Direction::Input) {
         continue;
       }
       const auto table = Model::getTruthTable(instance, output->getBitTerm()->getOrderID());
@@ -554,13 +562,14 @@ void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& pa
         continue;
       }
       auto inputs = Model::getCombinatorialInputs(output);
+      if (inputs.empty() && output->getDirection() == SNLTerm::Direction::InOut) continue;
       if (inputs.empty()) {
         fail(SNLOccurrence(path, output), "output has no dependency model");
       }
       std::vector<TGraph::NodeId> inputIds;
       std::vector<TGraph::EdgeId> arcs;
       for (auto* input : inputs) {
-        if (input->getDirection() != SNLTerm::Direction::Input) {
+        if (input->getDirection() == SNLTerm::Direction::Output) {
           fail(occurrence, "combinational arc source is not an input");
         }
         inputIds.push_back(nodeId(input));
@@ -584,37 +593,109 @@ void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& pa
 }
 
 // DNL supplies every terminal occurrence, including hierarchy boundaries.
-// Partition its bindings by physical net occurrence to retain boundary nodes
-// and exact net provenance, rather than replacing them with all-to-all iso
-// edges. This visits each DNL terminal at most twice and never expands SNL.
+// Partition bindings by physical net occurrence. Only hierarchical inouts
+// join partitions into one equipotential; other boundaries retain their original
+// connectivity and provenance. Never expand SNL hierarchy here.
 class Connections {
   public:
     void add(naja::DNL::DNLID context, const SNLPath& path, SNLBitNet* net,
-        TGraph::NodeId node, SNLTerm::Direction direction, bool internal) {
+        TGraph::NodeId node, SNLTerm::Direction direction, bool internal, bool hierarchical = false) {
       if (!net) return;
       auto key = std::make_pair(context, net);
       auto [it, inserted] = indexes_.emplace(key, nets_.size());
-      if (inserted) nets_.push_back({SNLOccurrence(path, net), {}, {}});
+      if (inserted) {
+        roots_.push_back(nets_.size());
+        nets_.push_back({SNLOccurrence(path, net), {}, {}, net->getType().isDriving()});
+      }
       auto& endpoints = nets_[it->second];
+      if (hierarchical) hierarchy_.insert(node);
       const bool input = direction == SNLTerm::Direction::Input;
       const bool inout = direction == SNLTerm::Direction::InOut;
+      if (inout) inouts_.insert(node);
+      if (inout && hierarchical) {
+        boundaries_.insert(node);
+        auto [boundary, first] = boundaryNets_.emplace(node, it->second);
+        if (!first) {
+          auto a = root(boundary->second), b = root(it->second);
+          roots_[std::max(a, b)] = std::min(a, b);
+        }
+      }
       if ((internal ? input : !input) || inout) endpoints.drivers.push_back(node);
       if ((internal ? !input : input) || inout) endpoints.readers.push_back(node);
     }
-    void publish(TGraph& graph, Coverage& coverage) const {
+    // Hierarchical inouts identify one equipotential across both bindings.
+    // Merge these partitions before splitting, so no boundary traversal can
+    // reflect a signal back into a net-only cycle. Other boundaries stay intact.
+    void mergeInoutNets() {
+      if (boundaryNets_.empty()) return;
+      std::vector<Net> merged;
+      std::unordered_map<size_t, size_t> indexes;
+      std::vector<std::set<TGraph::NodeId>> drivers, readers;
+      for (size_t i = 0; i < nets_.size(); ++i) {
+        auto [it, first] = indexes.emplace(root(i), merged.size());
+        if (first) {
+          merged.push_back({nets_[i].occurrence, {}, {}, false});
+          drivers.emplace_back(); readers.emplace_back();
+        }
+        auto& target = merged[it->second];
+        target.constantDriver = target.constantDriver || nets_[i].constantDriver;
+        for (auto id : nets_[i].drivers)
+          if (drivers[it->second].insert(id).second) target.drivers.push_back(id);
+        for (auto id : nets_[i].readers)
+          if (readers[it->second].insert(id).second) target.readers.push_back(id);
+      }
+      nets_ = std::move(merged);
+    }
+    void markSplits(std::vector<bool>& split) const {
+      for (const auto& net : nets_) {
+        if (net.drivers.size() + net.constantDriver <= 1) continue;
+        for (auto id : net.drivers) {
+          if (inouts_.count(id)) split[id] = true;
+        }
+      }
+    }
+    void publish(TGraph& graph, Coverage& coverage, const std::vector<bool>& opaque,
+        Constructor::ConstructionStats& stats) const {
       for (const auto& endpoints : nets_) {
         auto* net = static_cast<SNLBitNet*>(endpoints.occurrence.getObject());
-        if (endpoints.drivers.size() > 1 || (net->getType().isDriving() && !endpoints.drivers.empty())) {
+        // A directional boundary can occur on both sides of a joined net.
+        // These single-node aliases forward to real loads, never to one
+        // another: alias-to-alias edges would recreate net-only cycles.
+        std::set<TGraph::NodeId> aliases;
+        for (auto id : endpoints.drivers) {
+          if (hierarchy_.count(id) && !inouts_.count(id) &&
+              std::find(endpoints.readers.begin(), endpoints.readers.end(), id) != endpoints.readers.end())
+            aliases.insert(id);
+        }
+        size_t modeledDrivers = 0;
+        for (auto id : endpoints.drivers) {
+          if (opaque[id] || boundaries_.count(id) || aliases.count(id)) continue;
+          const auto* proxy = static_cast<const TSNLNodeProxy*>(graph.getNode(id)->getProxy());
+          auto* pin = dynamic_cast<SNLInstTerm*>(proxy->getOccurrence().getObject());
+          // A sampled-only inout has no modeled output dependency. Its declared
+          // drive role is retained, but does not establish a real driver conflict.
+          if (pin && pin->getDirection() == SNLTerm::Direction::InOut &&
+              graph.getNode(proxy->getDriverNode(id))->getInDegree() == 0 &&
+              !Model::getTruthTable(pin->getInstance(), pin->getBitTerm()->getOrderID()).isInitialized()) continue;
+          ++modeledDrivers;
+        }
+        if (modeledDrivers > 1 || (endpoints.constantDriver && modeledDrivers)) {
           coverage.record(endpoints.occurrence, net->getDesign(), Reason::MultipleDrivers,
             Treatment::AllDrivers, "multiple net drivers are unsupported");
         }
-        for (auto driver : endpoints.drivers) {
+        size_t count = 0;
+        for (auto pin : endpoints.drivers) {
+          const auto driver = graph.getNode(pin)->getProxy()->getDriverNode(pin);
           for (auto reader : endpoints.readers) {
-            if (driver == reader) continue;
+            if (pin == reader || (aliases.count(pin) && aliases.count(reader))) continue;
+            ++count;
             graph.createEdge(driver, reader,
               new TSNLEdgeProxy(TSNLEdgeProxy::Kind::Connectivity, endpoints.occurrence));
           }
         }
+        stats.connectivityEdges += count;
+        stats.largestNetEdges = std::max(stats.largestNetEdges, count);
+        if (count > 1000000) ++stats.netsOverMillionEdges;
       }
     }
   private:
@@ -622,7 +703,20 @@ class Connections {
       SNLOccurrence occurrence;
       std::vector<TGraph::NodeId> drivers;
       std::vector<TGraph::NodeId> readers;
+      bool constantDriver;
     };
+    size_t root(size_t index) {
+      while (roots_[index] != index) {
+        roots_[index] = roots_[roots_[index]];
+        index = roots_[index];
+      }
+      return index;
+    }
+    std::vector<size_t> roots_;
+    std::unordered_map<TGraph::NodeId, size_t> boundaryNets_;
+    std::set<TGraph::NodeId> hierarchy_;
+    std::set<TGraph::NodeId> boundaries_;
+    std::set<TGraph::NodeId> inouts_;
     using Key = std::pair<naja::DNL::DNLID, SNLBitNet*>;
     struct Hash {
       size_t operator()(const Key& key) const {
@@ -636,6 +730,18 @@ class Connections {
 };
 
 }  // namespace
+
+std::string TSNLNodeProxy::getDescription() const {
+  auto path = occurrence_.getPath().getString('.');
+  if (!path.empty()) path += '.';
+  auto* object = occurrence_.getObject();
+  auto* pin = dynamic_cast<SNLInstTerm*>(object);
+  auto name = pin ? pin->getInstance()->getString() + "." + pin->getBitTerm()->getString() :
+    object ? object->getString() : "<null>";
+  const auto suffix = getRole() == Role::Drive ? " (drive)" :
+    getRole() == Role::Load ? " (load)" : " (single)";
+  return path + name + suffix;
+}
 
 size_t TSNLGraphConstructor::OccurrenceHash::operator()(const naja::NL::SNLOccurrence& occurrence) const {
   if (!occurrence.getObject()) return 0;
@@ -701,10 +807,87 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
         graph->getNode(node)->setPinRole(direction == SNLTerm::Direction::Input ?
           PinRole::DataInput : PinRole::DataOutput);
         if (snl) nodes.emplace(SNLOccurrence(paths[id], bit), node);
-        connections.add(id, paths[id], bit->getNet(), node, direction, true);
+        connections.add(id, paths[id], bit->getNet(), node, direction, true, snl != nullptr);
       }
-      if (snl) connections.add(parent, paths[parent], pin->getNet(), node, direction, false);
+      if (snl) connections.add(parent, paths[parent], pin->getNet(), node, direction, false, !model->isLeaf());
     }
+  }
+  std::vector<bool> split(graph->getNodesCount(), false);
+  std::vector<bool> opaque(graph->getNodesCount(), false);
+  connections.mergeInoutNets();
+  connections.markSplits(split);
+  std::vector<std::unique_ptr<LeafArcsBuilder>> leaves;
+  std::vector<Candidates> leafCandidates;
+  for (const auto& instance : instances) {
+    if (instance.isNull() || instance.isTop()) continue;
+    auto* snl = instance.getSNLInstance();
+    auto* model = snl->getModel();
+    if (!model->isLeaf()) continue;
+    const auto& path = paths[instance.getParentID()];
+    const LeafNodes leafNodes(instance.getTermIndexes().first, terminalNodes);
+    auto leaf = std::make_unique<LeafArcsBuilder>(*graph);
+    Candidates localCandidates;
+    try {
+      buildLeaf(*leaf, leafNodes, path, snl, localCandidates, coverage);
+      for (auto* term : snl->getInstTerms()) checkDirection(SNLOccurrence(path, term), term->getDirection(), model, coverage);
+      leaves.push_back(std::move(leaf));
+      leafCandidates.push_back(std::move(localCandidates));
+    } catch (const NLException& error) {
+      size_t inouts = 0;
+      for (auto* term : snl->getInstTerms()) {
+        auto id = leafNodes.at(term);
+        opaque[id] = true;
+        if (term->getDirection() == SNLTerm::Direction::InOut) { split[id] = true; ++inouts; }
+        graph->getNode(id)->setCellKind(CellKind::Unknown);
+        graph->getNode(id)->setPinRole(pinRole(term, false));
+      }
+      std::string detail = error.what();
+      auto reason = Reason::IncompleteModeling;
+      if (Model::hasMemoryInterface(model)) reason = Reason::Memory;
+      else if (detail.find("latch analysis") != std::string::npos) reason = Reason::UnsupportedLatch;
+      else if (detail.find("terminal direction") != std::string::npos) reason = Reason::InOut;
+      else if (detail.find("no combinational modeling") != std::string::npos) reason = Reason::Blackbox;
+      if (inouts) reason = Reason::Blackbox;
+      if (reason == Reason::Blackbox)
+        detail += "; " + std::to_string(inouts) + " inout pins (load/drive roles)";
+      coverage.record(SNLOccurrence(path, snl), model, reason, Treatment::Opaque, detail);
+    }
+  }
+  ConstructionStats stats;
+  // One decision per physical pin, shared by its external/internal aliases.
+  // Append drive roles in original node order; existing single-node IDs remain stable.
+  for (size_t id = 0; id < split.size(); ++id) {
+    if (!split[id]) continue;
+    auto* proxy = static_cast<TSNLNodeProxy*>(graph->getNode(id)->getProxy());
+    auto* driveProxy = new TSNLNodeProxy(proxy->getOccurrence());
+    driveProxy->setRole(TNodeProxy::Role::Drive);
+    auto drive = graph->createNode(driveProxy);
+    proxy->setRole(TNodeProxy::Role::Load, drive);
+    auto* load = graph->getNode(id);
+    // A sampled flop pin's drive side is not another state output or clock pin.
+    if (load->getCellKind() == CellKind::Combinational || load->getPinRole() == PinRole::DataOutput)
+      graph->getNode(drive)->setCellKind(load->getCellKind());
+    graph->getNode(drive)->setPinRole(PinRole::DataOutput);
+    if (load->getPinRole() == PinRole::DataOutput) {
+      load->setPinRole(PinRole::Unknown);
+      load->setCellKind(CellKind::Unknown);
+    }
+    ++stats.splitPins;
+  }
+  for (auto& entry : coverage.entries) {
+    if (entry.reason != Reason::InOut) continue;
+    auto id = nodes.at(entry.occurrence);
+    const auto* proxy = graph->getNode(id)->getProxy();
+    entry.detail = proxy->getDescription();
+    if (proxy->getRole() == TNodeProxy::Role::Load)
+      entry.detail += ", " + graph->getNode(proxy->getDriverNode(id))->getProxy()->getDescription();
+  }
+  for (size_t i = 0; i < leaves.size(); ++i) {
+    auto& local = leafCandidates[i];
+    leaves[i]->publish(local);
+    candidates.latches.insert(candidates.latches.end(), local.latches.begin(), local.latches.end());
+    candidates.conjunctions.insert(candidates.conjunctions.end(), local.conjunctions.begin(), local.conjunctions.end());
+    candidates.transparent.insert(candidates.transparent.end(), local.transparent.begin(), local.transparent.end());
   }
   // Bind declarations per DNL occurrence; shared models have independent seeds.
   // Several source terminals of one declaration share one clock-mask bit.
@@ -725,44 +908,7 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
       graph->createClock(*clock, seeds);
     }
   }
-  for (const auto& instance : instances) {
-    if (instance.isNull() || instance.isTop()) continue;
-    auto* snl = instance.getSNLInstance();
-    auto* model = snl->getModel();
-    if (!model->isLeaf()) continue;
-    const auto& path = paths[instance.getParentID()];
-    const LeafNodes leafNodes(instance.getTermIndexes().first, terminalNodes);
-    LeafArcsBuilder leaf(*graph);
-    Candidates localCandidates;
-    try {
-      for (auto* term : snl->getInstTerms()) {
-        if (term->getDirection() == SNLTerm::Direction::InOut)
-          fail(SNLOccurrence(path, snl), "unsupported terminal direction");
-      }
-      buildLeaf(leaf, leafNodes, path, snl, localCandidates, coverage);
-      leaf.publish(localCandidates);
-      candidates.latches.insert(candidates.latches.end(),
-        localCandidates.latches.begin(), localCandidates.latches.end());
-      candidates.conjunctions.insert(candidates.conjunctions.end(),
-        localCandidates.conjunctions.begin(), localCandidates.conjunctions.end());
-      candidates.transparent.insert(candidates.transparent.end(),
-        localCandidates.transparent.begin(), localCandidates.transparent.end());
-    } catch (const NLException& error) {
-      for (auto* term : snl->getInstTerms()) {
-        auto id = leafNodes.at(term);
-        graph->getNode(id)->setCellKind(CellKind::Unknown);
-        graph->getNode(id)->setPinRole(pinRole(term, false));
-      }
-      const std::string detail = error.what();
-      auto reason = Reason::IncompleteModeling;
-      if (Model::hasMemoryInterface(model)) reason = Reason::Memory;
-      else if (detail.find("latch analysis") != std::string::npos) reason = Reason::UnsupportedLatch;
-      else if (detail.find("terminal direction") != std::string::npos) reason = Reason::InOut;
-      else if (detail.find("no combinational modeling") != std::string::npos) reason = Reason::Blackbox;
-      coverage.record(SNLOccurrence(path, snl), model, reason, Treatment::Opaque, detail);
-    }
-  }
-  connections.publish(*graph, coverage);
+  connections.publish(*graph, coverage, opaque, stats);
   auto gates = recognizeClockGates(*graph, candidates, coverage);
   for (const auto& gate : gates) {
     for (auto id : graph->getNode(gate.output)->getInEdges()) {
@@ -773,6 +919,7 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
   }
   CoverageCounts counts;
   for (const auto& entry : coverage.entries) ++counts[entry.reason];
+  stats_ = stats;
   coverage_ = std::move(coverage.entries);
   coverageCounts_ = std::move(counts);
   graph_ = std::move(graph);
@@ -808,6 +955,16 @@ const std::vector<TSNLGraphConstructor::ClockGate>& TSNLGraphConstructor::getClo
 TGraph::NodeId TSNLGraphConstructor::getNode(const naja::NL::SNLOccurrence& occurrence) const {
   const auto it = nodes_.find(occurrence);
   return it == nodes_.end() ? TGraph::kInvalidNode : it->second;
+}
+
+TGraph::NodeId TSNLGraphConstructor::getDriverNode(const naja::NL::SNLOccurrence& occurrence) const {
+  auto id = getNode(occurrence);
+  return id == TGraph::kInvalidNode ? id : getGraph().getNode(id)->getProxy()->getDriverNode(id);
+}
+
+TGraph::ClockId TSNLGraphConstructor::createClock(const std::string& name,
+    const naja::NL::SNLOccurrence& occurrence) {
+  return getGraph().createClock(name, dynamic_cast<SNLNetComponent*>(occurrence.getObject()), getDriverNode(occurrence));
 }
 
 }  // namespace naja::TG

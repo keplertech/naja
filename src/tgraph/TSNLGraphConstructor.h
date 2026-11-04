@@ -30,6 +30,7 @@ class TSNLNodeProxy final: public TNodeProxy {
   public:
     explicit TSNLNodeProxy(const naja::NL::SNLOccurrence& occurrence): occurrence_(occurrence) {}
     const naja::NL::SNLOccurrence& getOccurrence() const { return occurrence_; }
+    std::string getDescription() const override;
   private:
     naja::NL::SNLOccurrence occurrence_;
 };
@@ -44,6 +45,7 @@ class TSNLEdgeProxy final: public TEdgeProxy {
       : kind_(kind), occurrence_(occurrence) {}
     Kind getKind() const { return kind_; }
     /// Net occurrence for connectivity, instance occurrence for primitive arcs.
+    /// Joined hierarchical inout nets use their first net occurrence in DNL order.
     const naja::NL::SNLOccurrence& getOccurrence() const { return occurrence_; }
   private:
     friend class TSNLGraphConstructor;
@@ -53,7 +55,10 @@ class TSNLEdgeProxy final: public TEdgeProxy {
 
 /// Builds an occurrence-aware graph from a processed DNL of a structural SNL design.
 /// Hierarchical instance terminals and their internal port occurrences share
-/// one node. Leaf nodes use instance-selected modeling roles and timing arcs.
+/// one node, or one drive/load pair for split inouts. Split opaque-cell inouts
+/// and inouts on nets with several drivers. Hierarchical inout bindings join
+/// net partitions into one equipotential; no load-to-drive bypass is introduced.
+/// Leaf nodes use instance-selected modeling roles and timing arcs.
 /// Recognizes scalar canonical DB0 latch-plus-AND gates whose latch enable
 /// is the inverse of the AND's clock input, through wires and DB0 buffers or
 /// inverters. Physical nodes and edges are retained. Unsupported elements are
@@ -106,12 +111,26 @@ class TSNLGraphConstructor {
     /// Lookup top ports or instance terminals in their containing path.
     /// Internal hierarchical port occurrences are accepted as aliases.
     /// The mapping describes the constructed graph; do not remove/reuse its nodes.
+    /// Returns the load role when split, the only node otherwise.
     TGraph::NodeId getNode(const naja::NL::SNLOccurrence& occurrence) const;
+    TGraph::NodeId getDriverNode(const naja::NL::SNLOccurrence& occurrence) const;
+    /// Role-aware occurrence seeding (including hierarchical aliases).
+    TGraph::ClockId createClock(const std::string& name, const naja::NL::SNLOccurrence& occurrence);
+    struct ConstructionStats {
+      /// Additional nodes: each physical split pin adds exactly one drive role.
+      size_t splitPins {0};
+      size_t connectivityEdges {0};
+      size_t largestNetEdges {0};
+      /// Direct driver x load edges are retained even above this reporting bound.
+      size_t netsOverMillionEdges {0};
+    };
+    const ConstructionStats& getConstructionStats() const { getGraph(); return stats_; }
     /// Valid while the graph/netlist is unchanged. Rebuilding replaces these
     /// occurrence-aware associations atomically with the graph.
     const std::vector<ClockGate>& getClockGates() const;
 
   private:
+    ConstructionStats stats_;
     std::vector<CoverageEntry> coverage_;
     CoverageCounts coverageCounts_;
     std::unique_ptr<TGraph> graph_;
