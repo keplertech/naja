@@ -87,7 +87,8 @@ class TGraph {
 
     /// \brief register a clock reaching `target` (a top terminal or an
     /// instance terminal), seeded at `node` - the graph node TClockPropagator
-    /// starts its forward pass from for this clock. The number of clocks is
+    /// starts its forward pass from for this clock. A split load proxy redirects
+    /// seeding to its paired driver. The number of clocks is
     /// unbounded. Grows every live edge's clock masks to
     /// match, so all edges always carry same-size masks, sized to
     /// getClocksCount().

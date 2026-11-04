@@ -10,6 +10,7 @@
 
 #include "TEdge.h"
 #include "TNode.h"
+#include "TNodeProxy.h"
 
 namespace naja::TG {
 
@@ -184,6 +185,8 @@ TGraph::ClockId TGraph::createClock(const std::string& name, naja::NL::SNLNetCom
   if (!isNodeValid(node)) {
     throw std::invalid_argument("TGraph::createClock: node is not a valid node");
   }
+  if (const auto* proxy = getNode(node)->getProxy()) node = proxy->getDriverNode(node);
+  if (!isNodeValid(node)) throw std::invalid_argument("TGraph::createClock: invalid paired driver");
   ClockId id = clocks_.size();
   clocks_.emplace_back(id, name, target, node);
   //Keep every live edge's masks sized to the new clock count, so all edges
@@ -197,13 +200,16 @@ TGraph::ClockId TGraph::createClock(const std::string& name, naja::NL::SNLNetCom
 }
 
 TGraph::ClockId TGraph::createClock(const naja::NL::NLClock& clock, const std::vector<NodeId>& nodes) {
-  for (auto node : nodes) {
+  auto seeds = nodes;
+  for (auto& node : seeds) {
     if (!isNodeValid(node)) {
       throw std::invalid_argument("TGraph::createClock: node is not a valid node");
     }
+    if (const auto* proxy = getNode(node)->getProxy()) node = proxy->getDriverNode(node);
+    if (!isNodeValid(node)) throw std::invalid_argument("TGraph::createClock: invalid paired driver");
   }
   ClockId id = clocks_.size();
-  clocks_.emplace_back(id, clock, nodes);
+  clocks_.emplace_back(id, clock, seeds);
   for (TEdge& edge : edges_) {
     if (edge.isAlive()) edge.resizeClockMasks(clocks_.size());
   }

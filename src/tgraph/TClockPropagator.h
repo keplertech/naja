@@ -6,9 +6,13 @@
 #pragma once
 
 #include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "TEdge.h"
+#include "TNodeProxy.h"
 
 namespace naja::TG {
 
@@ -60,6 +64,22 @@ class TClockPropagator {
       std::vector<TEdge::EdgeId> controlStateArcs;
     };
 
+    /// A node on the first rejected cycle, rather than a downstream blocked node.
+    /// Snapshots proxy text/role; NodeId refers to the graph supplied to run().
+    class CycleError: public std::logic_error {
+      public:
+        CycleError(TEdge::NodeId node, std::string description, TNodeProxy::Role role)
+          : std::logic_error("TClockPropagator::run: enabled combinational cycle at " +
+              description + "; no edges were disabled"), node_(node),
+            description_(std::move(description)), role_(role) {}
+        TEdge::NodeId getNode() const { return node_; }
+        const std::string& getDescription() const { return description_; }
+        TNodeProxy::Role getRole() const { return role_; }
+      private:
+        TEdge::NodeId node_;
+        std::string description_;
+        TNodeProxy::Role role_;
+    };
     static Result run(TGraph& graph);
 };
 
