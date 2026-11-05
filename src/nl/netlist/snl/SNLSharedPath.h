@@ -39,7 +39,7 @@ class SNLSharedPath {
     SNLDesign* getDesign() const;
     SNLDesign* getModel() const;
     //returns this SNLSharedPath key
-    size_t size() const;
+    size_t size() const { return size_; }
 
 
     std::string getString(char separator='/');
@@ -56,8 +56,10 @@ class SNLSharedPath {
     void destroyFromInstance();
 
     boost::intrusive::set_member_hook<> instanceSharedPathsHook_  {};
-    SNLSharedPath*                      headSharedPath_           {nullptr};
-    SNLInstance*                        tailInstance_             {nullptr};
+    SNLSharedPath* const                headSharedPath_;
+    SNLInstance* const                  tailInstance_;
+    // Shared paths are immutable; cache depth for constant-time comparisons.
+    const size_t                        size_;
 };
 
 }  // namespace naja::NL

@@ -182,40 +182,32 @@ bool SNLPath::operator!=(const SNLPath& path) const {
 }
 
 bool SNLPath::operator<(const SNLPath& path) const {
-  if (sharedPath_) {
-    if (path.sharedPath_) {
-      // both non null
-      // start by comparing sizes
-      auto thisSize = size();
-      auto otherSize = path.size();
-      if (thisSize not_eq otherSize) {
-        return thisSize < otherSize;
-      } else {
-        // same size... compare instances one by one
-        auto thisSharedPath = sharedPath_;
-        auto otherSharedPath = path.sharedPath_;
-        while (thisSharedPath) {
-          auto thisTailInstance = thisSharedPath->getTailInstance();
-          auto otherTailInstance = otherSharedPath->getTailInstance();
-          if (thisTailInstance->getNLID() < otherTailInstance->getNLID()) {
-            return true;
-          }
-          if (otherTailInstance->getNLID() < thisTailInstance->getNLID()) {
-            return false;
-          }
-          thisSharedPath = thisSharedPath->getHeadSharedPath();
-          otherSharedPath = otherSharedPath->getHeadSharedPath();
-        }
-        return false;
+  auto thisSharedPath = sharedPath_;
+  auto otherSharedPath = path.sharedPath_;
+  if (thisSharedPath == otherSharedPath) return false;
+  if (not thisSharedPath) return true;
+  if (not otherSharedPath) return false;
+
+  auto thisSize = thisSharedPath->size();
+  auto otherSize = otherSharedPath->size();
+  if (thisSize not_eq otherSize) return thisSize < otherSize;
+
+  // Equal-depth paths compare instances from tail to head. Shared heads
+  // and identical instances need no NLID construction or comparison.
+  while (thisSharedPath != otherSharedPath) {
+    auto thisInstance = thisSharedPath->getTailInstance();
+    auto otherInstance = otherSharedPath->getTailInstance();
+    if (thisInstance != otherInstance) {
+      // In one design, only the instance ID differs in the full NLID.
+      if (thisInstance->getDesign() == otherInstance->getDesign()) {
+        return thisInstance->getID() < otherInstance->getID();
       }
-    } else {
-      return false;
+      const auto thisID = thisInstance->getNLID();
+      const auto otherID = otherInstance->getNLID();
+      if (thisID != otherID) return thisID < otherID;
     }
-  } else {
-    // this is empty path
-    // if other path is non null => true
-    // if other path is null => false
-    return path.sharedPath_ != nullptr;
+    thisSharedPath = thisSharedPath->getHeadSharedPath();
+    otherSharedPath = otherSharedPath->getHeadSharedPath();
   }
   return false;
 }

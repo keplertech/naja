@@ -14,7 +14,8 @@ namespace naja::NL {
 
 SNLSharedPath::SNLSharedPath(SNLInstance* tailInstance, SNLSharedPath* headSharedPath):
   headSharedPath_(headSharedPath),
-  tailInstance_(tailInstance) {
+  tailInstance_(tailInstance),
+  size_(headSharedPath ? headSharedPath->size() + 1 : 1) {
   if (headSharedPath_ and
     (headSharedPath_->getModel() not_eq tailInstance_->getDesign())) {
     std::ostringstream stream;
@@ -88,13 +89,6 @@ SNLDesign* SNLSharedPath::getDesign() const {
 
 SNLDesign* SNLSharedPath::getModel() const {
   return tailInstance_->getModel();
-}
-
-size_t SNLSharedPath::size() const {
-  if (headSharedPath_) {
-    return headSharedPath_->size() + 1;
-  }
-  return 1;
 }
 
 //LCOV_EXCL_START
