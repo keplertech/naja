@@ -3,6 +3,8 @@
 
 import gc
 import os
+import resource
+import sys
 from pathlib import Path
 import tempfile
 import time
@@ -56,14 +58,14 @@ class TimingAnalysisTests(unittest.TestCase):
         self.assertEqual("first", first.getNLClock().getName())
         source = first.getSources()[0]
         self.assertEqual(naja.SNLOccurrence(top.getScalarTerm("a")), source)
-        self.assertEqual({first}, source.getDrivingClocks())
-        endpoints = top.getCaptureEndpoints()
+        self.assertEqual({first}, source.getLaunchClocks())
+        endpoints = top.getEndpoints()
         self.assertEqual(2, len(endpoints))
-        crossings = [e for e in endpoints if e.getDrivingClocks() == {first}
-                     and e.getReceivingClocks() == {second}]
+        crossings = [e for e in endpoints if e.getLaunchClocks() == {first}
+                     and e.getCaptureClocks() == {second}]
         self.assertEqual(1, len(crossings))
         self.assertIsInstance(crossings[0], naja.SNLOccurrence)
-        self.assertEqual([], top.getTimingDiagnostics()["unclockedClockPins"])
+        self.assertEqual([], top.getTimingDiagnostics()["noClock"])
 
     def test_unknown_pll_clock_uses_its_output(self):
         top = self.load("""module sample(input clk, d, output reg q);
@@ -78,10 +80,13 @@ class TimingAnalysisTests(unittest.TestCase):
         domain = next(c for c in top.getClockDomains() if c.getNLClock() == declaration)
         source = domain.getSources()[0]
         self.assertEqual(pll.getInstTerm(pll.getModel().getScalarTerm("clk_o")), source.getInstTerm())
-        self.assertEqual({domain}, source.getDrivingClocks())
-        self.assertEqual({domain}, source.getWaveformClocks())
-        self.assertEqual({domain}, top.getCaptureEndpoints()[0].getReceivingClocks())
-        self.assertEqual([], top.getTimingDiagnostics()["unclockedClockPins"])
+        self.assertEqual({domain}, source.getLaunchClocks())
+        self.assertEqual({domain}, source.getClocks())
+        rows = source.getFaninStartpoints()
+        self.assertEqual({domain}, frozenset(c for row in rows for c in row["launchClocks"]))
+        self.assertTrue(any(row["kind"] == "clock" and row["launchPin"] == source for row in rows))
+        self.assertEqual({domain}, top.getEndpoints()[0].getCaptureClocks())
+        self.assertEqual([], top.getTimingDiagnostics()["noClock"])
 
     def test_shared_model_clocks_have_distinct_hierarchy(self):
         top = self.load("""module leaf(input c, d, output reg q);
@@ -101,7 +106,7 @@ class TimingAnalysisTests(unittest.TestCase):
         self.assertNotEqual(left, right)
         self.assertNotEqual(str(left.getPath()), str(right.getPath()))
         self.assertEqual({frozenset([c]) for c in domains},
-                         {e.getReceivingClocks() for e in top.getCaptureEndpoints()})
+                         {e.getCaptureClocks() for e in top.getEndpoints()})
 
     def test_generated_declaration_preserves_master(self):
         top = self.load("""module sample(input c, derived, d, output reg q);
@@ -114,7 +119,7 @@ class TimingAnalysisTests(unittest.TestCase):
         domain = next(c for c in top.getClockDomains() if c.getNLClock() == generated)
         self.assertEqual(master, domain.getNLClock().getMaster())
         self.assertTrue(domain.getNLClock().isSynchronousWith(master))
-        self.assertEqual({domain}, top.getCaptureEndpoints()[0].getReceivingClocks())
+        self.assertEqual({domain}, top.getEndpoints()[0].getCaptureClocks())
 
     def test_divided_clock_diagnostic(self):
         top = self.load("""module sample(input c, d, output reg q, r);
@@ -128,10 +133,10 @@ class TimingAnalysisTests(unittest.TestCase):
         self.assertEqual(1, len(diagnostics["generatedClocks"]))
         generated = diagnostics["generatedClocks"][0]
         self.assertEqual({domain}, generated["clocks"])
-        self.assertEqual({domain}, generated["output"].getWaveformClocks())
-        self.assertEqual({domain}, generated["output"].getDrivingClocks())
-        self.assertEqual([], diagnostics["unclockedClockPins"])
-        self.assertTrue(all(e.getReceivingClocks() == {domain} for e in top.getCaptureEndpoints()))
+        self.assertEqual({domain}, generated["output"].getClocks())
+        self.assertEqual({domain}, generated["output"].getLaunchClocks())
+        self.assertEqual([], diagnostics["noClock"])
+        self.assertTrue(all(e.getCaptureClocks() == {domain} for e in top.getEndpoints()))
 
     def test_blackbox_shared_pins_have_no_cycle(self):
         top = self.load("""module sample(input clk, reset_n, d, output reg q, r);
@@ -146,8 +151,8 @@ class TimingAnalysisTests(unittest.TestCase):
         self.primary(top.getInstance("source").getModel(), "pll", "clk_o")
         self.analyze()
         self.assertEqual(3, top.getTimingCoverageCounts()["blackbox"])
-        self.assertEqual([], top.getTimingDiagnostics()["unclockedClockPins"])
-        self.assertEqual(2, len(top.getCaptureEndpoints()))
+        self.assertEqual([], top.getTimingDiagnostics()["noClock"])
+        self.assertEqual(2, len(top.getEndpoints()))
 
     def test_modeled_cycle_exception(self):
         designs = naja.NLLibrary.create(self.db)
@@ -227,12 +232,12 @@ class TimingAnalysisTests(unittest.TestCase):
         self.primary(top, "gate", "g")
         self.analyze()
         clocks = {c.getNLClock().getName(): c for c in top.getClockDomains()}
-        endpoints = top.getCaptureEndpoints()
+        endpoints = top.getEndpoints()
         memory_inputs = [e for e in endpoints
                          if e.getInstTerm().getInstance().getModel().hasMemoryInterface()]
         self.assertGreaterEqual(len(memory_inputs), 3)
-        self.assertTrue(all(e.getReceivingClocks() == {clocks["clock"]} for e in memory_inputs))
-        self.assertTrue(any(e.getReceivingClocks() == {clocks["gate"]} for e in endpoints))
+        self.assertTrue(all(e.getCaptureClocks() == {clocks["clock"]} for e in memory_inputs))
+        self.assertTrue(any(e.getCaptureClocks() == {clocks["gate"]} for e in endpoints))
         self.assertIn(("unsupported_latch", "approximated"),
                       {(row["reason"], row["treatment"])
                        for row in top.getTimingCoverageReport()})
@@ -240,69 +245,69 @@ class TimingAnalysisTests(unittest.TestCase):
     def test_late_declaration_and_rebuild(self):
         top = self.crossing()
         self.analyze()
-        endpoint = top.getCaptureEndpoints()[0]
+        endpoint = top.getEndpoints()[0]
         naja.NLClock.createPrimary(top, "late", 15.0, "ns", [top.getScalarTerm("d")])
-        for query in (top.getClockDomains, lambda: endpoint.getDrivingClocks()):
+        for query in (top.getClockDomains, lambda: endpoint.getLaunchClocks()):
             with self.assertRaisesRegex(RuntimeError, "Stale"):
                 query()
         top.analyzeTiming()
         self.assertEqual(3, len(top.getClockDomains()))
         with self.assertRaisesRegex(RuntimeError, "Stale"):
-            endpoint.getReceivingClocks()
+            endpoint.getCaptureClocks()
 
     def test_destroy_and_recreate_universe_invalidates(self):
         top = self.crossing()
         self.analyze()
         domain = top.getClockDomains()[0]
-        endpoint = top.getCaptureEndpoints()[0]
+        endpoint = top.getEndpoints()[0]
         bound = endpoint.getPath
         self.universe.destroy()
         naja.NLUniverse.create()
-        for query in (domain.getNLClock, bound, lambda: endpoint.getDrivingClocks(),
+        for query in (domain.getNLClock, bound, lambda: endpoint.getLaunchClocks(),
                       lambda: hash(endpoint), lambda: str(endpoint)):
             with self.assertRaisesRegex(RuntimeError, "Stale"):
                 query()
         with self.assertRaises(RuntimeError):
-            top.getCaptureEndpoints()
+            top.getEndpoints()
 
     def test_rebuild_invalidates_old_views(self):
         top = self.crossing()
         self.analyze()
         domain = top.getClockDomains()[0]
-        endpoint = top.getCaptureEndpoints()[0]
+        endpoint = top.getEndpoints()[0]
         top.analyzeTiming()
-        for query in (domain.getNLClock, lambda: endpoint.getReceivingClocks()):
+        for query in (domain.getNLClock, lambda: endpoint.getCaptureClocks()):
             with self.assertRaisesRegex(RuntimeError, "Stale"):
                 query()
-        self.assertEqual(2, len(top.getCaptureEndpoints()))
+        self.assertEqual(2, len(top.getEndpoints()))
 
     def test_edit_refreshes_connectivity(self):
         top = self.crossing()
         self.analyze()
         first, second = top.getClockDomains()
         output = naja.SNLOccurrence(top.getScalarTerm("q"))
-        self.assertEqual({first}, output.getDrivingClocks())
-        self.assertEqual(frozenset(), output.getReceivingClocks())
-        self.assertEqual({second}, naja.SNLOccurrence(top.getScalarTerm("q").getNet()).getReceivingClocks())
+        self.assertEqual({first}, output.getLaunchClocks())
+        self.assertEqual(frozenset(), output.getCaptureClocks())
+        self.assertEqual({second}, naja.SNLOccurrence(top.getScalarTerm("q").getNet()).getCaptureClocks())
         top.getScalarTerm("q").setNet(None)
         with self.assertRaisesRegex(RuntimeError, "Stale"):
-            output.getDrivingClocks()
+            output.getLaunchClocks()
         top.analyzeTiming()
-        self.assertEqual(frozenset(), output.getDrivingClocks())
+        self.assertEqual(frozenset(), output.getLaunchClocks())
 
     def test_native_context_outlives_python_design_wrapper(self):
         top = self.crossing()
         self.analyze()
-        endpoint = top.getCaptureEndpoints()[0]
+        endpoint = top.getEndpoints()[0]
         del top
         gc.collect()
-        self.assertEqual(1, len(endpoint.getReceivingClocks()))
+        self.assertEqual(1, len(endpoint.getCaptureClocks()))
 
     def test_missing_analysis_and_hidden_graph(self):
         top = self.crossing()
         occurrence = naja.SNLOccurrence(top.getScalarTerm("q"))
         with self.assertRaisesRegex(RuntimeError, "analyzeTiming"):
-            occurrence.getDrivingClocks()
+            occurrence.getLaunchClocks()
         self.analyze()
         for name in ("TGraph", "TSNLGraphConstructor", "TClockPropagator", "TNode", "TEdge", "TClock"):
             self.assertFalse(hasattr(naja, name))
@@ -310,18 +315,18 @@ class TimingAnalysisTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             naja.SNLClockDomain()
         with self.assertRaises(RuntimeError):
-            naja.SNLOccurrence().getDrivingClocks()
+            naja.SNLOccurrence().getLaunchClocks()
         with self.assertRaises(RuntimeError):
-            naja.SNLOccurrence(top.getInstance(next(iter(top.getInstances())).getName())).getDrivingClocks()
+            naja.SNLOccurrence(top.getInstance(next(iter(top.getInstances())).getName())).getLaunchClocks()
 
     def test_unclocked_pins(self):
         top = self.load("module sample(input c, d, output reg q); always @(posedge c) q <= d; endmodule")
         self.analyze()
-        pins = top.getTimingDiagnostics()["unclockedClockPins"]
+        pins = top.getTimingDiagnostics()["noClock"]
         self.assertEqual(1, len(pins))
         self.assertIsInstance(pins[0], naja.SNLOccurrence)
-        self.assertEqual(frozenset(), pins[0].getWaveformClocks())
-        self.assertEqual(frozenset(), top.getCaptureEndpoints()[0].getReceivingClocks())
+        self.assertEqual(frozenset(), pins[0].getClocks())
+        self.assertEqual(frozenset(), top.getEndpoints()[0].getCaptureClocks())
 
     def test_control_diagnostics(self):
         top = self.load("""module sample(input c, d, output reg q, r);
@@ -355,14 +360,14 @@ class TimingAnalysisTests(unittest.TestCase):
         output = top.getScalarTerm("q")
         pin = naja.SNLOccurrence(output)
         net = naja.SNLOccurrence(output.getNet())
-        self.assertEqual({first}, net.getDrivingClocks())
-        self.assertEqual({second}, net.getReceivingClocks())
-        self.assertEqual(pin.getDrivingClocks(), net.getDrivingClocks())
-        self.assertEqual(frozenset(), pin.getReceivingClocks())
+        self.assertEqual({first}, net.getLaunchClocks())
+        self.assertEqual({second}, net.getCaptureClocks())
+        self.assertEqual(pin.getLaunchClocks(), net.getLaunchClocks())
+        self.assertEqual(frozenset(), pin.getCaptureClocks())
         sources = [c for c in output.getNet().getComponents()
                    if isinstance(c, naja.SNLInstTerm) and c.getDirection() == naja.SNLTerm.Direction.Output]
         self.assertEqual(1, len(sources))
-        self.assertEqual({second}, naja.SNLOccurrence(sources[0]).getReceivingClocks())
+        self.assertEqual({second}, naja.SNLOccurrence(sources[0]).getCaptureClocks())
 
     def test_state_boundaries(self):
         top = self.load("""module sample(input a, b, c, d, output reg q, r, s);
@@ -376,21 +381,21 @@ class TimingAnalysisTests(unittest.TestCase):
         a, b, c = top.getClockDomains()
         q = naja.SNLOccurrence(top.getScalarTerm("q").getNet())
         r = naja.SNLOccurrence(top.getScalarTerm("r").getNet())
-        self.assertEqual({a}, q.getDrivingClocks())
-        self.assertEqual({b}, q.getReceivingClocks())
-        self.assertEqual({b}, r.getDrivingClocks())
-        self.assertEqual({c}, r.getReceivingClocks())
+        self.assertEqual({a}, q.getLaunchClocks())
+        self.assertEqual({b}, q.getCaptureClocks())
+        self.assertEqual({b}, r.getLaunchClocks())
+        self.assertEqual({c}, r.getCaptureClocks())
 
     def test_destroy_design_invalidates_native_context(self):
         top = self.crossing()
         self.analyze()
         domain = top.getClockDomains()[0]
-        endpoint = top.getCaptureEndpoints()[0]
+        endpoint = top.getEndpoints()[0]
         top.destroy()
         with self.assertRaisesRegex(RuntimeError, "Stale"):
             domain.getSources()
         with self.assertRaisesRegex(RuntimeError, "Stale"):
-            endpoint.getDrivingClocks()
+            endpoint.getLaunchClocks()
 
     def test_clone_does_not_inherit_analysis(self):
         top = self.crossing()
@@ -406,7 +411,7 @@ class TimingAnalysisTests(unittest.TestCase):
         self.universe.destroy()
         naja.NLUniverse.create()
         with self.assertRaisesRegex(RuntimeError, "destroyed"):
-            occurrence.getDrivingClocks()
+            occurrence.getLaunchClocks()
 
     def test_deleted_signal_occurrence_after_reanalysis(self):
         top = self.crossing()
@@ -416,7 +421,7 @@ class TimingAnalysisTests(unittest.TestCase):
         signal.destroy()
         top.analyzeTiming()
         with self.assertRaisesRegex(RuntimeError, "destroyed"):
-            occurrence.getReceivingClocks()
+            occurrence.getCaptureClocks()
 
     def test_one_hundred_thousand_endpoints(self):
         top = self.load("""module sample(input c, input [99999:0] d,
@@ -426,14 +431,30 @@ class TimingAnalysisTests(unittest.TestCase):
         self.primary(top, "root", "c")
         self.analyze()
         start = time.perf_counter()
-        endpoints = top.getCaptureEndpoints()
+        endpoints = top.getEndpoints()
         elapsed = time.perf_counter() - start
         self.assertEqual(100_000, len(endpoints))
         domain = top.getClockDomains()[0]
         for endpoint in (endpoints[0], endpoints[-1]):
-            self.assertEqual({domain}, endpoint.getReceivingClocks())
-            self.assertEqual(frozenset(), endpoint.getDrivingClocks())
+            self.assertEqual({domain}, endpoint.getCaptureClocks())
+            self.assertEqual(frozenset(), endpoint.getLaunchClocks())
         print(f"Timing 100000 endpoint occurrences: {elapsed:.3f}s", flush=True)
+        first_rows = endpoints[0].getFaninStartpoints()
+        start = time.perf_counter()
+        queried = 0
+        for endpoint in endpoints:
+            if endpoint.getLaunchClocks() != endpoint.getCaptureClocks():
+                rows = endpoint.getFaninStartpoints()
+                self.assertEqual(1, len(rows))
+                queried += 1
+        elapsed = time.perf_counter() - start
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        mib = rss / (1024**2 if sys.platform == "darwin" else 1024)
+        self.assertEqual(100_000, queried)
+        # Earlier materialized results have been evicted; symbolic summaries
+        # must still produce the same result when those pins are queried again.
+        self.assertEqual(first_rows, endpoints[0].getFaninStartpoints())
+        print(f"Fanin 100000 differing endpoints: {elapsed:.3f}s; process peak RSS {mib:.1f}MiB", flush=True)
 
     def test_largest_existing_design_timing(self):
         formats = Path(os.environ.get("FORMATS_PATH", Path(__file__).resolve().parents[2] / "formats"))
@@ -443,22 +464,553 @@ class TimingAnalysisTests(unittest.TestCase):
         start = time.perf_counter()
         self.analyze()
         elapsed = time.perf_counter() - start
-        self.assertEqual([], top.getCaptureEndpoints())
+        self.assertEqual([], top.getEndpoints())
         print(f"analyzeTiming large_hier_gates: {elapsed:.3f}s", flush=True)
 
+
+    def signal(self, top, name):
+        return naja.SNLOccurrence(top.getNet(name))
+
+    def state_output(self, top, name):
+        rows = self.signal(top, name).getFaninStartpoints()
+        return next(r["launchPin"] for r in rows if r["kind"] == "register")
+
+    def state_pin(self, output, name):
+        pin = output.getInstTerm()
+        term = pin.getInstance().getModel().getScalarTerm(name)
+        return naja.SNLOccurrence(output.getPath(), pin.getInstance().getInstTerm(term))
+
+    def assert_cones(self, top, endpoints=None):
+        complete = endpoints is None
+        endpoints = list(top.getEndpoints() if complete else endpoints)
+        sources, known_sources, pins = [], set(), []
+
+        def add_source(source):
+            if source not in known_sources:
+                known_sources.add(source)
+                sources.append(source)
+
+        # Discover sources from the netlist, independently of fanin results.
+        # Otherwise a missing launch point could disappear from both test walks.
+        opaque = {row["occurrence"] for row in top.getTimingCoverageReport()
+                  if row["treatment"] == "opaque"}
+        for term in top.getBitTerms():
+            pin = naja.SNLOccurrence(term)
+            pins.append(pin)
+            if term.getDirection() != naja.SNLTerm.Direction.Output:
+                add_source(pin)
+            elif complete:
+                endpoints.append(pin)
+        for clock in top.getClockDomains():
+            for source in clock.getSources():
+                add_source(source)
+        pending = [(naja.SNLPath(), top)]
+        while pending:
+            path, design = pending.pop()
+            for net in design.getBitNets():
+                if net.isConstant():
+                    add_source(naja.SNLOccurrence(path, net))
+            for instance in design.getInstances():
+                model = instance.getModel()
+                if not model.isLeaf():
+                    pending.append((naja.SNLPath(path, instance), model))
+                    continue
+                boundary = (model.hasSequentialModel() or model.hasMemoryInterface()
+                            or naja.SNLOccurrence(path, instance) in opaque)
+                for term in instance.getInstTerms():
+                    pin = naja.SNLOccurrence(path, term)
+                    pins.append(pin)
+                    if boundary and term.getDirection() != naja.SNLTerm.Direction.Input:
+                        add_source(pin)
+                    if complete and term.getBitTerm().getRole() == naja.SNLTermRole.Clock:
+                        endpoints.append(pin)
+
+        fanin_cache, fanout_cache = {}, {}
+
+        def fanin(pin):
+            if pin not in fanin_cache:
+                rows = pin.getFaninStartpoints()
+                self.assertEqual(pin.getLaunchClocks(),
+                                 frozenset(c for row in rows for c in row["launchClocks"]), str(pin))
+                self.assertEqual(rows, pin.getFaninStartpoints())
+                self.assertEqual(len(rows), len({(r["launchPin"], r["startpoint"]) for r in rows}))
+                sparse = pin.getFaninStartpoints(withCells=False)
+                self.assertEqual([{k: v for k, v in row.items() if k != "cells"} for row in rows], sparse)
+                for row in rows:
+                    if not pin.getLaunchClocks():
+                        self.assertIn(row["kind"], ("input", "blackbox", "constant", "register"))
+                        self.assertFalse(row["launchClocks"])
+                    add_source(row["launchPin"])
+                fanin_cache[pin] = rows
+            return fanin_cache[pin]
+
+        def fanout(source):
+            if source not in fanout_cache:
+                rows = source.getFanoutEndpoints()
+                self.assertEqual(rows, source.getFanoutEndpoints())
+                sparse = source.getFanoutEndpoints(withCells=False)
+                self.assertEqual([{k: v for k, v in row.items() if k != "cells"} for row in rows], sparse)
+                self.assertEqual(len(rows), len({r["endpoint"] for r in rows}))
+                fanout_cache[source] = {r["endpoint"]: r for r in rows}
+            return fanout_cache[source]
+
+        def equal_path(backward, forward):
+            self.assertEqual(backward["cells"], forward["cells"])
+            self.assertEqual(backward["direct"], forward["direct"])
+
+        # Check launch-mask equality even at intermediate combinational pins.
+        if complete:
+            for pin in pins:
+                fanin(pin)
+        # Fanin -> fanout, including explicitly selected clock/control stops.
+        for endpoint in endpoints:
+            for row in fanin(endpoint):
+                forward = fanout(row["launchPin"])
+                self.assertIn(endpoint, forward, (str(row["launchPin"]), str(endpoint)))
+                equal_path(row, forward[endpoint])
+        # Fanout -> fanin independently checks *every* reported stop. New launch
+        # points discovered here join the queue, rather than being silently lost.
+        index = 0
+        while index < len(sources):
+            source = sources[index]
+            index += 1
+            for endpoint, forward in fanout(source).items():
+                backward = [r for r in fanin(endpoint) if r["launchPin"] == source]
+                self.assertTrue(backward, (str(source), str(endpoint)))
+                for row in backward:
+                    equal_path(row, forward)
+
+    def test_reference_structural_queries(self):
+        # Export every state bit to keep the example independent of dead-state
+        # elimination. The logic and crossings are those of the reference RTL.
+        top = self.load('''module sample(input clka, clkb, in,
+            output reg s, x, f1, f2, y, r, output out);
+            always @(posedge clka) s <= in;
+            always @(posedge clka) x <= s;
+            always @(posedge clkb) f1 <= s;
+            always @(posedge clkb) f2 <= f1;
+            always @(posedge clkb) y <= f2 & x;
+            always @(posedge clkb or negedge s)
+                if (!s) r <= 1'b0; else r <= 1'b1;
+            assign out = y;
+        endmodule''')
+        self.primary(top, "a", "clka")
+        self.primary(top, "b", "clkb")
+        self.analyze()
+        a, b = top.getClockDomains()
+        outputs = {n: self.state_output(top, n) for n in ("s", "x", "f1", "f2", "y", "r")}
+        data = {n: self.state_pin(q, "D") for n, q in outputs.items()}
+        clocks = {n: self.state_pin(q, "C") for n, q in outputs.items()}
+        recovery = top.getEndpoints(check="recovery")
+        self.assertEqual(1, len(recovery))
+        self.assertEqual(6, len(top.getEndpoints(check="setup")))
+        self.assertEqual(7, len(top.getEndpoints()))
+        self.assertEqual({b}, clocks["f1"].getClocks())
+        clock_fanin = clocks["f1"].getFaninStartpoints()
+        self.assertEqual(1, len(clock_fanin))
+        self.assertEqual("clock", clock_fanin[0]["kind"])
+        self.assertEqual(naja.SNLOccurrence(top.getScalarTerm("clkb")), clock_fanin[0]["launchPin"])
+        self.assertEqual({b}, clock_fanin[0]["launchClocks"])
+        self.assert_cones(top, list(clocks.values()))
+        self.assertEqual({a}, data["f1"].getLaunchClocks())
+        self.assertEqual({b}, data["f1"].getCaptureClocks())
+        self.assertEqual({a, b}, data["y"].getLaunchClocks())
+        first = data["f1"].getFaninStartpoints()
+        self.assertEqual(1, len(first))
+        self.assertEqual(outputs["s"], first[0]["launchPin"])
+        self.assertEqual(clocks["s"], first[0]["startpoint"])
+        self.assertEqual("register", first[0]["kind"])
+        self.assertEqual(frozenset(), first[0]["cells"])
+        self.assertTrue(first[0]["direct"])
+        y = data["y"].getFaninStartpoints()
+        self.assertEqual({outputs["f2"], outputs["x"]}, {row["launchPin"] for row in y})
+        self.assertTrue(all(len(row["cells"]) == 1 and not row["direct"] for row in y))
+        self.assertEqual(outputs["s"], recovery[0].getFaninStartpoints()[0]["launchPin"])
+        self.assertEqual("input", data["s"].getFaninStartpoints()[0]["kind"])
+        self.assertEqual("constant", data["r"].getFaninStartpoints()[0]["kind"])
+        fanout = outputs["s"].getFanoutEndpoints()
+        by_pin = {row["endpoint"]: row for row in fanout}
+        self.assertEqual("recovery", by_pin[recovery[0]]["kind"])
+        self.assertEqual({b}, by_pin[recovery[0]]["captureClocks"])
+        self.assertEqual((outputs["r"],), by_pin[recovery[0]]["registerOutputs"])
+        self.assertEqual(fanout, clocks["s"].getFanoutEndpoints())
+        next_stage = next(row for row in outputs["f1"].getFanoutEndpoints() if row["kind"] == "register")
+        self.assertEqual(data["f2"], next_stage["endpoint"])
+        self.assertEqual((outputs["f2"],), next_stage["registerOutputs"])
+        self.assert_cones(top)
+        for value in ("hold", 3, False):
+            with self.assertRaises(RuntimeError):
+                top.getEndpoints(check=value)
+        # Bound methods as well as analysis-returned occurrences must reject edits.
+        queries = [data["y"].getFaninStartpoints, outputs["s"].getFanoutEndpoints]
+        top.getScalarTerm("in").setName("data")
+        for query in queries:
+            with self.assertRaisesRegex(RuntimeError, "Stale"):
+                query()
+
+    def test_chain_divergence_early_fanout_and_reconvergence(self):
+        top = self.load('''module sample(input a, b, d,
+            output reg s, p, q, r, u, v, output mixed, joined);
+            always @(posedge a) s <= d;
+            always @(posedge b) p <= s;
+            always @(posedge b) q <= p;
+            always @(posedge b) r <= q;
+            always @(posedge b) u <= s;
+            always @(posedge b) v <= u;
+            assign mixed = p ^ s;
+            assign joined = r & v;
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.analyze()
+        p = self.state_output(top, "p")
+        stages = [p]
+        while True:
+            registers = [r for r in stages[-1].getFanoutEndpoints() if r["kind"] == "register"]
+            if not registers:
+                break
+            stages.append(registers[0]["registerOutputs"][0])
+        self.assertEqual(3, len(stages))
+        self.assertTrue(any(r["kind"] == "output" and not r["direct"] for r in p.getFanoutEndpoints()))
+        s = self.state_output(top, "s")
+        self.assertEqual(2, sum(r["kind"] == "register" for r in s.getFanoutEndpoints()))
+        self.assert_cones(top)
+        self.assert_cones(top, [naja.SNLOccurrence(top.getScalarTerm(n)) for n in ("mixed", "joined")])
+
+    def test_structural_hierarchy_repeated_models(self):
+        top = self.load('''module leaf(input c, d, output reg q);
+            always @(posedge c) q <= d;
+        endmodule
+        module sample(input a, b, d, output q, r);
+            wire s;
+            leaf source(a, d, s);
+            leaf left(b, s, q);
+            leaf right(b, s, r);
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.analyze()
+        self.assert_cones(top)
+        rows = [e.getFaninStartpoints()[0] for e in top.getEndpoints()]
+        launches = [r["launchPin"] for r in rows if r["kind"] == "register"]
+        self.assertEqual(2, len(launches))
+        self.assertEqual(launches[0], launches[1])
+        self.assertEqual(2, sum(r["kind"] == "register" for r in launches[0].getFanoutEndpoints()))
+        q, r = [self.state_output(top, n) for n in ("q", "r")]
+        self.assertNotEqual(q, r)
+        self.assertNotEqual(q.getPath(), r.getPath())
+
+    def test_structural_multibit_register(self):
+        top = self.load('''module sample(input a, b, input [4:0] d,
+            output reg [4:0] s, q);
+            always @(posedge a) s <= d;
+            always @(posedge b) q <= s;
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.analyze()
+        crossings = [e for e in top.getEndpoints() if e.getLaunchClocks() != e.getCaptureClocks() and e.getLaunchClocks()]
+        self.assertEqual(5, len(crossings))
+        for endpoint in crossings:
+            source = endpoint.getFaninStartpoints()[0]["launchPin"]
+            record = next(r for r in source.getFanoutEndpoints() if r["endpoint"] == endpoint)
+            self.assertEqual(1, len(record["registerOutputs"]))
+            self.assertEqual(endpoint.getInstTerm().getBitTerm().getBit(),
+                             record["registerOutputs"][0].getInstTerm().getBitTerm().getBit())
+        self.assert_cones(top)
+
+    def test_structural_memory_and_latch(self):
+        top = self.load('''module sample(input a, b, g, e, d, input addr,
+            output reg ra, output reg q, output reg l, output read);
+            reg storage [0:1];
+            always @(posedge b) ra <= addr;
+            always @(posedge a) if (e) storage[addr] <= d;
+            assign read = storage[ra];
+            always @(posedge b) q <= read;
+            always_latch if (g) l <= d;
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.primary(top, "g", "g")
+        self.analyze()
+        target = self.state_pin(self.state_output(top, "q"), "D")
+        rows = target.getFaninStartpoints()
+        memory = [r for r in rows if r["kind"] == "register" and r["launchPin"].getInstTerm().getInstance().getModel().hasMemoryInterface()]
+        self.assertEqual(1, len(memory))
+        self.assertEqual({"a"}, {c.getNLClock().getName() for c in memory[0]["launchClocks"]})
+        self.assertTrue(memory[0]["direct"])
+        address = next(r for r in rows if r["launchPin"] == self.state_output(top, "ra"))
+        self.assertFalse(address["direct"])
+        self.assertEqual(1, len(address["cells"]))
+        self.assertEqual("register", self.signal(top, "l").getFaninStartpoints()[0]["kind"])
+        self.assert_cones(top)
+
+    def test_structural_blackbox_and_split_inout(self):
+        top = self.load('''module sample(input a, output q);
+            wire shared;
+            opaque_left left(.a(a), .io(shared));
+            opaque_right right(.io(shared), .q(q));
+        endmodule''')
+        self.analyze()
+        q = naja.SNLOccurrence(top.getScalarTerm("q"))
+        self.assertEqual("blackbox", q.getFaninStartpoints()[0]["kind"])
+        left = top.getInstance("left")
+        io = naja.SNLOccurrence(left.getInstTerm(left.getModel().getScalarTerm("io")))
+        rows = io.getFanoutEndpoints()
+        self.assertTrue(any(r["kind"] == "blackbox" and r["endpoint"] != io for r in rows))
+        self.assert_cones(top, [q])
+
+    def test_structural_reconvergent_xor_tree(self):
+        # Two nodes per level, exponentially many paths, linear cone size.
+        lines = ["module sample(input a, b, output z);"]
+        x, y = "a", "b"
+        for i in range(24):
+            lines += [f"wire x{i} = {x} ^ {y};", f"wire y{i} = {x} ^ ~{y};"]
+            x, y = f"x{i}", f"y{i}"
+        lines += [f"assign z = {x} ^ {y};", "endmodule"]
+        top = self.load("\n".join(lines))
+        self.analyze()
+        z = naja.SNLOccurrence(top.getScalarTerm("z"))
+        start = time.perf_counter()
+        rows = z.getFaninStartpoints()
+        fanin = time.perf_counter() - start
+        start = time.perf_counter()
+        fanout = naja.SNLOccurrence(top.getScalarTerm("a")).getFanoutEndpoints()
+        elapsed = time.perf_counter() - start
+        self.assertEqual(2, len(rows))
+        self.assertEqual(1, len(fanout))
+        self.assertLess(fanin, 1.0)
+        self.assertLess(elapsed, 1.0)
+        self.assert_cones(top, [z])
+        print(f"XOR depth 24: fanin={fanin*1000:.3f}ms fanout={elapsed*1000:.3f}ms", flush=True)
+
+    def test_structural_reset_fanout_ten_thousand(self):
+        top = self.load('''module sample(input a, b, d, input [9999:0] data,
+            output reg reset, output reg [9999:0] q);
+            always @(posedge a) reset <= d;
+            for (genvar i=0; i<10000; i=i+1) begin
+                always @(posedge b or negedge reset)
+                    if (!reset) q[i] <= 1'b0; else q[i] <= data[i];
+            end
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.analyze()
+        source = self.state_output(top, "reset")
+        start = time.perf_counter()
+        rows = source.getFanoutEndpoints(withCells=False)
+        elapsed = time.perf_counter() - start
+        recovery = [r for r in rows if r["kind"] == "recovery"]
+        self.assertEqual(10_000, len(recovery))
+        self.assertTrue(all("cells" not in r and r["direct"] for r in rows))
+        self.assert_cones(top)
+        print(f"Reset fanout 10000: {elapsed:.3f}s", flush=True)
+
+    def test_structural_memory_independent_write_clocks(self):
+        top = self.load('''module sample(input a, b, e0, e1,
+            input [1:0] addr0, addr1, input [2:0] d0, d1,
+            output [2:0] read, output reg [2:0] q);
+            reg [2:0] storage [0:3];
+            always @(posedge a) if (e0) storage[addr0] <= d0;
+            always @(posedge b) if (e1) storage[addr1] <= d1;
+            assign read = storage[addr0];
+            always @(posedge b) q <= read;
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.analyze()
+        target = next(e for e in top.getEndpoints() if not e.getInstTerm().getInstance().getModel().hasMemoryInterface())
+        rows = [r for r in target.getFaninStartpoints() if r["kind"] == "register"]
+        self.assertEqual(2, len(rows))
+        self.assertEqual(rows[0]["launchPin"], rows[1]["launchPin"])
+        self.assertNotEqual(rows[0]["startpoint"], rows[1]["startpoint"])
+        self.assertEqual({frozenset({"a"}), frozenset({"b"})},
+                         {frozenset(c.getNLClock().getName() for c in r["launchClocks"]) for r in rows})
+        self.assertTrue(all(r["direct"] for r in rows))
+        for row in rows:
+            self.assertTrue(any(r["endpoint"] == target for r in row["startpoint"].getFanoutEndpoints()))
+        self.assert_cones(top)
+
+    def test_structural_clock_gating_and_data_clock(self):
+        top = self.load('''module sample(input c, d, output reg source, q, r);
+            reg held;
+            always @(posedge c) source <= d;
+            always_latch if (!c) held <= source;
+            wire gated = c & held;
+            always @(posedge gated) q <= d;
+            always @(posedge source) r <= d;
+        endmodule''')
+        self.primary(top, "clock", "c")
+        self.analyze()
+        source = self.state_output(top, "source")
+        rows = source.getFanoutEndpoints()
+        self.assertIn("clock_gating", {r["kind"] for r in rows})
+        self.assertIn("clock", {r["kind"] for r in rows})
+        control = next(r for r in rows if r["kind"] == "clock_gating")
+        self.assertEqual({top.getClockDomains()[0]}, control["captureClocks"])
+        self.assertNotIn(control["endpoint"], top.getEndpoints())
+        for row in rows:
+            if row["kind"] == "clock":
+                self.assertEqual(row["endpoint"], row["registerClock"])
+                self.assertTrue(row["registerOutputs"])
+                self.assertFalse(row["captureClocks"])
+        self.assert_cones(top)
+        self.assert_cones(top, [r["endpoint"] for r in rows if r["kind"] in ("clock", "clock_gating")])
+
+    def test_structural_invalid_occurrences(self):
+        top = self.crossing()
+        for query in ("getFaninStartpoints", "getFanoutEndpoints"):
+            pin = naja.SNLOccurrence(top.getScalarTerm("d"))
+            with self.assertRaisesRegex(RuntimeError, "analyzeTiming"):
+                getattr(pin, query)()
+        self.analyze()
+        for value in (naja.SNLOccurrence(), naja.SNLOccurrence(next(iter(top.getInstances())))):
+            for query in (value.getFaninStartpoints, value.getFanoutEndpoints):
+                with self.assertRaises(RuntimeError):
+                    query()
+        pin = naja.SNLOccurrence(top.getScalarTerm("d"))
+        self.assertEqual(pin.getFaninStartpoints(), pin.getFaninStartpoints(True))
+        self.assertEqual(pin.getFanoutEndpoints(), pin.getFanoutEndpoints(True))
+
+    def test_structural_clock_used_as_data_and_gated_waveform(self):
+        top = self.load('''module sample(input a, b, en, data,
+            output reg q, gated_q);
+            reg held;
+            always_latch if (!a) held <= en;
+            wire gated = a & held;
+            always @(posedge b) q <= a & data;
+            always @(posedge gated) gated_q <= data;
+        endmodule''')
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.analyze()
+        q = self.state_output(top, "q")
+        data_pin = self.state_pin(q, "D")
+        clock_source = naja.SNLOccurrence(top.getScalarTerm("a"))
+        rows = data_pin.getFaninStartpoints()
+        clock = next(r for r in rows if r["kind"] == "clock")
+        self.assertEqual(clock_source, clock["launchPin"])
+        self.assertEqual(clock_source, clock["startpoint"])
+        self.assertEqual({"a"}, {c.getNLClock().getName() for c in clock["launchClocks"]})
+        self.assertEqual(1, len(clock["cells"]))
+        self.assertFalse(clock["direct"])
+        gated_pin = self.state_pin(self.state_output(top, "gated_q"), "C")
+        gated_rows = gated_pin.getFaninStartpoints()
+        self.assertTrue(any(r["kind"] == "clock" and r["cells"] and not r["direct"] for r in gated_rows))
+        stops = clock_source.getFanoutEndpoints()
+        self.assertTrue(any(r["endpoint"] == gated_pin and r["kind"] == "clock" for r in stops))
+        self.assertFalse(any(r["kind"] == "output" for r in stops))
+        self.assert_cones(top)
+        self.assert_cones(top, [gated_pin])
+
+    def test_structural_overlapping_cones(self):
+        # Many distinct endpoint pins share a reconvergent trunk. A separate
+        # branch adds one cell, so cached suffixes must not mix path cell sets.
+        lines = ["module sample(input c, a, b, select, unused,",
+                 "output reg [1023:0] q, output reg branch);"]
+        x, y = "a", "b"
+        for i in range(24):
+            lines += [f"wire x{i} = {x} ^ {y};", f"wire y{i} = {x} ^ ~{y};"]
+            x, y = f"x{i}", f"y{i}"
+        lines += [f"wire shared = {x} ^ {y};",
+                  "always @(posedge c) q <= {1024{shared}};",
+                  "always @(posedge c) branch <= shared & select;", "endmodule"]
+        top = self.load("\n".join(lines))
+        self.primary(top, "clock", "c")
+        self.analyze()
+        endpoints = top.getEndpoints(check="setup")
+        branch = self.state_pin(self.state_output(top, "branch"), "D")
+        shared = [e for e in endpoints if e != branch]
+        self.assertEqual(1024, len(shared))
+        expected = shared[0].getFaninStartpoints()
+        self.assertEqual(2, len(expected))
+        expected_sparse = [{k: v for k, v in row.items() if k != "cells"} for row in expected]
+        start = time.perf_counter()
+        for endpoint in shared:
+            self.assertEqual(expected, endpoint.getFaninStartpoints())
+        first = time.perf_counter() - start
+        branch_rows = branch.getFaninStartpoints()
+        for row in expected:
+            extended = next(r for r in branch_rows if r["launchPin"] == row["launchPin"])
+            self.assertTrue(row["cells"] < extended["cells"])
+            self.assertEqual(1, len(extended["cells"] - row["cells"]))
+        start = time.perf_counter()
+        for endpoint in reversed(shared):
+            self.assertEqual(expected_sparse, endpoint.getFaninStartpoints(False))
+            self.assertEqual(expected, endpoint.getFaninStartpoints())
+        repeated = time.perf_counter() - start
+        # Warm a shared downstream suffix, then query a different upstream pin.
+        # The prefix cells must be combined with each cached endpoint path.
+        driver = next(p for p in top.getNet("shared").getComponents()
+                      if p.getDirection() == naja.SNLTerm.Direction.Output)
+        trunk = naja.SNLOccurrence(driver)
+        trunk_stops = trunk.getFanoutEndpoints()
+        self.assertEqual(1025, len(trunk_stops))
+        source = naja.SNLOccurrence(top.getScalarTerm("a"))
+        prefix = next(r for r in expected if r["launchPin"] == source)
+        stops = source.getFanoutEndpoints()
+        self.assertEqual(1025, len(stops))
+        for stop in stops:
+            if stop["endpoint"] != branch:
+                self.assertEqual(prefix["cells"], stop["cells"])
+                self.assertEqual(prefix["direct"], stop["direct"])
+        self.assertFalse(naja.SNLOccurrence(top.getScalarTerm("unused")).getFanoutEndpoints())
+        self.assert_cones(top)
+        print(f"Shared XOR cone, 1024 endpoint pins: first={first:.3f}s mixed-mode reverse={repeated:.3f}s", flush=True)
+
+    def test_structural_order_independence(self):
+        def snapshot(order):
+            top = self.load('''module sample(input a, b, d, output reg s, q);
+                always @(posedge a) s <= d;
+                always @(posedge b) q <= ~s;
+            endmodule''')
+            self.primary(top, "a", "a")
+            self.primary(top, "b", "b")
+            primitive_lib = naja.NLLibrary.createPrimitives(self.db)
+            model = naja.SNLDesign.createPrimitive(primitive_lib, "opaque")
+            a = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.Input, "a")
+            z = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.Output, "z")
+            # Identical named disconnected cells in opposite creation order.
+            for name in order:
+                instance = naja.SNLInstance.create(top, model, name)
+                instance.getInstTerm(z).setNet(top.getNet("s"))
+                instance.getInstTerm(a).setNet(top.getNet("d"))
+            top.analyzeTiming()
+            q = self.state_pin(self.state_output(top, "q"), "D")
+            before = q.getFaninStartpoints()
+            for endpoint in reversed(top.getEndpoints()):
+                endpoint.getFanoutEndpoints(False)
+                endpoint.getFaninStartpoints(False)
+            self.assertEqual(before, q.getFaninStartpoints())
+            self.assertTrue(before[0]["direct"])
+            self.assertEqual(1, len(before[0]["cells"]))  # DB0 inverter
+            self.assert_cones(top)
+            def identity(occurrence):
+                pin = occurrence.getInstTerm()
+                instance = pin.getInstance() if pin else occurrence.getInstance()
+                name = instance.getName() or f"unnamed_{instance.getID()}"
+                return name + ("/" + pin.getBitTerm().getName() if pin else "")
+            return [(identity(r["launchPin"]), identity(r["startpoint"]),
+                     r["kind"], sorted(identity(c) for c in r["cells"]), r["direct"])
+                    for r in before]
+        first = snapshot(("left", "right"))
+        self.universe.destroy()
+        self.setUp()
+        second = snapshot(("right", "left"))
+        self.assertEqual(first, second)
 
     def test_occurrence_value_protocols(self):
         top = self.crossing()
         self.analyze()
         source = top.getClockDomains()[0].getSources()[0]
-        endpoint = top.getCaptureEndpoints()[0]
+        endpoint = top.getEndpoints()[0]
         for occurrence in (source, endpoint):
             with self.subTest(occurrence=str(occurrence)):
                 self.assertTrue(repr(occurrence))
                 self.assertEqual(str(occurrence), repr(occurrence))
                 self.assertEqual(hash(occurrence), hash(occurrence))
                 self.assertEqual(1, len({occurrence, occurrence}))
-        same_endpoint = top.getCaptureEndpoints()[0]
+        same_endpoint = top.getEndpoints()[0]
         self.assertEqual(endpoint, same_endpoint)
         self.assertEqual(hash(endpoint), hash(same_endpoint))
 
@@ -478,7 +1030,7 @@ class TimingAnalysisTests(unittest.TestCase):
         occurrence = naja.SNLOccurrence(next(iter(top.getInstances())))
         self.analyze()
         with self.assertRaisesRegex(RuntimeError, "single-bit terminal or net occurrence"):
-            occurrence.getDrivingClocks()
+            occurrence.getLaunchClocks()
 
     def test_caller_hierarchical_occurrence_requires_refresh(self):
         top = self.load("""module child(input a, output y); assign y = a; endmodule
@@ -489,13 +1041,13 @@ class TimingAnalysisTests(unittest.TestCase):
         path = naja.SNLPath(instance)
         occurrence = naja.SNLOccurrence(path, term)
         self.analyze()
-        self.assertEqual(1, len(occurrence.getWaveformClocks()))
+        self.assertEqual(1, len(occurrence.getClocks()))
         top.getScalarTerm("a").setName("input_data")
         top.analyzeTiming()
         with self.assertRaisesRegex(RuntimeError, "Stale hierarchical occurrence"):
-            occurrence.getWaveformClocks()
+            occurrence.getClocks()
         refreshed = naja.SNLOccurrence(path, term)
-        self.assertEqual(1, len(refreshed.getWaveformClocks()))
+        self.assertEqual(1, len(refreshed.getClocks()))
 
     def test_coverage_inout_and_multiple_drivers(self):
         top = self.crossing()

@@ -3,8 +3,15 @@
 #include "PySNLTimingAnalysis.h"
 
 #include <memory>
+#include <algorithm>
+#include <map>
+#include <set>
+#include <deque>
+#include <tuple>
+#include <array>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "PyInterface.h"
 #include "PyNLClock.h"
@@ -18,11 +25,45 @@
 #include "NLUniverse.h"
 #include "TSNLGraphConstructor.h"
 #include "TClockPropagator.h"
+#include "NLDB0.h"
+#include "SNLInstTerm.h"
+#include "SNLInstance.h"
+#include "SNLBitTerm.h"
+#include "SNLDesignModeling.h"
+#include "NLClock.h"
 
 namespace PYNAJA {
 namespace {
 using namespace naja::TG;
 using namespace naja::NL;
+constexpr size_t invalid = TGraph::kInvalidNode;
+struct ConeArc {
+  size_t node;
+  size_t cell {invalid};
+  bool logic {false};
+};
+struct ConeNode {
+  std::vector<ConeArc> incoming, outgoing;
+  std::vector<size_t> clocks, outputs;
+  const char* launch {nullptr};
+  const char* stop {nullptr};
+};
+struct ConeResult {
+  size_t pin;
+  std::set<size_t> cells;
+  bool direct {true};
+  size_t startpoint {invalid};
+};
+struct ConeSummary {
+  size_t boundary {invalid};
+  std::vector<ConeArc> children;
+};
+struct ConeSummaries {
+  // Each physical node is summarized once in this direction/mode. Index zero
+  // is the empty cone; connectivity-only nodes alias their child's summary.
+  std::unordered_map<size_t, size_t> nodes;
+  std::vector<ConeSummary> storage {ConeSummary{}};
+};
 
 // Private C++ context owned by a property on the analyzed design. The
 // constructor owns its TGraph through unique_ptr; Python never sees that graph.
@@ -33,7 +74,21 @@ struct SNLTimingAnalysis {
   std::optional<TClockPropagator::Result> result;
   std::vector<TEdge::ClockMask> driving;
   std::vector<TEdge::ClockMask> receiving;
+  std::vector<TEdge::ClockMask> seeds;
   std::vector<size_t> endpoints;
+  std::vector<size_t> recovery;
+  // Shared, occurrence-aware data adjacency and boundary metadata. No expanded
+  // transitive cell sets are retained per node (quadratic on a long chain).
+  std::vector<ConeNode> cone;
+  std::vector<std::string> names;
+  std::vector<SNLOccurrence> cells;
+  std::vector<SNLOccurrence> constants;
+  std::map<SNLOccurrence, size_t> constantNodes;
+  using ConeKey = std::tuple<size_t, bool, bool>;
+  std::map<ConeKey, std::vector<ConeResult>> coneCache;
+  std::deque<ConeKey> coneCacheOrder;
+  size_t coneCacheWeight {0};
+  std::array<ConeSummaries, 4> coneSummaries;
 };
 class TimingProperty final: public naja::NajaPrivateProperty {
  public:
@@ -153,7 +208,9 @@ PyObject* linkedOccurrence(View* self, const SNLOccurrence& occurrence) {
   return reinterpret_cast<PyObject*>(object);
 }
 PyObject* occurrence(View* self, size_t id) {
-  return linkedOccurrence(self, proxy(**self->state, id)->getOccurrence());
+  auto& state = **self->state;
+  auto count = state.constructor.getGraph().getNodesStorage().size();
+  return linkedOccurrence(self, id < count ? proxy(state, id)->getOccurrence() : state.constants.at(id - count));
 }
 // Helpers consume owned references, including on allocation failure.
 bool append(PyObject* list, PyObject* value) {
@@ -280,8 +337,12 @@ void collectMasks(SNLTimingAnalysis& state) {
   const TEdge::ClockMask empty(graph.getClocksCount());
   state.driving.assign(size, empty);
   state.receiving.assign(size, empty);
+  state.seeds.assign(size, empty);
   for (const auto& clock: graph.getClocksStorage()) {
-    for (const auto& seed: clock.getSeeds()) state.driving[seed.node].set(clock.getIndex());
+    for (const auto& seed: clock.getSeeds()) {
+      state.driving[seed.node].set(clock.getIndex());
+      state.seeds[seed.node].set(clock.getIndex());
+    }
   }
   for (const auto& edge: graph.getEdgesStorage()) {
     if (!edge.isAlive() || edge.isDisabled()) continue;
@@ -302,6 +363,371 @@ void collectMasks(SNLTimingAnalysis& state) {
     }
   }
 }
+// Build once per analysis. Both directions use exactly the same physical data
+// arcs, so their cell unions agree, including at hierarchy and split inouts.
+void collectCone(SNLTimingAnalysis& state) {
+  const auto& graph = state.constructor.getGraph();
+  const auto size = graph.getNodesStorage().size();
+  state.cone.resize(size);
+  state.names.reserve(size);
+  for (size_t id = 0; id < size; ++id) state.names.push_back(proxy(state, id)->getOccurrence().getString());
+  std::map<SNLOccurrence, size_t> cellIds;
+  auto& constantIds = state.constantNodes;
+  std::set<SNLOccurrence> opaque;
+  for (const auto& entry: state.constructor.getCoverageReport())
+    if (entry.treatment == TSNLGraphConstructor::Treatment::Opaque) opaque.insert(entry.occurrence);
+  auto connect = [&](size_t from, size_t to, size_t cell = invalid, bool logic = false) {
+    state.cone[from].outgoing.push_back({to, cell, logic});
+    state.cone[to].incoming.push_back({from, cell, logic});
+  };
+  for (const auto& edge: graph.getEdgesStorage()) {
+    if (!edge.isAlive() || edge.isDisabled()) continue;
+    if (edge.getKind() == TEdge::Kind::State) {
+      state.cone[edge.getSource()].outputs.push_back(edge.getTarget());
+      state.cone[edge.getTarget()].clocks.push_back(edge.getSource());
+      state.cone[edge.getTarget()].launch = "register";
+      continue;
+    }
+    auto* arc = static_cast<const TSNLEdgeProxy*>(edge.getProxy());
+    size_t cell = invalid;
+    bool logic = false;
+    if (arc->getKind() == TSNLEdgeProxy::Kind::Combinational || arc->getKind() == TSNLEdgeProxy::Kind::ClockPass) {
+      auto* instance = arc->getOccurrence().getInstance();
+      auto* model = instance->getModel();
+      if (!NLDB0::isAssign(model)) {
+        auto [it, added] = cellIds.emplace(arc->getOccurrence(), state.cells.size());
+        if (added) state.cells.push_back(arc->getOccurrence());
+        cell = it->second;
+        logic = !(NLDB0::isDB0Primitive(model) &&
+          (SNLDesignModeling::isBuf(model) || SNLDesignModeling::isInv(model)));
+      }
+    }
+    connect(edge.getSource(), edge.getTarget(), cell, logic);
+  }
+  for (const auto& capture: graph.getCaptureEdgesStorage()) {
+    if (!capture.isAlive()) continue;
+    auto& node = state.cone[capture.getTarget()];
+    node.stop = capture.getKind() == TCaptureEdge::Kind::Data ? "register" : "clock_gating";
+    node.clocks.push_back(capture.getSource());
+  }
+  // Build input-to-state-output associations from the existing explicit
+  // sequential expressions. In DB0 each D bit names just its own state, while
+  // enables and resets can name many states. No D -> Q traversal arc is added.
+  std::map<SNLOccurrence, std::vector<size_t>> leaves;
+  for (size_t id = 0; id < size; ++id) {
+    const auto& occ = proxy(state, id)->getOccurrence();
+    auto* pin = occ.getInstTerm();
+    if (pin && pin->getInstance()->getModel()->isLeaf() && proxy(state, id)->getRole() != TNodeProxy::Role::Drive)
+      leaves[SNLOccurrence(occ.getPath(), pin->getInstance())].push_back(id);
+  }
+  for (const auto& [occ, pins]: leaves) {
+    auto* instance = occ.getInstance();
+    if (SNLDesignModeling::hasSequentialModel(instance->getModel())) {
+      const auto& seq = SNLDesignModeling::getSequentialModel(instance);
+      std::map<SNLBitTerm*, size_t, SNLBitTerm::InDesignLess> ids;
+      for (auto id: pins) ids[proxy(state, id)->getOccurrence().getInstTerm()->getBitTerm()] = id;
+      auto terms = [](const SNLDesignModeling::BooleanExpression& expression) {
+        std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> result;
+        std::vector<size_t> pending {expression.root};
+        std::set<size_t> seen;
+        while (!pending.empty()) {
+          auto id = pending.back(); pending.pop_back();
+          if (id >= expression.nodes.size() || !seen.insert(id).second) continue;
+          const auto& node = expression.nodes[id];
+          if (node.operation == SNLDesignModeling::BooleanExpression::Operator::Term) result.insert(node.term);
+          pending.insert(pending.end(), node.operands.begin(), node.operands.end());
+        }
+        return result;
+      };
+      std::vector<std::set<SNLBitTerm*, SNLBitTerm::InDesignLess>> inputs(seq.states.size());
+      for (size_t i = 0; i < seq.states.size(); ++i) {
+        inputs[i] = terms(seq.states[i].nextState);
+        for (const auto* expression: {&seq.states[i].clear, &seq.states[i].preset})
+          if (*expression) {
+            auto more = terms(**expression);
+            inputs[i].insert(more.begin(), more.end());
+          }
+      }
+      for (const auto& output: seq.outputs) {
+        auto out = state.constructor.getDriverNode(SNLOccurrence(occ.getPath(), instance->getInstTerm(output.term)));
+        if (out == invalid || !state.cone[out].launch) continue; // opaque model
+        for (const auto& node: output.function.nodes) {
+          if (node.operation != SNLDesignModeling::BooleanExpression::Operator::State || node.state >= inputs.size()) continue;
+          for (auto* input: inputs[node.state]) {
+            auto found = ids.find(input);
+            if (found != ids.end()) state.cone[found->second].outputs.push_back(out);
+          }
+        }
+      }
+    } else if (SNLDesignModeling::hasMemoryInterface(instance->getModel())) {
+      for (auto id: pins) {
+        auto& info = state.cone[id];
+        if (!info.stop || std::string(info.stop) != "register") continue;
+        for (auto clock: info.clocks) {
+          const auto& outputs = state.cone[clock].outputs;
+          info.outputs.insert(info.outputs.end(), outputs.begin(), outputs.end());
+        }
+      }
+    }
+  }
+  for (size_t id = 0; id < size; ++id) {
+    const auto* node = graph.getNode(id);
+    const auto& occ = proxy(state, id)->getOccurrence();
+    const auto role = proxy(state, id)->getRole();
+    auto* pin = occ.getInstTerm();
+    auto& info = state.cone[id];
+    if (!pin) {
+      if (role != TNodeProxy::Role::Load && occ.getNetComponent()->getDirection() != SNLTerm::Direction::Output)
+        info.launch = "input";
+      if (role != TNodeProxy::Role::Drive && occ.getNetComponent()->getDirection() != SNLTerm::Direction::Input)
+        info.stop = "output";
+    } else if (pin->getInstance()->getModel()->isLeaf()) {
+      if (node->getPinRole() == TNode::PinRole::AsyncReset || node->getPinRole() == TNode::PinRole::AsyncSet) {
+        info.stop = "recovery";
+        state.recovery.push_back(id);
+        // Async controls do not have capture arcs. Find their owning clock(s)
+        // from the already modeled output state associations.
+        for (auto* output: pin->getInstance()->getInstTerms()) {
+          auto out = state.constructor.getDriverNode(SNLOccurrence(occ.getPath(), output));
+          if (out != invalid && state.cone[out].launch && std::string(state.cone[out].launch) == "register") {
+            const auto& clocks = state.cone[out].clocks;
+            info.clocks.insert(info.clocks.end(), clocks.begin(), clocks.end());
+            if (SNLDesignModeling::hasMemoryInterface(pin->getInstance()->getModel())) info.outputs.push_back(out);
+          }
+        }
+      } else if (node->getPinRole() == TNode::PinRole::Clock || node->getPinRole() == TNode::PinRole::Gate) {
+        info.stop = "clock";
+      }
+      if (node->getCellKind() == TNode::CellKind::Unknown &&
+          (!SNLDesignModeling::hasMemoryInterface(pin->getInstance()->getModel()) ||
+           opaque.count(SNLOccurrence(occ.getPath(), pin->getInstance())))) {
+        if (role != TNodeProxy::Role::Load && pin->getDirection() != SNLTerm::Direction::Input)
+          info.launch = "blackbox";
+        if (role != TNodeProxy::Role::Drive && pin->getDirection() != SNLTerm::Direction::Output)
+          info.stop = "blackbox";
+      }
+      if (node->isCombinationalDriver() && info.incoming.empty()) info.launch = "constant";
+    }
+    // Constants are represented by typed bit nets rather than graph terminals.
+    // Add private query vertices; the timing graph and propagation stay intact.
+    auto* net = occ.getComponentBitNet();
+    if (net && net->isConstant() && role != TNodeProxy::Role::Drive) {
+      SNLOccurrence constant(occ.getPath(), net);
+      auto [it, added] = constantIds.emplace(constant, state.cone.size());
+      if (added) {
+        state.constants.push_back(constant);
+        state.names.push_back(constant.getString());
+        state.cone.emplace_back();
+        state.cone.back().launch = "constant";
+      }
+      connect(it->second, id);
+    }
+  }
+  for (auto& info: state.cone) {
+    std::sort(info.outputs.begin(), info.outputs.end(), [&](auto a, auto b) {
+      return state.names[a] < state.names[b];
+    });
+    info.outputs.erase(std::unique(info.outputs.begin(), info.outputs.end()), info.outputs.end());
+    std::sort(info.clocks.begin(), info.clocks.end());
+    info.clocks.erase(std::unique(info.clocks.begin(), info.clocks.end()), info.clocks.end());
+  }
+  for (size_t id = 0; id < size; ++id) {
+    if (state.seeds[id].any() && (!state.cone[id].launch || std::string(state.cone[id].launch) != "register"))
+      state.cone[id].launch = "clock";
+  }
+}
+
+// Provenance is a union DAG, not an expanded set at each intermediate pin.
+// A reconvergent cone visits each vertex once; withCells=false allocates no DAG.
+struct CellUnion {
+  size_t cell {invalid};
+  size_t left {0}, right {0};
+};
+// Summaries retain topology/provenance, not expanded transitive cell sets.
+// The total storage across all nodes is O(V+E), even on a long chain. They
+// survive result-cache eviction and are reused by overlapping cone queries.
+size_t summarizeCone(SNLTimingAnalysis& state, ConeSummaries& cache, size_t root,
+    bool forward, bool withCells) {
+  auto found = cache.nodes.find(root);
+  if (found != cache.nodes.end()) return found->second;
+  struct Visit { size_t id, next; };
+  std::vector<Visit> stack {{root, 0}};
+  std::unordered_set<size_t> active {root};
+  auto arcs = [&](size_t id) -> const std::vector<ConeArc>& {
+    return forward ? state.cone[id].outgoing : state.cone[id].incoming;
+  };
+  // A write-side input may also be an asynchronous read address: report it
+  // as a capture and continue along its explicit combinational read arcs.
+  auto stop = [&](size_t id) { return forward && state.cone[id].stop &&
+    std::string(state.cone[id].stop) != "register"; };
+  while (!stack.empty()) {
+    auto& frame = stack.back();
+    const auto& edges = arcs(frame.id);
+    if (!stop(frame.id) && frame.next < edges.size()) {
+      auto next = edges[frame.next++].node;
+      if (cache.nodes.find(next) != cache.nodes.end()) continue;
+      if (!active.insert(next).second) throw NLException("Cycle in timing data cone");
+      stack.push_back({next, 0});
+      continue;
+    }
+    ConeSummary summary;
+    if (forward ? state.cone[frame.id].stop : state.cone[frame.id].launch)
+      summary.boundary = frame.id;
+    if (!stop(frame.id)) {
+      for (const auto& arc: edges) {
+        auto child = cache.nodes.at(arc.node);
+        if (child) summary.children.push_back({child, withCells ? arc.cell : invalid, arc.logic});
+      }
+    }
+    size_t index = 0;
+    if (summary.boundary == invalid && summary.children.size() == 1 &&
+        summary.children.front().cell == invalid && !summary.children.front().logic) {
+      index = summary.children.front().node;
+    } else if (summary.boundary != invalid || !summary.children.empty()) {
+      index = cache.storage.size();
+      cache.storage.push_back(std::move(summary));
+    }
+    cache.nodes.emplace(frame.id, index);
+    active.erase(frame.id);
+    stack.pop_back();
+  }
+  return cache.nodes.at(root);
+}
+std::vector<ConeResult> walkCone(SNLTimingAnalysis& state, const std::vector<size_t>& roots,
+    bool forward, bool withCells) {
+  auto& summaries = state.coneSummaries[2 * forward + withCells];
+  std::vector<size_t> summaryRoots;
+  for (auto root: roots) summaryRoots.push_back(summarizeCone(state, summaries, root, forward, withCells));
+  std::sort(summaryRoots.begin(), summaryRoots.end());
+  summaryRoots.erase(std::unique(summaryRoots.begin(), summaryRoots.end()), summaryRoots.end());
+  const auto key = SNLTimingAnalysis::ConeKey(summaryRoots.empty() ? 0 : summaryRoots.front(), forward, withCells);
+  if (summaryRoots.size() == 1) {
+    auto found = state.coneCache.find(key);
+    if (found != state.coneCache.end()) return found->second;
+  }
+  // Evaluate shared summaries once per query, using a topological order. A
+  // summary can contain a boundary and dependencies (asynchronous memory read).
+  struct Visit { size_t id, next; };
+  std::unordered_map<size_t, bool> visited;
+  // A previous query can be an intermediate suffix of this query. Reuse its
+  // materialized boundary/cell results instead of re-evaluating that suffix.
+  // These references remain valid until result-cache eviction at the end.
+  std::unordered_map<size_t, const std::vector<ConeResult>*> cached;
+  auto visit = [&](size_t id) {
+    visited[id] = true;
+    auto found = state.coneCache.find(SNLTimingAnalysis::ConeKey(id, forward, withCells));
+    if (found != state.coneCache.end()) cached.emplace(id, &found->second);
+  };
+  std::vector<size_t> order;
+  std::vector<Visit> stack;
+  auto arcs = [&](size_t id) -> const std::vector<ConeArc>& { return summaries.storage[id].children; };
+  for (auto root: summaryRoots) {
+    if (visited[root]) continue;
+    visit(root);
+    stack.push_back({root, 0});
+    while (!stack.empty()) {
+      auto& frame = stack.back();
+      const auto& edges = arcs(frame.id);
+      if (!cached.count(frame.id) && frame.next < edges.size()) {
+        auto next = edges[frame.next++].node;
+        if (!visited[next]) { visit(next); stack.push_back({next, 0}); }
+      } else {
+        order.push_back(frame.id);
+        stack.pop_back();
+      }
+    }
+  }
+  struct Value { size_t cells {0}; bool logic {false}; };
+  std::unordered_map<size_t, Value> values;
+  std::vector<CellUnion> unions;
+  if (withCells) unions.emplace_back();
+  auto merge = [&](size_t left, size_t right) {
+    if (!left || left == right) return right;
+    if (!right) return left;
+    unions.push_back({invalid, left, right});
+    return unions.size() - 1;
+  };
+  std::map<size_t, size_t> cellLeaves;
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    auto id = *it;
+    auto value = values[id];
+    if (cached.count(id)) continue;
+    for (const auto& arc: arcs(id)) {
+      auto& next = values[arc.node];
+      next.logic = next.logic || value.logic || arc.logic;
+      if (withCells) {
+        auto expression = value.cells;
+        if (arc.cell != invalid) {
+          auto [leaf, added] = cellLeaves.emplace(arc.cell, unions.size());
+          if (added) unions.push_back({arc.cell, 0, 0});
+          expression = merge(expression, leaf->second);
+        }
+        next.cells = merge(next.cells, expression);
+      }
+    }
+  }
+  auto expandCells = [&](size_t expression) {
+    std::set<size_t> cells;
+    if (withCells) {
+      std::vector<size_t> pending {expression};
+      std::unordered_set<size_t> seen;
+      while (!pending.empty()) {
+        auto index = pending.back(); pending.pop_back();
+        if (!index || !seen.insert(index).second) continue;
+        const auto& u = unions[index];
+        if (u.cell != invalid) cells.insert(u.cell);
+        else { pending.push_back(u.left); pending.push_back(u.right); }
+      }
+    }
+    return cells;
+  };
+  std::map<size_t, ConeResult> combined;
+  auto emit = [&](size_t pin, const std::set<size_t>& prefix, bool direct, const ConeResult* suffix = nullptr) {
+    auto [it, added] = combined.try_emplace(pin, ConeResult{pin, {}, true});
+    auto& row = it->second;
+    row.direct = row.direct && direct && (!suffix || suffix->direct);
+    if (withCells) {
+      row.cells.insert(prefix.begin(), prefix.end());
+      if (suffix) row.cells.insert(suffix->cells.begin(), suffix->cells.end());
+    }
+  };
+  for (auto id: order) {
+    const auto& value = values[id];
+    auto hit = cached.find(id);
+    if (hit != cached.end()) {
+      auto prefix = expandCells(value.cells);
+      for (const auto& suffix: *hit->second) emit(suffix.pin, prefix, !value.logic, &suffix);
+    } else {
+      auto boundary = summaries.storage[id].boundary;
+      if (boundary != invalid) emit(boundary, expandCells(value.cells), !value.logic);
+    }
+  }
+  std::vector<ConeResult> result;
+  result.reserve(combined.size());
+  for (auto& [pin, row]: combined) result.push_back(std::move(row));
+  // Bound memoized results by returned records plus cell memberships, rather
+  // than by query count: one enormous cone cannot fill a persistent cache.
+  // Adjacency/boundary metadata above remains O(V+E) and serves both directions.
+  auto weight = [](const auto& rows) {
+    size_t sum = 1;
+    for (const auto& row: rows) sum += 1 + row.cells.size();
+    return sum;
+  };
+  auto cost = weight(result);
+  constexpr size_t budget = 65536;
+  if (summaryRoots.size() == 1 && cost <= budget) {
+    while (state.coneCacheWeight + cost > budget) {
+      auto oldest = state.coneCacheOrder.front(); state.coneCacheOrder.pop_front();
+      state.coneCacheWeight -= weight(state.coneCache.at(oldest));
+      state.coneCache.erase(oldest);
+    }
+    state.coneCache.emplace(key, result);
+    state.coneCacheOrder.push_back(key);
+    state.coneCacheWeight += cost;
+  }
+  return result;
+}
+
 PyObject* unclocked(View* self) {
   auto* list = PyList_New(0);
   if (!list) return nullptr;
@@ -363,6 +789,7 @@ PyObject* PySNLDesign_analyzeTiming(PyObject* object, PyObject*) {
     next->constructor.construct();
     next->result = TClockPropagator::run(next->constructor.getGraph());
     collectMasks(*next);
+    collectCone(*next);
     next->generation = pythonNetlistGeneration();
     auto* property = dynamic_cast<TimingProperty*>(design->getProperty(TimingProperty::Name));
     if (property) property->replace(next);
@@ -417,7 +844,7 @@ PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
   }
   auto* dict = PyDict_New();
   if (!dict) return nullptr;
-  if (!put(dict, "unclockedClockPins", unclocked(&temporary)) ||
+  if (!put(dict, "noClock", unclocked(&temporary)) ||
       !put(dict, "generatedClocks", associations(&temporary, true)) ||
       !put(dict, "clockControls", associations(&temporary, false))) {
     Py_DECREF(dict); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
@@ -459,6 +886,155 @@ PyObject* PySNLOccurrence_getTimingClocks(PyObject* object, int query) {
   return clocks(&temporary, mask);
   NLCATCH
 }
+PyObject* PySNLDesign_getEndpoints(PyObject* object, PyObject* args, PyObject* kwargs) {
+  PyObject* check = Py_None;
+  static const char* names[] = {"check", nullptr};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O:getEndpoints", const_cast<char**>(names), &check)) return nullptr;
+  int selection = 0;
+  if (check != Py_None) {
+    if (!PyUnicode_Check(check)) { setError("check must be None, 'setup' or 'recovery'"); return nullptr; }
+    if (PyUnicode_CompareWithASCIIString(check, "setup") == 0) selection = 1;
+    else if (PyUnicode_CompareWithASCIIString(check, "recovery") == 0) selection = 2;
+    else { setError("check must be None, 'setup' or 'recovery'"); return nullptr; }
+  }
+  auto* design = PYSNLDesign_O(object);
+  if (!design) { setError("Cannot query a destroyed design"); return nullptr; }
+  TRY
+  auto state = designState(design);
+  if (!state) return nullptr;
+  View temporary {}; temporary.state = &state;
+  std::vector<size_t> ids;
+  if (selection != 2) ids = state->endpoints;
+  if (selection != 1) ids.insert(ids.end(), state->recovery.begin(), state->recovery.end());
+  std::sort(ids.begin(), ids.end(), [&](auto a, auto b) {
+    return state->names[a] < state->names[b];
+  });
+  auto* list = PyList_New(0);
+  if (!list) return nullptr;
+  for (auto id: ids) if (!append(list, occurrence(&temporary, id))) { Py_DECREF(list); return nullptr; }
+  return list;
+  NLCATCH
+}
+
+PyObject* PySNLOccurrence_getTimingCone(PyObject* object, PyObject* args, PyObject* kwargs, bool forward) {
+  int withCells = 1;
+  static const char* names[] = {"withCells", nullptr};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|p", const_cast<char**>(names), &withCells)) return nullptr;
+  if (!PySNLTimingAnalysis_checkOccurrence(object)) return nullptr;
+  auto* wrapper = PYSNLOccurrence(object);
+  if (wrapper->hasPath_ && wrapper->generation_ != pythonNetlistGeneration()) {
+    setError("Stale hierarchical occurrence: recreate it after netlist edits"); return nullptr;
+  }
+  auto* occ = PYSNLOccurrence_O(object);
+  if (!occ || !occ->isValid()) { setError("Expected a valid single-bit occurrence"); return nullptr; }
+  TRY
+  auto state = designState(occ->getDesign());
+  if (!state) return nullptr;
+  const auto& graph = state->constructor.getGraph();
+  std::vector<size_t> roots;
+  const bool netQuery = dynamic_cast<SNLBitNet*>(occ->getObject()) != nullptr;
+  auto add = [&](const SNLOccurrence& pin) {
+    auto id = forward ? state->constructor.getDriverNode(pin) : state->constructor.getNode(pin);
+    // Sources use drive roles; destinations use load roles. A fanin query of a
+    // split output uses its drive role, while an inout samples the load role.
+    if (!forward && pin.getNetComponent()->getDirection() == SNLTerm::Direction::Output)
+      id = state->constructor.getDriverNode(pin);
+    if (id == invalid) return;
+    if (!forward) {
+      auto driver = state->constructor.getDriverNode(pin);
+      // Clock declarations on inferred opaque outputs seed their drive role;
+      // the public launch query includes that role as well as the sampled one.
+      if (driver != invalid && driver != id && state->seeds[driver].any()) roots.push_back(driver);
+    }
+    if (forward && !netQuery && !state->cone[id].outputs.empty() &&
+        (graph.getNode(id)->getPinRole() == TNode::PinRole::Clock || graph.getNode(id)->getPinRole() == TNode::PinRole::Gate)) {
+      const auto& outputs = state->cone[id].outputs;
+      roots.insert(roots.end(), outputs.begin(), outputs.end());
+    } else roots.push_back(id);
+  };
+  if (auto* net = dynamic_cast<SNLBitNet*>(occ->getObject())) {
+    for (auto* component: net->getComponents()) add(SNLOccurrence(occ->getPath(), component));
+    // An isolated constant still has a launch point.
+    auto constant = state->constantNodes.find(*occ);
+    if (constant != state->constantNodes.end()) roots.push_back(constant->second);
+  } else if (occ->getNetComponent()) add(*occ);
+  else { setError("Timing queries require a single-bit terminal or net occurrence"); return nullptr; }
+  if (roots.empty() && !dynamic_cast<SNLBitNet*>(occ->getObject())) {
+    setError("Occurrence is absent from the analyzed top"); return nullptr;
+  }
+  auto rows = walkCone(*state, roots, forward, withCells);
+  if (!forward) {
+    std::vector<ConeResult> expanded;
+    for (const auto& row: rows) {
+      const auto& info = state->cone[row.pin];
+      if (std::string(info.launch) == "register" && !info.clocks.empty()) {
+        for (auto clock: info.clocks) {
+          auto copy = row;
+          copy.startpoint = clock;
+          expanded.push_back(std::move(copy));
+        }
+      } else expanded.push_back(row);
+    }
+    rows = std::move(expanded);
+  }
+  std::sort(rows.begin(), rows.end(), [&](const auto& a, const auto& b) {
+    const auto& left = state->names[a.pin];
+    const auto& right = state->names[b.pin];
+    if (left != right) return left < right;
+    return a.startpoint != invalid && b.startpoint != invalid &&
+      state->names[a.startpoint] < state->names[b.startpoint];
+  });
+  View temporary {}; temporary.state = &state;
+  auto* list = PyList_New(0);
+  if (!list) return nullptr;
+  for (const auto& row: rows) {
+    const auto& info = state->cone[row.pin];
+    auto* dict = PyDict_New();
+    if (!dict) { Py_DECREF(list); return nullptr; }
+    bool ok = put(dict, forward ? "endpoint" : "launchPin", occurrence(&temporary, row.pin)) &&
+      put(dict, "kind", PyUnicode_FromString(forward ? info.stop : info.launch)) &&
+      put(dict, "direct", PyBool_FromLong(row.direct));
+    TEdge::ClockMask mask(graph.getClocksCount());
+    if (forward) {
+      if (std::string(info.stop) == "register") mask = state->receiving[row.pin];
+      else if (std::string(info.stop) == "recovery" || std::string(info.stop) == "clock_gating")
+        for (auto clock: info.clocks) mask |= state->result->clockOrigins[clock];
+      const bool clockStop = std::string(info.stop) == "clock";
+      const bool associated = clockStop || std::string(info.stop) == "register" || std::string(info.stop) == "recovery" || std::string(info.stop) == "clock_gating";
+      ok = ok && put(dict, "captureClocks", clocks(&temporary, mask)) &&
+        put(dict, "registerClock", clockStop ? occurrence(&temporary, row.pin) : associated && !info.clocks.empty() ? occurrence(&temporary, info.clocks.front()) : (Py_INCREF(Py_None), Py_None));
+      auto* outputs = PyTuple_New(associated ? info.outputs.size() : 0);
+      if (outputs && associated) {
+        for (size_t i = 0; i < info.outputs.size(); ++i) {
+          auto* output = occurrence(&temporary, info.outputs[i]);
+          if (!output) { Py_DECREF(outputs); outputs = nullptr; break; }
+          PyTuple_SET_ITEM(outputs, i, output);
+        }
+      }
+      ok = ok && put(dict, "registerOutputs", outputs);
+    } else {
+      if (row.pin < state->driving.size()) mask = state->driving[row.pin];
+      if (row.startpoint != invalid) mask = state->result->clockOrigins[row.startpoint] | state->seeds[row.pin];
+      if (std::string(info.launch) == "clock") mask = state->seeds[row.pin];
+      ok = ok && put(dict, "launchClocks", clocks(&temporary, mask)) &&
+        put(dict, "startpoint", occurrence(&temporary, row.startpoint != invalid ? row.startpoint : row.pin));
+    }
+    if (withCells) {
+      auto* cells = PyFrozenSet_New(nullptr);
+      if (cells) for (auto id: row.cells) {
+        auto* cell = linkedOccurrence(&temporary, state->cells[id]);
+        if (!cell || PySet_Add(cells, cell) < 0) { Py_XDECREF(cell); Py_DECREF(cells); cells = nullptr; break; }
+        Py_DECREF(cell);
+      }
+      ok = ok && put(dict, "cells", cells);
+    }
+    if (!ok) { Py_DECREF(dict); Py_DECREF(list); return nullptr; }
+    if (!append(list, dict)) { Py_DECREF(list); return nullptr; }
+  }
+  return list;
+  NLCATCH
+}
+
 int PySNLTimingAnalysis_addTypes(PyObject* module) {
   occurrenceType.tp_name = "naja._TimingOccurrence";
   occurrenceType.tp_basicsize = sizeof(OccurrenceView);
