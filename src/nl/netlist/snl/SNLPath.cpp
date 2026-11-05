@@ -200,6 +200,9 @@ bool SNLPath::operator<(const SNLPath& path) const {
           if (thisTailInstance->getNLID() < otherTailInstance->getNLID()) {
             return true;
           }
+          if (otherTailInstance->getNLID() < thisTailInstance->getNLID()) {
+            return false;
+          }
           thisSharedPath = thisSharedPath->getHeadSharedPath();
           otherSharedPath = otherSharedPath->getHeadSharedPath();
         }

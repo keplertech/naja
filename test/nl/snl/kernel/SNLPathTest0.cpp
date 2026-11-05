@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <set>
+#include <vector>
+
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
 using ::testing::ElementsAre;
@@ -10,6 +13,7 @@ using ::testing::ElementsAre;
 #include "NLException.h"
 
 #include "SNLPath.h"
+#include "SNLOccurrence.h"
 using namespace naja::NL;
 
 class SNLPathTest0: public ::testing::Test {
@@ -62,6 +66,29 @@ TEST_F(SNLPathTest0, testEmptyPath) {
   EXPECT_FALSE(emptyPath < emptyPath);
   EXPECT_TRUE(emptyPath.getInstanceIDs().empty());
   EXPECT_TRUE(emptyPath.getInstances().empty());
+}
+
+TEST_F(SNLPathTest0, testOrderingAcrossOpposingHierarchyLevels) {
+  auto outer = SNLInstance::create(h0Instance_->getDesign(), h0Instance_->getModel());
+  auto inner = SNLInstance::create(h1Instance_->getDesign(), h1Instance_->getModel());
+  // Equal-depth paths compare tail instances before their parent paths.
+  const std::vector<SNLPath> paths {
+    SNLPath(), SNLPath(h0Instance_), SNLPath(outer),
+    SNLPath(SNLPath(h0Instance_), h1Instance_),
+    SNLPath(SNLPath(outer), h1Instance_),
+    SNLPath(SNLPath(h0Instance_), inner),
+    SNLPath(SNLPath(outer), inner)
+  };
+  for (size_t i = 0; i < paths.size(); ++i) {
+    for (size_t j = 0; j < paths.size(); ++j) {
+      EXPECT_EQ(i < j, paths[i] < paths[j]);
+      if (i < 3 || j < 3) continue;
+      EXPECT_EQ(i < j, SNLOccurrence(paths[i], h2Instance_) <
+        SNLOccurrence(paths[j], h2Instance_));
+    }
+  }
+  std::set<SNLPath> ordered(paths.rbegin(), paths.rend());
+  EXPECT_EQ(paths, std::vector<SNLPath>(ordered.begin(), ordered.end()));
 }
 
 TEST_F(SNLPathTest0, testTopDown0) {

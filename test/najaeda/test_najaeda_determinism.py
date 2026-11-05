@@ -137,7 +137,7 @@ end;
 """
 
 
-def dump_state(output):
+def dump_state(output, timing=False):
     from najaeda import naja
 
     # Capture the live database before invoking any dumper. A dumper-only sort
@@ -176,6 +176,21 @@ def dump_state(output):
         for library in db.getLibraries():
             visit(library)
     state.append(["content_hash_v1", naja.NLUniverse.get().getContentHash()])
+    if timing:
+        top = naja.NLUniverse.get().getTopDesign()
+        top.analyzeTiming()
+
+        def occurrence_id(occurrence):
+            obj = occurrence.getNetComponent() or occurrence.getInstance()
+            return [occurrence.getPath().getInstanceIDs(), obj.getNLID().toTuple()]
+
+        state.append(["timing_fanin", [
+            [term.getNLID().toTuple(), [
+                [occurrence_id(row["launchPin"]), row["kind"], row["direct"],
+                 [occurrence_id(cell) for cell in row["cells"]]]
+                for row in naja.SNLOccurrence(term).getFaninStartpoints()]]
+            for term in top.getBitTerms()
+            if term.getDirection() == naja.SNLTerm.Direction.Output]])
     output.mkdir()
     (output / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
     top = naja.NLUniverse.get().getTopDesign()
@@ -193,7 +208,7 @@ def worker(kind, source, output, run):
     universe = naja.NLUniverse.create()
     db = naja.NLDB.create(universe)
     universe.setTopDB(db)
-    if kind == "sv":
+    if kind in ("sv", "sv_timing"):
         db.loadSystemVerilog([source], diagnostics_report_path=None)
     elif kind == "v":
         db.loadGateLevelVerilog([source])
@@ -222,10 +237,10 @@ def worker(kind, source, output, run):
     else:
         raise ValueError(kind)
     output = Path(output)
-    dump_state(output / "original")
+    dump_state(output / "original", timing=kind == "sv_timing")
     universe.destroy()
     naja.NLDB.loadNajaIF(str(output / "original" / "snapshot"))
-    dump_state(output / "reloaded")
+    dump_state(output / "reloaded", timing=kind == "sv_timing")
     assert allocations  # Retain heap perturbation until both dumps are complete.
 
 
@@ -269,7 +284,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
-            source_path = directory / ("source." + kind)
+            source_path = directory / ("source." + ("sv" if kind == "sv_timing" else kind))
             for name, contents in (files or {}).items():
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
@@ -301,7 +316,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 # Reload in a process which has never elaborated this design.
                 fresh = subprocess.run(
                     [sys.executable, str(Path(__file__).resolve()), "--load-worker",
-                     str(output / "original" / "snapshot"), str(output / "fresh")],
+                     str(output / "original" / "snapshot"), str(output / "fresh"), kind],
                     env=environment, capture_output=True, text=True, timeout=120)
                 self.assertEqual(0, fresh.returncode, fresh.stdout + fresh.stderr)
                 with self.subTest(language=kind, run=run, phase="fresh-process reload"):
@@ -673,6 +688,23 @@ endmodule
     def test_verilog(self):
         self.check_determinism("v", VERILOG)
 
+    def test_timing_shared_models_across_hierarchy_levels(self):
+        self.check_determinism("sv_timing", """
+module leaf(input a, b, output y);
+  assign y = a ^ b;
+endmodule
+module branch(input [2:0] a, b, output [2:0] y);
+  leaf u0(a[0], b[0], y[0]);
+  leaf u1(a[1], b[1], y[1]);
+  leaf u2(a[2], b[2], y[2]);
+endmodule
+module top(input [8:0] a, b, output [8:0] y);
+  branch u0(a[2:0], b[2:0], y[2:0]);
+  branch u1(a[5:3], b[5:3], y[5:3]);
+  branch u2(a[8:6], b[8:6], y[8:6]);
+endmodule
+""")
+
     def test_systemverilog_interfaces(self):
         self.check_determinism("sv", """
 interface lane_if #(parameter W = 3);
@@ -867,6 +899,6 @@ if __name__ == "__main__":
         from najaeda import naja
         naja.NLDB.loadNajaIF(sys.argv[2])
         assert not naja.intentAvailable(), "cold snapshots must not expose retained intent"
-        dump_state(Path(sys.argv[3]))
+        dump_state(Path(sys.argv[3]), timing=len(sys.argv) > 4 and sys.argv[4] == "sv_timing")
     else:
         unittest.main()
