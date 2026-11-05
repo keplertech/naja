@@ -2,10 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# naja-python-tests (pure Python `unittest discover`, needs the built
-# naja.so extension module on PYTHONPATH) is deferred -- see task #21's
-# notes in internal/bazel-migration-plan.md.
-#
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
 # najaPythonPropertyTests is a plain C++ executable (not a Python-loaded
 # extension), so unlike naja.so it can't defer Python API symbol
 # resolution to a running interpreter via -undefined dynamic_lookup --
@@ -17,8 +16,6 @@
 # here supplies the missing linkopts at final-link time without needing
 # a second, embed-linked copy of the whole naja_python library.
 
-load("@rules_cc//cc:cc_test.bzl", "cc_test")
-
 cc_test(
     name = "najaPythonPropertyTests",
     srcs = ["NajaPythonPropertyTest.cpp"],
@@ -28,3 +25,33 @@ cc_test(
         "@rules_python//python/cc:current_py_cc_libs",
     ],
 )
+
+# Run the same raw binding tests against Bazel's extension and hermetic Python.
+[
+    sh_test(
+        name = name,
+        srcs = ["run_binding_tests.sh"],
+        args = [
+            "$(rootpath //src/nl/python/naja_wrapping:naja.so)",
+            "$(rootpath //src/nl/python/naja_wrapping:naja_runtime)",
+            "$(PYTHON3_ROOTPATH)",
+            "test/nl/python/naja_wrapping",
+            pattern,
+        ],
+        toolchains = ["@rules_python//python:current_py_toolchain"],
+        data = glob(["test*.py"]) + [
+            "//src/nl/python/naja_wrapping:naja.so",
+            "//src/nl/python/naja_wrapping:naja_runtime",
+            "//test/nl/formats/verilog:benchmarks",
+            "//test/nl/formats/systemverilog:benchmarks",
+            "//test/nl/formats/liberty:benchmarks",
+            "//test/nl/formats/vhdl:fixtures",
+            "@rules_python//python:current_py_toolchain",
+        ],
+        size = "large",
+    )
+    for name, pattern in [
+        ("naja_python_tests", "test*.py"),
+        ("timing_python_tests", "test_timing_analysis.py"),
+    ]
+]

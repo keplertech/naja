@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PySNLDesign.h"
+#include "PySNLTimingAnalysis.h"
 #include "PySNLSequentialModel.h"
 #include "PySNLMemoryInterface.h"
 
@@ -901,7 +902,19 @@ static PyObject* PySNLDesign_getContentHash(PySNLDesign* self) {
   return nullptr; // LCOV_EXCL_LINE Unreachable: the success path and every NLCATCH handler return.
 }
 
+static PyObject* PySNLDesign_getTimingCoverageReport(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 0); }
+static PyObject* PySNLDesign_getTimingCoverageCounts(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 1); }
+static PyObject* PySNLDesign_getCaptureEndpoints(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 2); }
+static PyObject* PySNLDesign_getClockDomains(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 3); }
+static PyObject* PySNLDesign_getTimingDiagnostics(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 4); }
+
 PyMethodDef PySNLDesign_Methods[] = {
+  {"analyzeTiming", (PyCFunction)PySNLDesign_analyzeTiming, METH_NOARGS, "Build and cache timing analysis for the active top."},
+  {"getTimingCoverageReport", (PyCFunction)PySNLDesign_getTimingCoverageReport, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
+  {"getTimingCoverageCounts", (PyCFunction)PySNLDesign_getTimingCoverageCounts, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
+  {"getCaptureEndpoints", (PyCFunction)PySNLDesign_getCaptureEndpoints, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
+  {"getClockDomains", (PyCFunction)PySNLDesign_getClockDomains, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
+  {"getTimingDiagnostics", (PyCFunction)PySNLDesign_getTimingDiagnostics, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
   { "getContentHash", (PyCFunction)PySNLDesign_getContentHash, METH_NOARGS,
     "Return the versioned content SHA-256 as lowercase hex."},
 

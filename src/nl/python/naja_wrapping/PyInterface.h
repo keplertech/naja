@@ -12,6 +12,7 @@
 #include <Python.h>
 
 #include "NLException.h"
+#include "PyNetlistState.h"
 #include "NLID.h"
 #include "NajaPythonProperty.h"
 #include "PyNLID.h"
@@ -510,14 +511,14 @@ inline Py_hash_t finishPyHash(Py_uhash_t hash) {
  Py_DECREF(constant);
 
 #define PYTYPE_READY(TYPE) \
-  if (PyType_Ready(&PyType##TYPE) < 0) { \
+  if (trackNetlistMethods(&PyType##TYPE) < 0 || PyType_Ready(&PyType##TYPE) < 0) { \
     NAJA_LOG_ERROR("Failed to initialize <Py" #TYPE ">."); \
     return nullptr; \
   }
 
 #define PYTYPE_READY_SUB(TYPE, TYPE_BASE) \
   PyType##TYPE.tp_base = &PyType##TYPE_BASE; \
-  if (PyType_Ready(&PyType##TYPE) < 0) { \
+  if (trackNetlistMethods(&PyType##TYPE) < 0 || PyType_Ready(&PyType##TYPE) < 0) { \
     NAJA_LOG_ERROR("Failed to initialize <Py" #TYPE ">."); \
     return nullptr; \
   }

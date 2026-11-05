@@ -764,7 +764,13 @@ semantic source of truth.
    * - :class:`najaeda.naja.SNLParameter`
      - :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`, :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`, :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`, :meth:`createString <najaeda.naja.SNLParameter.createString>` (optional default value), :meth:`hasDefaultValue <najaeda.naja.SNLParameter.hasDefaultValue>`, :meth:`getValue <najaeda.naja.SNLParameter.getValue>`, :meth:`getName <najaeda.naja.SNLParameter.getName>`, :meth:`getDesign <najaeda.naja.SNLParameter.getDesign>`, :meth:`destroy <najaeda.naja.SNLParameter.destroy>`
    * - :class:`najaeda.naja.NLClock`
-     - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
+     - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform (primary only) <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
+   * - ``SNLDesign`` timing analysis
+     - ``analyzeTiming()``, ``getClockDomains()``, ``getCaptureEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
+   * - ``SNLOccurrence`` timing queries
+     - ``getDrivingClocks()``, ``getReceivingClocks()``, ``getWaveformClocks()``
+   * - ``SNLClockDomain``, ``SNLTimingCycleError``
+     - Domain: ``getNLClock()``, ``getSources()``; exception: ``occurrence``, ``description``, ``role``
    * - :class:`najaeda.naja.NLUniverse`
      - :meth:`getContentHash <najaeda.naja.NLUniverse.getContentHash>`, :meth:`create <najaeda.naja.NLUniverse.create>`, :meth:`destroy <najaeda.naja.NLUniverse.destroy>`, :meth:`get <najaeda.naja.NLUniverse.get>`, :meth:`getDB <najaeda.naja.NLUniverse.getDB>`, :meth:`getTopDB <najaeda.naja.NLUniverse.getTopDB>`, :meth:`setTopDB <najaeda.naja.NLUniverse.setTopDB>`, :meth:`getTopDesign <najaeda.naja.NLUniverse.getTopDesign>`, :meth:`setTopDesign <najaeda.naja.NLUniverse.setTopDesign>`, :meth:`getUserDBs <najaeda.naja.NLUniverse.getUserDBs>`, :meth:`getSNLDesign <najaeda.naja.NLUniverse.getSNLDesign>`, :meth:`getObject <najaeda.naja.NLUniverse.getObject>`, :meth:`applyDLE <najaeda.naja.NLUniverse.applyDLE>`, :meth:`applyConstantPropagation <najaeda.naja.NLUniverse.applyConstantPropagation>`, :meth:`getMaxFanout <najaeda.naja.NLUniverse.getMaxFanout>`, :meth:`getMaxLogicLevel <najaeda.naja.NLUniverse.getMaxLogicLevel>`
    * - :class:`najaeda.naja.NLDB`
@@ -1306,10 +1312,42 @@ design, and :meth:`najaeda.naja.NLDB.getClocks` lists every clock in the
 database.
 
 ``createPrimary`` follows SDC ``create_clock``: a period in a time unit, and
-sources.  ``createGenerated`` follows ``createGenerated_clock``: its period is
-``master period * divide_by / multiply_by``, and it is synchronous with its
-master.  ``isSynchronousWith`` is true when two clocks share the same root
-primary clock.
+ordered sources. Primary clocks own their period, unit and waveform, initially
+``(0, period / 2)``. ``setWaveform(rise, fall)`` requires finite values with
+``0 <= rise < fall <= period``.
+
+``createGenerated`` represents the supported SDC ``create_generated_clock``
+subset: master, master-source terminal, positive integer divide/multiply
+factors, inversion and ordered sources. It stores only these declaration
+inputs. Period, time unit and waveform are derived on every read, including
+through generated-clock chains. ``setWaveform`` on a generated clock raises
+``RuntimeError`` (``NLException`` in C++); change the primary master's waveform
+instead. ``isSynchronousWith`` continues to compare root primary clocks.
+
+Naja uses edge-based division anchored at the master's first rise, following
+the even/odd division convention documented by
+`Quartus create_generated_clock <https://resources.altera.com/quartushelp/current/tafs/tafs/tcl_pkg_sdc_ver_1.5_cmd_create_generated_clock.htm>`_.
+For the immediate master's period ``P`` and edges ``(R, F)``, divide factor
+``D`` and multiply factor ``M``, the resulting period is ``Q = P * D / M``.
+The high time ``H`` is ``Q / 2`` for even ``D``, or
+``(F - R) * D / M`` for odd ``D`` (including one). Multiplication preserves
+the duty cycle produced by division. The waveform is ``(R, R + H)``;
+inversion then gives ``(R + H, R + Q)``. Chains apply this rule at each master
+reference, so division and multiplication must not be canceled before deriving
+the waveform.
+
+For example, a 12 ns primary with waveform ``(3, 7)`` produces ``(3, 15)``
+when divided by two, ``(3, 9)`` when divided by three and multiplied by two,
+and ``(9, 21)`` when that last result is inverted. A later primary waveform
+change is immediately reflected by all derived getters.
+
+``getRiseAt()`` and ``getFallAt()`` describe a chronological rise and its next
+fall, without reducing timestamps modulo the period. Generated timestamps can
+exceed their period, particularly after inversion or in chains. Inverting a
+full-period high pulse produces coincident edges (zero high time). Values
+outside the finite floating-point range raise rather than being stored as
+invalid derived timing. The master must outlive its generated clocks.
+There are no explicit edge lists, edge shifts, duty-cycle or phase controls.
 
 First-pass restrictions: sources and the master source must be top-level
 terminals (``SNLBitTerm``) of the owning design.  Instance terminals are
@@ -1320,6 +1358,160 @@ must belong to the same design.  Clock names are unique within a design.
    :members:
    :undoc-members:
    :inherited-members:
+
+Timing analysis on netlist occurrences
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The raw API exposes timing queries directly on ``SNLDesign`` and
+``SNLOccurrence``. Call ``top.analyzeTiming()`` once, then query many occurrences.
+The initial implementation provides clock-domain propagation and capture
+information; it does not calculate delays, arrival times or slack.
+
+``analyzeTiming()`` returns ``None``. It prepares a private C++ timing-analysis
+context owned by the active top design. That context owns the graph and cached
+propagation results; Python does not expose graph construction, nodes, edges,
+indices or graph mutation. This API is available through
+``from najaeda import naja`` in the existing extension and wheel. No high-level
+``najaeda.netlist`` wrapper is required.
+
+Declare clocks before analysis, through ``NLClock`` only. For example, if
+``design.sv`` has top port ``clk`` and PLL instance ``u_pll`` with output ``clk_o``:
+
+.. code-block:: python
+
+   from najaeda import naja
+   universe = naja.NLUniverse.create()
+   db = naja.NLDB.create(universe)
+   top = db.loadSystemVerilog(["design.sv"], blackbox_unknown_modules=True)
+   core = naja.NLClock.createPrimary(top, "core", 10.0, "ns", [top.getScalarTerm("clk")])
+   model = top.getInstance("u_pll").getModel()
+   pll = naja.NLClock.createPrimary(model, "pll", 8.0, "ns", [model.getScalarTerm("clk_o")])
+   top.analyzeTiming()
+   for occurrence in top.getCaptureEndpoints():
+       driving = occurrence.getDrivingClocks()
+       receiving = occurrence.getReceivingClocks()
+       if driving and receiving and driving != receiving:
+           print(occurrence,
+                 [domain.getNLClock().getName() for domain in driving],
+                 [domain.getNLClock().getName() for domain in receiving])
+
+The example uses the existing nonempty, differing-domain-set rule. It does not
+classify crossings between related clocks.
+
+Occurrence queries
+^^^^^^^^^^^^^^^^^^
+
+The following no-argument methods return frozensets of ``SNLClockDomain``:
+
+* ``getDrivingClocks()`` returns launch domains whose data reaches the terminal
+  or bit-net occurrence. State outputs launch according to their clock's
+  waveform origins; upstream data domains do not flow through a state element.
+* ``getReceivingClocks()`` returns domains of downstream state elements that
+  capture data reached from this terminal. At a data-capture pin it includes the
+  capture clocks of that pin. Traversal stops at state boundaries. At a bit-net
+  occurrence it unions the capture domains of the net's consumers.
+* ``getWaveformClocks()`` returns clock-waveform origins, independently of data
+  launch/capture. Use this to inspect clock pins and inferred divided clocks.
+
+Queries accept single-bit top ports, instance terminals, internal hierarchical
+port aliases and bit nets, with their ``SNLPath``. A terminal query refers to
+that pin: a top output port is a sink, so its receiving set can be empty even
+when other consumers of its connected net capture data. Query the bit net or
+the driving instance output to inspect those downstream consumers. Split inout
+roles are combined internally; callers need not select a graph role.
+
+An empty set means no known domain. Missing/stale analysis, invalid occurrences,
+occurrences absent from the analyzed hierarchy, buses and whole-instance
+occurrences raise ``RuntimeError``. A bare terminal of a shared model refers to
+that model as a root; supply its hierarchy path to query it in the analyzed top.
+
+Clock declarations and domains
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``NLClock`` is the declaration; ``SNLClockDomain`` identifies its occurrence in
+the analyzed hierarchy. ``domain.getNLClock()`` returns the original declaration.
+``domain.getSources()`` returns its source ``SNLOccurrence`` objects. Domains
+compare and hash by their identity within one analysis, so separate queries
+produce comparable sets. They expose no graph indices.
+
+All four declaration cases are supported:
+
+* A top-port primary clock belongs to the top design.
+* A PLL-output clock belongs to the PLL model and names that model's ``clk_o``
+  terminal. Unknown modules loaded with ``blackbox_unknown_modules=True`` have
+  inferred inout pins; the native constructor seeds the drive role internally.
+* A shared model instantiated in different hierarchies produces one domain per
+  occurrence, sharing an ``NLClock`` but with distinct source occurrences.
+* Generated declarations use ``NLClock.createGenerated`` as usual.
+  ``domain.getNLClock().getMaster()`` and ``isSynchronousWith()`` remain available.
+  Analysis does not merge domains based on clock relationships.
+
+There is no additional Python clock-creation path. Internal nets and individual
+instance terminals (including a mux output) cannot be selected directly as
+``NLClock`` sources. A model-terminal declaration seeds every occurrence of
+that model. Selecting one occurrence or an internal net needs an ``NLClock``
+extension.
+
+Design-level results
+^^^^^^^^^^^^^^^^^^^^
+
+After ``analyzeTiming()``, the analyzed ``SNLDesign`` exposes:
+
+* ``getClockDomains()``: domains in deterministic declaration/occurrence order.
+* ``getCaptureEndpoints()``: a list of ``SNLOccurrence`` objects for data-capture
+  pins of flops/latches and memory inputs modeled as state. Query their driving
+  and receiving clocks directly. Gate-control and async-reset endpoints are
+  excluded. Creating this list requires no per-edge Python objects and supports
+  designs with 100,000 endpoints.
+* ``getTimingCoverageReport()``: dictionaries containing ``occurrence``, ``model``
+  (model name), ``reason``, ``treatment`` and ``detail``. Reasons are ``memory``,
+  ``inout``, ``blackbox``, ``unsupported_latch``, ``multiple_drivers``,
+  ``incomplete_modeling`` and ``ambiguous_clock_gate``. Treatments are ``opaque``,
+  ``approximated``, ``bidirectional`` and ``all_drivers``. Fully modeled memories
+  have no entry; ordinary latches report the existing approximation without
+  time borrowing.
+* ``getTimingCoverageCounts()``: entry counts by reason, including zeros.
+* ``getTimingDiagnostics()``: ``unclockedClockPins`` (flop clock-pin occurrences),
+  ``generatedClocks`` and ``clockControls`` (lists of dictionaries with
+  ``clockPin``, ``output`` occurrences and ``clocks``, a domain frozenset).
+  Inferred generated-clock relationships are distinct from explicit generated
+  ``NLClock`` declarations. Control diagnostics retain their existing
+  conservative meaning; they do not prove a synchronizer or enable function.
+
+A rejected combinational cycle raises ``SNLTimingCycleError`` (a ``RuntimeError``)
+with ``occurrence``, ``description`` and diagnostic ``role`` attributes.
+No loop-breaking policy is applied.
+
+Lifetime and rebuilding
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The C++ context is attached to the design, independent of its Python wrapper's
+lifetime. Raw Python netlist editing calls invalidate cached analyses, including
+clock declarations or waveform changes after analysis. Attempted edits
+conservatively invalidate even when they fail or affect unrelated objects.
+Queries raise until ``top.analyzeTiming()`` is called again. This operation
+refreshes DNL, builds and propagates internally, and publishes a replacement
+only on success. Earlier domain and analysis-returned occurrence views then
+raise. An unsuccessful rebuild leaves the previous cache in place, subject to
+normal netlist invalidation. Destroying the design/universe invalidates retained
+views, including when a new universe is subsequently created. Analysis is a
+transient cache and is not serialized or copied by design cloning.
+
+Caller-created occurrences also retain destruction guards for their referenced
+object and path instances. Timing queries raise if those objects were destroyed.
+Recreate caller-created hierarchical occurrences after editing, because hierarchy
+edits can invalidate their stored paths. Independently returned raw SNL objects
+retain their usual ownership rules. Native embedders must not edit SNL behind the binding while using cached
+analysis. Analysis retains the GIL because existing raw writers have no common
+native read/write lock; it makes no Python callbacks.
+
+Source-register tracing, synchronizer detection, delay/slack calculations and
+crossing classification remain outside this initial API.
+
+.. autoclass:: najaeda.naja.SNLClockDomain
+   :members:
+
+.. autoexception:: najaeda.naja.SNLTimingCycleError
 
 Attributes
 ~~~~~~~~~~

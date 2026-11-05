@@ -3,6 +3,12 @@
 
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 
+filegroup(
+    name = "fixtures",
+    srcs = glob(["*.vhd", "*.sv"]),
+    visibility = ["//visibility:public"],
+)
+
 cc_test(
     name = "snlVHDLConstructorTests",
     srcs = ["VHDLConstructorTest.cpp", "VHDLTestUtils.h"],

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import sys
 
 import naja
 
@@ -69,6 +70,75 @@ class NLClockTests(unittest.TestCase):
         sys_clock = naja.NLClock.createPrimary(self.top, "sys", 20.0, "ns", [self.clk])
         other = naja.NLClock.createPrimary(self.top, "other", 20.0, "ns", [self.clk2])
         self.assertFalse(sys_clock.isSynchronousWith(other))
+
+    def test_generated_waveforms(self):
+        master = naja.NLClock.createPrimary(self.top, "root", 12.0, "ps", [self.clk])
+        master.setWaveform(3.0, 7.0)
+        for divide, multiply, period, high in (
+                (1, 1, 12, 4), (2, 1, 24, 12), (3, 1, 36, 12),
+                (6, 1, 72, 36), (1, 2, 6, 2), (3, 2, 18, 6), (2, 3, 8, 4)):
+            for invert in (False, True):
+                with self.subTest(divide=divide, multiply=multiply, invert=invert):
+                    clock = naja.NLClock.createGenerated(
+                        self.top, f"g{divide}_{multiply}_{invert}", master,
+                        self.clk, divide, multiply, invert, [self.clk2, self.clk])
+                    self.assertEqual(period, clock.getPeriod())
+                    self.assertEqual("ps", clock.getTimeUnit())
+                    self.assertEqual(3 + high if invert else 3, clock.getRiseAt())
+                    self.assertEqual(3 + period if invert else 3 + high, clock.getFallAt())
+                    self.assertEqual([self.clk2, self.clk], clock.getSources())
+                    self.assertEqual(master, clock.getMaster())
+                    with self.assertRaisesRegex(RuntimeError, "only supported on primary clocks"):
+                        clock.setWaveform(0, period / 2)
+        self.assertEqual((3, 7), (master.getRiseAt(), master.getFallAt()))
+
+    def test_generated_chain_tracks_master_waveform(self):
+        root = naja.NLClock.createPrimary(self.top, "root", 12.0, "ns", [self.clk])
+        root.setWaveform(3, 7)
+        inverted = naja.NLClock.createGenerated(
+            self.top, "inverted", root, self.clk, 1, 1, True, [self.clk2])
+        divided = naja.NLClock.createGenerated(
+            self.top, "divided", inverted, self.clk2, 3, 1, False, [self.clk])
+        multiplied = naja.NLClock.createGenerated(
+            self.top, "multiplied", divided, self.clk, 1, 2, True, [self.clk2])
+        for rise, fall, expected in (
+                (3, 7, [(7, 15), (7, 31), (19, 25)]),
+                (1, 9, [(9, 13), (9, 21), (15, 27)]),
+                (0, 12, [(12, 12), (12, 12), (12, 30)])):
+            root.setWaveform(rise, fall)
+            for clock, period, edges in zip(
+                    (inverted, divided, multiplied), (12, 36, 18), expected):
+                self.assertEqual(period, clock.getPeriod())
+                self.assertAlmostEqual(1 / period, clock.getFrequency())
+                self.assertEqual(edges, (clock.getRiseAt(), clock.getFallAt()))
+                self.assertEqual("ns", clock.getTimeUnit())
+                self.assertEqual(root, clock.getRootClock())
+                self.assertTrue(clock.isSynchronousWith(root))
+
+    def test_even_divider_tracks_master_phase(self):
+        root = naja.NLClock.createPrimary(self.top, "root", 12.0, "ns", [self.clk])
+        divided = naja.NLClock.createGenerated(
+            self.top, "divided", root, self.clk, 2, 1, False, [self.clk2])
+        for rise, fall in ((2, 5), (4, 11)):
+            root.setWaveform(rise, fall)
+            self.assertEqual((rise, rise + 12), (divided.getRiseAt(), divided.getFallAt()))
+
+    def test_derived_range_errors_are_python_exceptions(self):
+        period = sys.float_info.max
+        root = naja.NLClock.createPrimary(self.top, "root", period, "ns", [self.clk])
+        with self.assertRaisesRegex(RuntimeError, "derived period and waveform must be finite"):
+            naja.NLClock.createGenerated(
+                self.top, "overflow", root, self.clk, 2, 1, False, [self.clk2])
+        self.assertEqual([root], list(self.top.getClocks()))
+        inverted = naja.NLClock.createGenerated(
+            self.top, "inverted", root, self.clk, 1, 1, True, [self.clk2])
+        root.setWaveform(period / 2, period)
+        for getter in (inverted.getPeriod, inverted.getFrequency,
+                       inverted.getRiseAt, inverted.getFallAt):
+            with self.assertRaisesRegex(RuntimeError, "derived period and waveform must be finite"):
+                getter()
+        root.setWaveform(0, period / 2)
+        self.assertEqual(period, inverted.getFallAt())
 
     def test_multiple_sources(self):
         clock = naja.NLClock.createPrimary(

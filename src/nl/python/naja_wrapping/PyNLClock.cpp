@@ -140,12 +140,16 @@ static PyObject* PyNLClock_getKind(PyNLClock* self) {
 
 static PyObject* PyNLClock_getPeriod(PyNLClock* self) {
   METHOD_HEAD("NLClock.getPeriod()")
+  TRY
   return PyFloat_FromDouble(selfObject->getPeriod());
+  NLCATCH
 }
 
 static PyObject* PyNLClock_getFrequency(PyNLClock* self) {
   METHOD_HEAD("NLClock.getFrequency()")
+  TRY
   return PyFloat_FromDouble(selfObject->getFrequency());
+  NLCATCH
 }
 
 static PyObject* PyNLClock_getTimeUnit(PyNLClock* self) {
@@ -155,12 +159,16 @@ static PyObject* PyNLClock_getTimeUnit(PyNLClock* self) {
 
 static PyObject* PyNLClock_getRiseAt(PyNLClock* self) {
   METHOD_HEAD("NLClock.getRiseAt()")
+  TRY
   return PyFloat_FromDouble(selfObject->getRiseAt());
+  NLCATCH
 }
 
 static PyObject* PyNLClock_getFallAt(PyNLClock* self) {
   METHOD_HEAD("NLClock.getFallAt()")
+  TRY
   return PyFloat_FromDouble(selfObject->getFallAt());
+  NLCATCH
 }
 
 static PyObject* PyNLClock_setWaveform(PyNLClock* self, PyObject* args) {
@@ -260,11 +268,11 @@ PyMethodDef PyNLClock_Methods[] = {
   { "getTimeUnit", (PyCFunction)PyNLClock_getTimeUnit, METH_NOARGS,
     "get the time unit of the period, for example 'ns'."},
   { "getRiseAt", (PyCFunction)PyNLClock_getRiseAt, METH_NOARGS,
-    "get the rising edge time within the period."},
+    "get the first rising edge time (derived from the master for generated clocks)."},
   { "getFallAt", (PyCFunction)PyNLClock_getFallAt, METH_NOARGS,
-    "get the falling edge time within the period."},
+    "get the next falling edge time; generated values may exceed the period."},
   { "setWaveform", (PyCFunction)PyNLClock_setWaveform, METH_VARARGS,
-    "set the waveform: requires 0 <= rise_at < fall_at <= period."},
+    "set a primary waveform: 0 <= rise_at < fall_at <= period; generated clocks reject overrides."},
   { "getSources", (PyCFunction)PyNLClock_getSources, METH_NOARGS,
     "get the list of terminals where this clock is defined."},
   { "getMaster", (PyCFunction)PyNLClock_getMaster, METH_NOARGS,
