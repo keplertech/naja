@@ -904,7 +904,6 @@ static PyObject* PySNLDesign_getContentHash(PySNLDesign* self) {
 
 static PyObject* PySNLDesign_getTimingCoverageReport(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 0); }
 static PyObject* PySNLDesign_getTimingCoverageCounts(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 1); }
-static PyObject* PySNLDesign_getCaptureEndpoints(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 2); }
 static PyObject* PySNLDesign_getClockDomains(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 3); }
 static PyObject* PySNLDesign_getTimingDiagnostics(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 4); }
 
@@ -912,7 +911,7 @@ PyMethodDef PySNLDesign_Methods[] = {
   {"analyzeTiming", (PyCFunction)PySNLDesign_analyzeTiming, METH_NOARGS, "Build and cache timing analysis for the active top."},
   {"getTimingCoverageReport", (PyCFunction)PySNLDesign_getTimingCoverageReport, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
   {"getTimingCoverageCounts", (PyCFunction)PySNLDesign_getTimingCoverageCounts, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
-  {"getCaptureEndpoints", (PyCFunction)PySNLDesign_getCaptureEndpoints, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
+  {"getEndpoints", (PyCFunction)PySNLDesign_getEndpoints, METH_VARARGS|METH_KEYWORDS, "getEndpoints(check=None): setup data pins, recovery async pins, or both; excludes clock-gate controls."},
   {"getClockDomains", (PyCFunction)PySNLDesign_getClockDomains, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
   {"getTimingDiagnostics", (PyCFunction)PySNLDesign_getTimingDiagnostics, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
   { "getContentHash", (PyCFunction)PySNLDesign_getContentHash, METH_NOARGS,

@@ -2,6 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
+#include <set>
+#include <vector>
+
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
 using ::testing::ElementsAre;
@@ -10,6 +14,7 @@ using ::testing::ElementsAre;
 #include "NLException.h"
 
 #include "SNLPath.h"
+#include "SNLOccurrence.h"
 using namespace naja::NL;
 
 class SNLPathTest0: public ::testing::Test {
@@ -62,6 +67,84 @@ TEST_F(SNLPathTest0, testEmptyPath) {
   EXPECT_FALSE(emptyPath < emptyPath);
   EXPECT_TRUE(emptyPath.getInstanceIDs().empty());
   EXPECT_TRUE(emptyPath.getInstances().empty());
+}
+
+TEST_F(SNLPathTest0, testOrderingAcrossOpposingHierarchyLevels) {
+  auto outer = SNLInstance::create(h0Instance_->getDesign(), h0Instance_->getModel());
+  auto inner = SNLInstance::create(h1Instance_->getDesign(), h1Instance_->getModel());
+  // Equal-depth paths compare tail instances before their parent paths.
+  const std::vector<SNLPath> paths {
+    SNLPath(), SNLPath(h0Instance_), SNLPath(outer),
+    SNLPath(SNLPath(h0Instance_), h1Instance_),
+    SNLPath(SNLPath(outer), h1Instance_),
+    SNLPath(SNLPath(h0Instance_), inner),
+    SNLPath(SNLPath(outer), inner)
+  };
+  for (size_t i = 0; i < paths.size(); ++i) {
+    for (size_t j = 0; j < paths.size(); ++j) {
+      EXPECT_EQ(i < j, paths[i] < paths[j]);
+      if (i < 3 || j < 3) continue;
+      EXPECT_EQ(i < j, SNLOccurrence(paths[i], h2Instance_) <
+        SNLOccurrence(paths[j], h2Instance_));
+    }
+  }
+  std::set<SNLPath> ordered(paths.rbegin(), paths.rend());
+  EXPECT_EQ(paths, std::vector<SNLPath>(ordered.begin(), ordered.end()));
+}
+
+TEST_F(SNLPathTest0, testOrderingAgainstNLIDReference) {
+  // Include reused models, shared heads, different depths, and colliding local
+  // instance IDs across designs, libraries, and databases.
+  std::vector<SNLPath> paths {SNLPath()};
+  auto db = h0Instance_->getDesign()->getDB();
+  auto otherDB = NLDB::create(NLUniverse::get());
+  for (auto owner: {db, otherDB}) {
+    for (int library = 0; library < 2; ++library) {
+      auto lib = NLLibrary::create(owner);
+      for (int hierarchy = 0; hierarchy < 2; ++hierarchy) {
+        auto design = SNLDesign::create(lib);
+        std::vector<SNLPath> heads {SNLPath()};
+        for (int depth = 0; depth < 5; ++depth) {
+          auto model = SNLDesign::create(lib);
+          auto first = SNLInstance::create(design, model);
+          auto second = SNLInstance::create(design, model);
+          std::vector<SNLPath> next;
+          for (const auto& head: heads) {
+            for (auto instance: {first, second}) {
+              auto path = SNLPath(head, instance);
+              EXPECT_EQ(depth + 1, path.size());
+              EXPECT_EQ(path, SNLPath(path.getHeadInstance(), path.getTailPath()));
+              next.push_back(path);
+              paths.push_back(path);
+            }
+          }
+          heads = std::move(next);
+          design = model;
+        }
+      }
+    }
+  }
+  auto referenceLess = [](const SNLPath& lhs, const SNLPath& rhs) {
+    auto left = lhs.getInstances();
+    auto right = rhs.getInstances();
+    if (left.size() != right.size()) return left.size() < right.size();
+    return std::lexicographical_compare(
+      left.rbegin(), left.rend(), right.rbegin(), right.rend(),
+      [](const SNLInstance* a, const SNLInstance* b) {
+        return a->getNLID() < b->getNLID();
+      });
+  };
+  std::sort(paths.begin(), paths.end(), referenceLess);
+  for (size_t i = 0; i < paths.size(); ++i) {
+    for (size_t j = 0; j < paths.size(); ++j) {
+      EXPECT_EQ(i < j, paths[i] < paths[j]) << i << ", " << j;
+      EXPECT_EQ(i <= j, paths[i] <= paths[j]);
+      EXPECT_EQ(i > j, paths[i] > paths[j]);
+      EXPECT_EQ(i >= j, paths[i] >= paths[j]);
+    }
+  }
+  std::set<SNLPath> ordered(paths.rbegin(), paths.rend());
+  EXPECT_EQ(paths, std::vector<SNLPath>(ordered.begin(), ordered.end()));
 }
 
 TEST_F(SNLPathTest0, testTopDown0) {

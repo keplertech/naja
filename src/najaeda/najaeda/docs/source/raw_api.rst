@@ -766,9 +766,9 @@ semantic source of truth.
    * - :class:`najaeda.naja.NLClock`
      - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform (primary only) <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
    * - ``SNLDesign`` timing analysis
-     - ``analyzeTiming()``, ``getClockDomains()``, ``getCaptureEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
+     - ``analyzeTiming()``, ``getClockDomains()``, ``getEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
    * - ``SNLOccurrence`` timing queries
-     - ``getDrivingClocks()``, ``getReceivingClocks()``, ``getWaveformClocks()``
+     - ``getLaunchClocks()``, ``getCaptureClocks()``, ``getClocks()``, ``getFaninStartpoints()``, ``getFanoutEndpoints()``
    * - ``SNLClockDomain``, ``SNLTimingCycleError``
      - Domain: ``getNLClock()``, ``getSources()``; exception: ``occurrence``, ``description``, ``role``
    * - :class:`najaeda.naja.NLUniverse`
@@ -1387,13 +1387,13 @@ Declare clocks before analysis, through ``NLClock`` only. For example, if
    model = top.getInstance("u_pll").getModel()
    pll = naja.NLClock.createPrimary(model, "pll", 8.0, "ns", [model.getScalarTerm("clk_o")])
    top.analyzeTiming()
-   for occurrence in top.getCaptureEndpoints():
-       driving = occurrence.getDrivingClocks()
-       receiving = occurrence.getReceivingClocks()
-       if driving and receiving and driving != receiving:
+   for occurrence in top.getEndpoints():
+       launch = occurrence.getLaunchClocks()
+       capture = occurrence.getCaptureClocks()
+       if launch and capture and launch != capture:
            print(occurrence,
-                 [domain.getNLClock().getName() for domain in driving],
-                 [domain.getNLClock().getName() for domain in receiving])
+                 [domain.getNLClock().getName() for domain in launch],
+                 [domain.getNLClock().getName() for domain in capture])
 
 The example uses the existing nonempty, differing-domain-set rule. It does not
 classify crossings between related clocks.
@@ -1403,14 +1403,14 @@ Occurrence queries
 
 The following no-argument methods return frozensets of ``SNLClockDomain``:
 
-* ``getDrivingClocks()`` returns launch domains whose data reaches the terminal
+* ``getLaunchClocks()`` returns launch domains whose data reaches the terminal
   or bit-net occurrence. State outputs launch according to their clock's
   waveform origins; upstream data domains do not flow through a state element.
-* ``getReceivingClocks()`` returns domains of downstream state elements that
+* ``getCaptureClocks()`` returns domains of downstream state elements that
   capture data reached from this terminal. At a data-capture pin it includes the
   capture clocks of that pin. Traversal stops at state boundaries. At a bit-net
   occurrence it unions the capture domains of the net's consumers.
-* ``getWaveformClocks()`` returns clock-waveform origins, independently of data
+* ``getClocks()`` returns clock-waveform origins, independently of data
   launch/capture. Use this to inspect clock pins and inferred divided clocks.
 
 Queries accept single-bit top ports, instance terminals, internal hierarchical
@@ -1458,11 +1458,12 @@ Design-level results
 After ``analyzeTiming()``, the analyzed ``SNLDesign`` exposes:
 
 * ``getClockDomains()``: domains in deterministic declaration/occurrence order.
-* ``getCaptureEndpoints()``: a list of ``SNLOccurrence`` objects for data-capture
-  pins of flops/latches and memory inputs modeled as state. Query their driving
-  and receiving clocks directly. Gate-control and async-reset endpoints are
-  excluded. Creating this list requires no per-edge Python objects and supports
-  designs with 100,000 endpoints.
+* ``getEndpoints(check=None)``: a list of ``SNLOccurrence`` objects.
+  ``check="setup"`` selects data-capture pins of flops/latches and memory
+  write-side inputs (the original endpoint set). ``check="recovery"`` selects
+  asynchronous set/reset pins for recovery/removal checks. ``None`` returns
+  both in deterministic order. Clock-gate enables are excluded. Other values
+  raise ``RuntimeError``. No per-edge Python objects are created.
 * ``getTimingCoverageReport()``: dictionaries containing ``occurrence``, ``model``
   (model name), ``reason``, ``treatment`` and ``detail``. Reasons are ``memory``,
   ``inout``, ``blackbox``, ``unsupported_latch``, ``multiple_drivers``,
@@ -1471,7 +1472,7 @@ After ``analyzeTiming()``, the analyzed ``SNLDesign`` exposes:
   have no entry; ordinary latches report the existing approximation without
   time borrowing.
 * ``getTimingCoverageCounts()``: entry counts by reason, including zeros.
-* ``getTimingDiagnostics()``: ``unclockedClockPins`` (flop clock-pin occurrences),
+* ``getTimingDiagnostics()``: ``noClock`` (flop clock-pin occurrences),
   ``generatedClocks`` and ``clockControls`` (lists of dictionaries with
   ``clockPin``, ``output`` occurrences and ``clocks``, a domain frozenset).
   Inferred generated-clock relationships are distinct from explicit generated
@@ -1481,6 +1482,201 @@ After ``analyzeTiming()``, the analyzed ``SNLDesign`` exposes:
 A rejected combinational cycle raises ``SNLTimingCycleError`` (a ``RuntimeError``)
 with ``occurrence``, ``description`` and diagnostic ``role`` attributes.
 No loop-breaking policy is applied.
+
+.. _structural-timing-cones:
+
+Structural data cones
+^^^^^^^^^^^^^^^^^^^^^
+
+``occurrence.getFaninStartpoints(withCells=True)`` and
+``occurrence.getFanoutEndpoints(withCells=True)`` return deterministic lists of
+record dictionaries. They accept the same single-bit terminals, hierarchical
+port aliases and bit nets as the clock queries. Missing, invalid or stale
+analysis raises ``RuntimeError``. No graph objects or hidden inout roles are
+returned: sources use drive roles and destinations use load roles.
+
+Both walks follow net connectivity, assign glue, hierarchy ports and explicit
+combinational dependencies. They never cross storage. Combinational arcs of
+state cells, currently asynchronous memory read address/enable dependencies,
+are followed. Latch D-to-Q transparency is not introduced. The walks mirror the launch view: live enabled ``Combinational``,
+``ClockPass`` and ``DataOnly`` edges are traversed, including clock buffers,
+clock-gate dependencies and hierarchy connectivity. ``State`` edges are
+boundaries; generated-clock clock-to-Q arcs are never traversed mid-walk.
+Mux-specific classification and tests await the separate mux update.
+
+Every record contains ``direct``, a boolean, and, when ``withCells=True``,
+``cells``, a frozenset of instance occurrences on any path to that record.
+Buffers and inverters are included; assign glue and hierarchy boundaries are
+excluded. ``direct`` is true only if this union is empty or consists entirely
+of canonical DB0 buffers and inverters. ``withCells=False`` omits ``cells`` and
+skips allocating the cell-union DAG; it still computes ``direct``.
+Shared models in different hierarchies have distinct cell occurrences.
+
+Fanin records contain:
+
+* ``launchPin``: a register/latch Q bit, state memory read-data bit, top input,
+  opaque/uncovered cell output, or constant driver. A typed constant bit net
+  serves as the driver occurrence when no physical output pin represents it.
+* ``startpoint``: the associated clock/gate pin for storage, otherwise
+  ``launchPin``.
+* ``kind``: ``register`` (including latches and memories), ``clock`` (an
+  explicit clock-source seed), ``input``, ``blackbox`` (including uncovered
+  cells), or ``constant``. A clock source has ``launchPin = startpoint`` and
+  the domains seeded there. Model-level declarations retain occurrence-specific
+  source identities. Register Q outputs, including dividers carrying generated
+  clocks, remain ``register`` startpoints.
+* ``launchClocks``: a frozenset of ``SNLClockDomain``. Storage records use the
+  associated clock/gate waveform origins. Undeclared inputs, unclocked storage,
+  constants and undeclared opaque outputs have empty sets.
+* ``cells`` and ``direct``, as above.
+
+An asynchronous memory read contributes one stored-data record per
+``(launchPin, startpoint)`` pair, with that write port's clock domains. Read
+address/enable startpoints also contribute through the read arcs; their cell
+union includes the memory instance and is never direct. The stored-data record
+itself does not include the memory in ``cells``.
+
+Fanout records contain:
+
+* ``endpoint``: the stop-pin occurrence.
+* ``kind``: ``register`` (flop/latch data and memory write-side inputs),
+  ``recovery`` (asynchronous set/reset), ``clock_gating`` (recognized gate
+  enable), ``clock`` (state clock/gate reached by data), ``output`` (top output),
+  or ``blackbox`` (opaque/uncovered cell input).
+* ``captureClocks``: the endpoint's capture domains for ``register``; waveform
+  origins at the owning clock/gate for ``recovery`` and ``clock_gating``;
+  otherwise an empty frozenset.
+* ``registerClock``: the associated clock/gate pin, or ``None``. For a memory
+  write input it is that port's clock. At a ``clock`` stop it is the endpoint
+  itself. Output and blackbox stops have no associated register.
+* ``registerOutputs``: a tuple of outputs affected by that endpoint. Explicit
+  sequential state dependencies preserve per-bit D-to-Q mapping, including
+  multi-bit DB0 registers. Reset/set inputs name the outputs they affect.
+  Memory write inputs name the associated read-data bits. Clock stops name
+  the outputs associated with that clock/gate. Output and blackbox stops have
+  an empty tuple.
+* ``cells`` and ``direct``, as above.
+
+A fanout query starting at a register clock/gate pin first selects all its
+state outputs; starting at a Q bit selects exactly that bit. A memory write
+clock similarly selects the read-data bits associated with that port. Subsequent
+walking never follows state arcs. Starting from a clock source instead stops
+at the clock pins it reaches, without traversing their clock-to-Q arcs; it also
+reports any reached data endpoints. A clean clock pin's fanin contains its
+clock-source startpoint, preserving equality with ``getLaunchClocks()``. A clock
+used as data similarly appears as a ``clock`` startpoint. Write inputs that also serve as asynchronous
+read addresses are reported as captures and also traversed through their read
+arcs. Asynchronous read-only addresses/enables are pass-through pins.
+
+To follow a synchronizer chain, call ``getFanoutEndpoints()`` on each occurrence
+in ``registerOutputs``. Do not restart from ``registerClock``: on a multi-bit
+register that would expand the whole register and lose bit precision. These
+queries expose structure, without classifying synchronizers or protocols.
+
+The consistency contract for data cones is:
+
+* Unioning ``launchClocks`` over fanin records reproduces ``getLaunchClocks()``.
+* For a launch pin and a stop pin, forward and backward records agree on
+  reachability, ``cells`` and ``direct``. Multiple memory write clocks can
+  produce several backward records for the same launch pin.
+* Empty launch masks imply only input, blackbox, constant, or unclocked storage
+  startpoints.
+* Record order and cell sets do not depend on query order. Lists use occurrence
+  names for ordering, preserving distinct hierarchical occurrences.
+
+The analysis shares per-node adjacency, boundary information and cell identities
+between both walk directions. Each visited node also has a lazy symbolic cone
+summary for its direction and ``withCells`` mode. Connectivity-only nodes alias
+an existing child summary. Distinct endpoint pins on a shared trunk therefore
+reuse its intermediate summary and cached results, even in a different query
+order. These summaries retain topology/provenance in O(nodes + arcs) storage;
+they do not store an expanded transitive cell set at every intermediate pin.
+Summaries survive eviction of materialized query results. If a materialized
+result is available for an intermediate summary, evaluation stops there and
+combines that cached suffix with the current path's cells and directness.
+Overlapping queries therefore reuse both symbolic and evaluated work.
+
+Traversal memoizes summary nodes rather than enumerating paths. Cell unions use
+a DAG with shared subexpressions, expanded only for returned records.
+Materialized results have a separate bounded cache (65,536 records plus cell
+memberships); oversized results are not retained. Thus repeated queries cannot
+accumulate an unbounded collection of transitive cell sets. Traversal is linear
+in cone nodes/arcs; materializing separate per-result cell sets additionally
+costs their provenance and output size. ``withCells=False`` summaries carry
+only reachability and directness, without building a cell-union DAG.
+
+For an end-to-end example, save this design as ``crossing.sv``. Exporting the
+state bits keeps the example independent of dead-state elimination:
+
+.. code-block:: systemverilog
+
+   module sample(input clka, clkb, in,
+                 output reg s, x, f1, f2, y, r, output out);
+     always @(posedge clka) s <= in;
+     always @(posedge clka) x <= s;
+     always @(posedge clkb) f1 <= s;
+     always @(posedge clkb) f2 <= f1;
+     always @(posedge clkb) y <= f2 & x;
+     always @(posedge clkb or negedge s)
+       if (!s) r <= 1'b0; else r <= 1'b1;
+     assign out = y;
+   endmodule
+
+Then run:
+
+.. code-block:: python
+
+   from najaeda import naja
+   universe = naja.NLUniverse.create()
+   db = naja.NLDB.create(universe)
+   top = db.loadSystemVerilog(["crossing.sv"])
+   universe.setTopDesign(top)
+   for name, port in (("a", "clka"), ("b", "clkb")):
+       naja.NLClock.createPrimary(top, name, 10.0, "ns",
+                                 [top.getScalarTerm(port)])
+   top.analyzeTiming()
+
+   # Count consecutive direct stages in a domain. Memoize shared suffixes.
+   # State feedback is reported as undefined depth; no safety verdict is made.
+   memo, active = {}, set()
+   def depth(outputs, domain):
+       best = 0
+       for output in outputs:
+           key = (output, domain)
+           if key in active:
+               raise ValueError("state feedback: stage depth is undefined")
+           if key not in memo:
+               active.add(key)
+               following = [edge for edge in output.getFanoutEndpoints(False)
+                            if edge["kind"] == "register" and edge["direct"]
+                            and edge["captureClocks"] == domain]
+               memo[key] = max((1 + depth(edge["registerOutputs"], domain)
+                                for edge in following), default=0)
+               active.remove(key)
+           best = max(best, memo[key])
+       return best
+
+   for endpoint in top.getEndpoints():
+       launch = endpoint.getLaunchClocks()
+       capture = endpoint.getCaptureClocks()
+       # Recovery capture domains live in the structural record.
+       rows = endpoint.getFaninStartpoints()
+       for source in rows:
+           stops = [r for r in source["launchPin"].getFanoutEndpoints()
+                    if r["endpoint"] == endpoint]
+           for stop in stops:
+               capture = stop["captureClocks"]
+               if launch and capture and launch != capture:
+                   stages = (1 + depth(stop["registerOutputs"], capture)
+                             if stop["kind"] == "register" else None)
+                   print(endpoint, source["launchPin"],
+                         "direct=", source["direct"], "depth=", stages)
+
+In the reference design this lists ``f1.D`` from ``s.Q`` (direct, depth 2),
+``y.D`` from ``f2.Q`` and ``x.Q`` (each through the AND, depth 1), and the
+asynchronous reset of ``r`` from ``s.Q`` (direct, no data-stage depth). The
+printed primitive pin is ``RN`` for the active-low reset; clock pins are ``C``.
+Names depend on elaboration. Neither the depth nor directness assigns a verdict.
 
 Lifetime and rebuilding
 ^^^^^^^^^^^^^^^^^^^^^^^

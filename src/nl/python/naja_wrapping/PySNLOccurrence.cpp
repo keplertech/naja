@@ -181,14 +181,18 @@ static PyObject* PySNLOccurrence_getResetActiveLevel(PySNLOccurrence* self) {
   NLCATCH
 }
 
-static PyObject* PySNLOccurrence_getDrivingClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 0); }
-static PyObject* PySNLOccurrence_getReceivingClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 1); }
-static PyObject* PySNLOccurrence_getWaveformClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 2); }
+static PyObject* PySNLOccurrence_getLaunchClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 0); }
+static PyObject* PySNLOccurrence_getCaptureClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 1); }
+static PyObject* PySNLOccurrence_getClocks(PyObject* self, PyObject*) { return PySNLOccurrence_getTimingClocks(self, 2); }
+static PyObject* PySNLOccurrence_getFaninStartpoints(PyObject* self, PyObject* args, PyObject* kwargs) { return PySNLOccurrence_getTimingCone(self, args, kwargs, false); }
+static PyObject* PySNLOccurrence_getFanoutEndpoints(PyObject* self, PyObject* args, PyObject* kwargs) { return PySNLOccurrence_getTimingCone(self, args, kwargs, true); }
 
 PyMethodDef PySNLOccurrence_Methods[] = {
-  {"getDrivingClocks", (PyCFunction)PySNLOccurrence_getDrivingClocks, METH_NOARGS, "Return occurrence-specific clock domains from cached timing analysis."},
-  {"getReceivingClocks", (PyCFunction)PySNLOccurrence_getReceivingClocks, METH_NOARGS, "Return occurrence-specific clock domains from cached timing analysis."},
-  {"getWaveformClocks", (PyCFunction)PySNLOccurrence_getWaveformClocks, METH_NOARGS, "Return occurrence-specific clock domains from cached timing analysis."},
+  {"getFaninStartpoints", (PyCFunction)PySNLOccurrence_getFaninStartpoints, METH_VARARGS|METH_KEYWORDS, "getFaninStartpoints(withCells=True): launch-view startpoints, cell unions and directness."},
+  {"getFanoutEndpoints", (PyCFunction)PySNLOccurrence_getFanoutEndpoints, METH_VARARGS|METH_KEYWORDS, "getFanoutEndpoints(withCells=True): launch-view stop pins and associated register outputs."},
+  {"getLaunchClocks", (PyCFunction)PySNLOccurrence_getLaunchClocks, METH_NOARGS, "Return launch domains reaching this terminal or bit net."},
+  {"getCaptureClocks", (PyCFunction)PySNLOccurrence_getCaptureClocks, METH_NOARGS, "Return downstream data-capture domains, stopping at storage."},
+  {"getClocks", (PyCFunction)PySNLOccurrence_getClocks, METH_NOARGS, "Return propagated clock-waveform origins at this occurrence."},
   {"getRole", (PyCFunction)PySNLOccurrence_getRole, METH_NOARGS,
     "get the role of the referenced term in its instance context (Other for non-terms)."},
   {"getResetActiveLevel", (PyCFunction)PySNLOccurrence_getResetActiveLevel, METH_NOARGS,
