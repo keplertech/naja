@@ -889,6 +889,7 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
     candidates.conjunctions.insert(candidates.conjunctions.end(), local.conjunctions.begin(), local.conjunctions.end());
     candidates.transparent.insert(candidates.transparent.end(), local.transparent.begin(), local.transparent.end());
   }
+  std::vector<ResetDomain> resets;
   // Bind declarations per DNL occurrence; shared models have independent seeds.
   // Several source terminals of one declaration share one clock-mask bit.
   for (const auto& instance : instances) {
@@ -896,6 +897,20 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
     auto* snl = instance.getSNLInstance();
     auto* model = snl ? snl->getModel() : top;
     const auto first = instance.getTermIndexes().first;
+    std::vector<NLReset*> declarations;
+    for (auto* reset : model->getResets()) {
+      declarations.push_back(reset);
+    }
+    std::sort(declarations.begin(), declarations.end(), [](auto* a, auto* b) { return a->getName().getString() < b->getName().getString(); });
+    for (const auto* reset: declarations) {
+      ResetDomain domain {reset, {}};
+      for (auto* source: reset->getSources()) {
+        auto* term = static_cast<SNLBitTerm*>(source);
+        auto node = terminalNodes.at(first + term->getOrderID());
+        domain.sources.push_back(graph->getNode(node)->getProxy()->getDriverNode(node));
+      }
+      resets.push_back(std::move(domain));
+    }
     for (const auto* clock : model->getClocks()) {
       std::vector<TGraph::NodeId> seeds;
       for (auto* source : clock->getSources()) {
@@ -919,6 +934,7 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
   }
   CoverageCounts counts;
   for (const auto& entry : coverage.entries) ++counts[entry.reason];
+  resets_ = std::move(resets);
   stats_ = stats;
   coverage_ = std::move(coverage.entries);
   coverageCounts_ = std::move(counts);

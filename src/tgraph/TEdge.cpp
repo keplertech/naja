@@ -37,6 +37,8 @@ void TEdge::reset(EdgeId index, NodeId source, NodeId target, TEdgeProxy* proxy)
   controlClocks_.clear();
   kind_ = Kind::Combinational;
   disabled_ = false;
+  dataDisabled_ = false;
+  dataTransparent_ = false;
 }
 
 void TEdge::deactivate() {
@@ -47,6 +49,8 @@ void TEdge::deactivate() {
   controlClocks_.clear();
   kind_ = Kind::Combinational;
   disabled_ = false;
+  dataDisabled_ = false;
+  dataTransparent_ = false;
 }
 
 }  // namespace naja::TG

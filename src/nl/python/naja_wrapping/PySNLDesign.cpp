@@ -21,7 +21,9 @@
 #include "PySNLInstance.h"
 #include "PySNLParameter.h"
 #include "PyNLClock.h"
+#include "PyNLReset.h"
 #include "PyNLClocks.h"
+#include "PyNLResets.h"
 #include "PySNLTerms.h"
 #include "PySNLBitTerms.h"
 #include "PySNLInstTerms.h"
@@ -783,6 +785,7 @@ GetBoolAttributeWithFunction(SNLDesign, isSequential, SNLDesignModeling::isSeque
 HasElementsMethod(SNLDesign, hasTerms, getTerms)
 GetContainerMethod(SNLDesign, SNLTerm*, SNLTerms, Terms)
 GetContainerMethod(SNLDesign, NLClock*, NLClocks, Clocks)
+GetContainerMethod(SNLDesign, NLReset*, NLResets, Resets)
 GetContainerMethod(SNLDesign, SNLBitTerm*, SNLBitTerms, BitTerms)
 GetContainerMethod(SNLDesign, SNLScalarTerm*, SNLScalarTerms, ScalarTerms)
 GetContainerMethod(SNLDesign, SNLBusTerm*, SNLBusTerms, BusTerms)
@@ -907,7 +910,11 @@ static PyObject* PySNLDesign_getTimingCoverageCounts(PyObject* self, PyObject*) 
 static PyObject* PySNLDesign_getClockDomains(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 3); }
 static PyObject* PySNLDesign_getTimingDiagnostics(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 4); }
 
+static PyObject* PySNLDesign_getResetDomains(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 5); }
+
 PyMethodDef PySNLDesign_Methods[] = {
+  {"getResets", (PyCFunction)PySNLDesign_getResets, METH_NOARGS, "List reset declarations owned by this design."},
+  {"getResetDomains", (PyCFunction)PySNLDesign_getResetDomains, METH_NOARGS, "Return occurrence-specific reset domains."},
   {"analyzeTiming", (PyCFunction)PySNLDesign_analyzeTiming, METH_NOARGS, "Build and cache timing analysis for the active top."},
   {"getTimingCoverageReport", (PyCFunction)PySNLDesign_getTimingCoverageReport, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},
   {"getTimingCoverageCounts", (PyCFunction)PySNLDesign_getTimingCoverageCounts, METH_NOARGS, "Read the cached timing analysis (raises when missing or stale)."},

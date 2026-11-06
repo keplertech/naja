@@ -37,6 +37,8 @@ cc_library(
         "PySNLAttribute.cpp",
         "PySNLParameter.cpp",
         "PyNLClock.cpp",
+        "PyNLReset.cpp",
+        "PyNLResets.cpp",
         "PyNLClocks.cpp",
         "PySNLDesignObject.cpp",
         "PySNLNet.cpp",

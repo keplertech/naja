@@ -137,7 +137,7 @@ end;
 """
 
 
-def dump_state(output, timing=False):
+def dump_state(output, timing=False, resets=False):
     from najaeda import naja
 
     # Capture the live database before invoking any dumper. A dumper-only sort
@@ -178,10 +178,19 @@ def dump_state(output, timing=False):
     state.append(["content_hash_v1", naja.NLUniverse.get().getContentHash()])
     if timing:
         top = naja.NLUniverse.get().getTopDesign()
+        if resets:
+            for name in ("a", "b"):
+                naja.NLClock.createPrimary(top, name, 10.0, "ns", [top.getScalarTerm(name)])
+            naja.NLReset.create(top, "domain", [top.getScalarTerm("rst_n")], naja.SNLActiveLevel.Low)
         top.analyzeTiming()
 
         def occurrence_id(occurrence):
             obj = occurrence.getNetComponent() or occurrence.getInstance()
+            if obj is None:
+                path = occurrence.getPath()
+                model = top if path.empty() else path.getModel()
+                obj = next(net for net in model.getBitNets()
+                           if naja.SNLOccurrence(path, net) == occurrence)
             return [occurrence.getPath().getInstanceIDs(), obj.getNLID().toTuple()]
 
         state.append(["timing_fanin", [
@@ -191,6 +200,23 @@ def dump_state(output, timing=False):
                 for row in naja.SNLOccurrence(term).getFaninStartpoints()]]
             for term in top.getBitTerms()
             if term.getDirection() == naja.SNLTerm.Direction.Output]])
+        if resets:
+            def domains(values):
+                return sorted([d.getNLReset().getName(), [occurrence_id(o) for o in d.getSources()]] for d in values)
+            state.append(["reset_cones", [
+                [occurrence_id(e), domains(e.getResets()), [
+                    [occurrence_id(r["launchPin"]), r["kind"], r["direct"],
+                     domains(r.get("asyncResets", ())), domains(r.get("syncResets", ())),
+                     sorted([occurrence_id(c) for c in r["cells"]])]
+                    for r in e.getFaninStartpoints()]]
+                for e in top.getEndpoints()]])
+            state.append(["reset_synchronizers", [
+                [occurrence_id(r["output"]), domains(r["resets"]), r["stage"]]
+                for r in top.getTimingDiagnostics()["resetSynchronizers"]]])
+            state.append(["reset_controls", [
+                [occurrence_id(r["occurrence"]), domains(r["resets"]),
+                 [occurrence_id(p) for p in r["nonResetInputs"]]]
+                for r in top.getTimingDiagnostics()["resetControls"]]])
     output.mkdir()
     (output / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
     top = naja.NLUniverse.get().getTopDesign()
@@ -208,7 +234,7 @@ def worker(kind, source, output, run):
     universe = naja.NLUniverse.create()
     db = naja.NLDB.create(universe)
     universe.setTopDB(db)
-    if kind in ("sv", "sv_timing"):
+    if kind in ("sv", "sv_timing", "sv_resets"):
         db.loadSystemVerilog([source], diagnostics_report_path=None)
     elif kind == "v":
         db.loadGateLevelVerilog([source])
@@ -237,10 +263,10 @@ def worker(kind, source, output, run):
     else:
         raise ValueError(kind)
     output = Path(output)
-    dump_state(output / "original", timing=kind == "sv_timing")
+    dump_state(output / "original", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets")
     universe.destroy()
     naja.NLDB.loadNajaIF(str(output / "original" / "snapshot"))
-    dump_state(output / "reloaded", timing=kind == "sv_timing")
+    dump_state(output / "reloaded", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets")
     assert allocations  # Retain heap perturbation until both dumps are complete.
 
 
@@ -284,7 +310,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
-            source_path = directory / ("source." + ("sv" if kind == "sv_timing" else kind))
+            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets") else kind))
             for name, contents in (files or {}).items():
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
@@ -688,6 +714,22 @@ endmodule
     def test_verilog(self):
         self.check_determinism("v", VERILOG)
 
+    def test_reset_views_across_processes(self):
+        self.check_determinism("sv_resets", """
+module top(input a, b, rst_n, d, other, output reg src, meta, sync, first, second, target);
+  wire next_meta = rst_n ? src : 1'b0;
+  wire next_sync = rst_n ? meta : 1'b0;
+  wire gated_reset = second & other;
+  always @(posedge a) src <= d;
+  always @(posedge b) begin meta <= next_meta; sync <= next_sync; end
+  always @(posedge b or negedge rst_n)
+    if (!rst_n) begin first <= 0; second <= 0; end
+    else begin first <= 1; second <= first; end
+  always @(posedge b or negedge gated_reset)
+    if (!gated_reset) target <= 0; else target <= sync;
+endmodule
+""")
+
     def test_timing_shared_models_across_hierarchy_levels(self):
         self.check_determinism("sv_timing", """
 module leaf(input a, b, output y);
@@ -899,6 +941,7 @@ if __name__ == "__main__":
         from najaeda import naja
         naja.NLDB.loadNajaIF(sys.argv[2])
         assert not naja.intentAvailable(), "cold snapshots must not expose retained intent"
-        dump_state(Path(sys.argv[3]), timing=len(sys.argv) > 4 and sys.argv[4] == "sv_timing")
+        dump_state(Path(sys.argv[3]), timing=len(sys.argv) > 4 and sys.argv[4] in ("sv_timing", "sv_resets"),
+                   resets=len(sys.argv) > 4 and sys.argv[4] == "sv_resets")
     else:
         unittest.main()

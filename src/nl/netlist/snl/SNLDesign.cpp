@@ -145,6 +145,10 @@ void SNLDesign::commonPreDestroy() {
   for (NLClock* clock: clocks) {
     clock->destroy();
   }
+  auto resets = resets_;
+  for (auto* reset : resets) {
+    reset->destroy();
+  }
   if (rtlInfos_) {
     rtlInfos_->destroy();
   }
@@ -199,6 +203,12 @@ void SNLDesign::preDestroy() {
   }
   library_->removeSNLDesign(this);
   commonPreDestroy();
+}
+
+NajaCollection<NLReset*> SNLDesign::getResets() const { return new NajaSTLCollection(&resets_); }
+void SNLDesign::addReset(NLReset* reset) { resets_.push_back(reset); }
+void SNLDesign::removeReset(NLReset* reset) {
+  resets_.erase(std::remove(resets_.begin(), resets_.end(), reset), resets_.end());
 }
 
 NajaCollection<NLClock*> SNLDesign::getClocks() const {

@@ -5,6 +5,8 @@
 
 #include "PyNLDB.h"
 #include "PyNLClock.h"
+#include "PyNLReset.h"
+#include "PyNLResets.h"
 #include "PyNLClocks.h"
 
 #include <Python.h>
@@ -980,6 +982,7 @@ GetContainerMethod(NLDB, NLLibrary*, NLLibraries, Libraries)
 GetContainerMethod(NLDB, NLLibrary*, NLLibraries, GlobalLibraries)
 GetContainerMethod(NLDB, NLLibrary*, NLLibraries, PrimitiveLibraries)
 GetContainerMethod(NLDB, NLClock*, NLClocks, Clocks)
+GetContainerMethod(NLDB, NLReset*, NLResets, Resets)
 
 static PyObject* PyNLDB_destroy(PyNLDB* self) {
   TRY
@@ -1020,6 +1023,8 @@ PyMethodDef PyNLDB_Methods[] = {
     "get the NLID."},
   { "isTopDB", (PyCFunction)PyNLDB_isTopDB, METH_NOARGS,
     "Returns True if the NLDB is the top DB."},
+  { "getResets", (PyCFunction)PyNLDB_getResets, METH_NOARGS,
+    "List reset declarations across all designs of this database."},
   { "getClocks", (PyCFunction)PyNLDB_getClocks, METH_NOARGS,
     "get a container of every NLClock defined in the designs of this NLDB."},
   { "getTopDesign", (PyCFunction)PyNLDB_getTopDesign, METH_NOARGS,

@@ -15,6 +15,8 @@
 
 #include "PyInterface.h"
 #include "PyNLClock.h"
+#include "PyNLReset.h"
+#include "TConstantPropagator.h"
 #include "PySNLDesign.h"
 #include "SNLDesign.h"
 #include "SNLBitNet.h"
@@ -72,6 +74,11 @@ struct SNLTimingAnalysis {
   uint64_t generation {pythonNetlistGeneration()};
   bool valid {true};
   std::optional<TClockPropagator::Result> result;
+  std::vector<TConstantPropagator::Value> values;
+  std::vector<TEdge::ClockMask> resets, resetSeeds, asyncResets, syncResets;
+  std::vector<std::vector<size_t>> rawInputs, dataInputs, asyncInputs;
+  struct Synchronizer { size_t output, domain, stage; };
+  std::vector<Synchronizer> synchronizers;
   std::vector<TEdge::ClockMask> driving;
   std::vector<TEdge::ClockMask> receiving;
   std::vector<TEdge::ClockMask> seeds;
@@ -114,6 +121,7 @@ struct View {
   std::shared_ptr<SNLTimingAnalysis>* state;
   size_t index;
 };
+PyTypeObject resetType = {PyVarObject_HEAD_INIT(nullptr, 0)};
 PyTypeObject clockType = {PyVarObject_HEAD_INIT(nullptr, 0)};
 PyTypeObject occurrenceType = {PyVarObject_HEAD_INIT(nullptr, 0)};
 struct OccurrenceView {
@@ -225,11 +233,11 @@ bool put(PyObject* dict, const char* key, PyObject* value) {
   Py_DECREF(value);
   return status == 0;
 }
-PyObject* clocks(View* self, const TEdge::ClockMask& mask) {
+PyObject* domains(View* self, const TEdge::ClockMask& mask, PyTypeObject& type) {
   auto* set = PyFrozenSet_New(nullptr);
   if (!set) return nullptr;
   for (auto i = mask.find_first(); i != TEdge::ClockMask::npos; i = mask.find_next(i)) {
-    auto* clock = view(clockType, *self->state, i);
+    auto* clock = view(type, *self->state, i);
     if (!clock || PySet_Add(set, clock) < 0) {
       Py_XDECREF(clock); Py_DECREF(set); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
@@ -237,6 +245,8 @@ PyObject* clocks(View* self, const TEdge::ClockMask& mask) {
   }
   return set;
 }
+PyObject* clocks(View* self, const TEdge::ClockMask& mask) { return domains(self, mask, clockType); }
+PyObject* resets(View* self, const TEdge::ClockMask& mask) { return domains(self, mask, resetType); }
 const char* reasonName(TSNLGraphConstructor::CoverageReason reason) {
   using R = TSNLGraphConstructor::CoverageReason;
   switch (reason) {
@@ -303,7 +313,9 @@ Py_hash_t clockHash(View* self) {
 }
 PyObject* clockCompare(View* self, PyObject* other, int op) {
   VIEW_HEAD
-  if (!PyObject_TypeCheck(other, &clockType) || (op != Py_EQ && op != Py_NE)) Py_RETURN_NOTIMPLEMENTED;
+  if (Py_TYPE(reinterpret_cast<PyObject*>(self)) != Py_TYPE(other) || (op != Py_EQ && op != Py_NE)) {
+    Py_RETURN_NOTIMPLEMENTED;
+  }
   auto* right = reinterpret_cast<View*>(other);
   if (!checked(right)) return nullptr;
   bool equal = *self->state == *right->state && self->index == right->index;
@@ -330,6 +342,21 @@ PyObject* sources(View* self, PyObject*) {
   }
   return list;
 }
+PyObject* nlReset(View* self, PyObject*) {
+  VIEW_HEAD
+  return PyNLReset_Link(const_cast<NLReset*>(state->constructor.getResetDomains().at(self->index).declaration));
+}
+PyObject* resetSources(View* self, PyObject*) {
+  VIEW_HEAD
+  auto* list = PyList_New(0);
+  if (!list) {
+    return nullptr;
+  }
+  for (auto id : state->constructor.getResetDomains().at(self->index).sources) {
+    if (!append(list, occurrence(self, id))) { Py_DECREF(list); return nullptr; }
+  }
+  return list;
+}
 // Read the already propagated masks. No new propagation policy is introduced.
 void collectMasks(SNLTimingAnalysis& state) {
   const auto& graph = state.constructor.getGraph();
@@ -345,7 +372,9 @@ void collectMasks(SNLTimingAnalysis& state) {
     }
   }
   for (const auto& edge: graph.getEdgesStorage()) {
-    if (!edge.isAlive() || edge.isDisabled()) continue;
+    if (!edge.isAlive() || edge.isDisabled() || edge.isDataDisabled()) {
+      continue;
+    }
     state.driving[edge.getSource()] |= edge.getFromClocks();
     const bool stateArc = edge.getKind() == TEdge::Kind::State ||
       graph.getNode(edge.getTarget())->isFlopDataOutput();
@@ -368,7 +397,14 @@ void collectMasks(SNLTimingAnalysis& state) {
 void collectCone(SNLTimingAnalysis& state) {
   const auto& graph = state.constructor.getGraph();
   const auto size = graph.getNodesStorage().size();
+  const bool declaredResets = !state.constructor.getResetDomains().empty();
   state.cone.resize(size);
+  if (declaredResets) {
+    state.rawInputs.resize(size);
+    state.dataInputs.resize(size);
+    state.asyncInputs.resize(size);
+  }
+  std::unordered_map<const SNLDesign*, bool> transparentModels;
   state.names.reserve(size);
   for (size_t id = 0; id < size; ++id) state.names.push_back(proxy(state, id)->getOccurrence().getString());
   std::map<SNLOccurrence, size_t> cellIds;
@@ -388,6 +424,12 @@ void collectCone(SNLTimingAnalysis& state) {
       state.cone[edge.getTarget()].launch = "register";
       continue;
     }
+    if (declaredResets) {
+      state.rawInputs[edge.getTarget()].push_back(edge.getSource());
+    }
+    if (edge.isDataDisabled()) {
+      continue;
+    }
     auto* arc = static_cast<const TSNLEdgeProxy*>(edge.getProxy());
     size_t cell = invalid;
     bool logic = false;
@@ -398,8 +440,12 @@ void collectCone(SNLTimingAnalysis& state) {
         auto [it, added] = cellIds.emplace(arc->getOccurrence(), state.cells.size());
         if (added) state.cells.push_back(arc->getOccurrence());
         cell = it->second;
-        logic = !(NLDB0::isDB0Primitive(model) &&
-          (SNLDesignModeling::isBuf(model) || SNLDesignModeling::isInv(model)));
+        auto [classification, inserted] = transparentModels.try_emplace(model, false);
+        if (inserted) {
+          classification->second = NLDB0::isDB0Primitive(model) &&
+                                   (SNLDesignModeling::isBuf(model) || SNLDesignModeling::isInv(model));
+        }
+        logic = !classification->second && !edge.isDataTransparent();
       }
     }
     connect(edge.getSource(), edge.getTarget(), cell, logic);
@@ -453,6 +499,24 @@ void collectCone(SNLTimingAnalysis& state) {
         if (out == invalid || !state.cone[out].launch) continue; // opaque model
         for (const auto& node: output.function.nodes) {
           if (node.operation != SNLDesignModeling::BooleanExpression::Operator::State || node.state >= inputs.size()) continue;
+          if (declaredResets) {
+            for (auto* input: terms(seq.states[node.state].nextState)) {
+              auto found = ids.find(input);
+              if (found != ids.end()) {
+                state.dataInputs[out].push_back(found->second);
+              }
+            }
+            for (const auto* expression : {&seq.states[node.state].clear, &seq.states[node.state].preset}) {
+              if (*expression) {
+                for (auto* input : terms(**expression)) {
+                  auto found = ids.find(input);
+                  if (found != ids.end()) {
+                    state.asyncInputs[out].push_back(found->second);
+                  }
+                }
+              }
+            }
+          }
           for (auto* input: inputs[node.state]) {
             auto found = ids.find(input);
             if (found != ids.end()) state.cone[found->second].outputs.push_back(out);
@@ -506,7 +570,9 @@ void collectCone(SNLTimingAnalysis& state) {
         if (role != TNodeProxy::Role::Drive && pin->getDirection() != SNLTerm::Direction::Output)
           info.stop = "blackbox";
       }
-      if (node->isCombinationalDriver() && info.incoming.empty()) info.launch = "constant";
+      if (node->isCombinationalDriver() && (declaredResets ? state.rawInputs[id].empty() : info.incoming.empty())) {
+        info.launch = "constant";
+      }
     }
     // Constants are represented by typed bit nets rather than graph terminals.
     // Add private query vertices; the timing graph and propagation stay intact.
@@ -535,6 +601,166 @@ void collectCone(SNLTimingAnalysis& state) {
     if (state.seeds[id].any() && (!state.cone[id].launch || std::string(state.cone[id].launch) != "register"))
       state.cone[id].launch = "clock";
   }
+}
+
+// Propagate the physical reset view independently of data pruning. A fixed
+// point handles reset-derived Qs without adding any data-through state arc.
+void collectResets(SNLTimingAnalysis& state) {
+  const auto& graph = state.constructor.getGraph();
+  const auto size = graph.getNodesStorage().size();
+  const TEdge::ClockMask empty(state.constructor.getResetDomains().size());
+  state.resets.assign(size, empty);
+  if (state.constructor.getResetDomains().empty()) {
+    return;
+  }
+  state.resetSeeds.assign(size, empty);
+  state.asyncResets.assign(size, empty);
+  state.syncResets.assign(size, empty);
+  std::deque<size_t> pending;
+  std::vector<bool> queued(size, false);
+  auto schedule = [&](size_t id) { if (!queued[id]) { pending.push_back(id); queued[id] = true; } };
+  auto propagate = [&]() {
+    while (!pending.empty()) {
+      auto id = pending.front(); pending.pop_front(); queued[id] = false;
+      for (auto edgeId: graph.getNode(id)->getOutEdges()) {
+        const auto& edge = *graph.getEdge(edgeId);
+        if (!edge.isAlive() || edge.isDisabled() || edge.getKind() == TEdge::Kind::State) {
+          continue;
+        }
+        auto target = edge.getTarget();
+        if (state.resets[id].is_subset_of(state.resets[target])) {
+          continue;
+        }
+        state.resets[target] |= state.resets[id]; schedule(target);
+      }
+    }
+  };
+  const auto& declarations = state.constructor.getResetDomains();
+  for (size_t domain = 0; domain < declarations.size(); ++domain) {
+    for (auto id: declarations[domain].sources) {
+      state.resets[id].set(domain); state.resetSeeds[id].set(domain); schedule(id);
+      if (!state.cone[id].launch || std::string(state.cone[id].launch) != "register") {
+        state.cone[id].launch = "reset";
+      }
+    }
+  }
+  propagate();
+  // Physical D-cone boundaries, cached once per state output. Literal constants
+  // are checked on the raw graph, not on the reset-inactive interpretation.
+  std::map<size_t, std::vector<size_t>> startpoints;
+  for (size_t out = 0; out < size; ++out) {
+    if (state.asyncInputs[out].empty() || state.dataInputs[out].empty()) {
+      continue;
+    }
+    std::vector<size_t> work = state.dataInputs[out];
+    std::set<size_t> seen, starts;
+    while (!work.empty()) {
+      auto id = work.back(); work.pop_back();
+      if (!seen.insert(id).second) {
+        continue;
+      }
+      const auto& occ = proxy(state, id)->getOccurrence();
+      auto* net = occ.getComponentBitNet();
+      if (net && net->isConstant()) {
+        continue;
+      }
+      if (state.cone[id].launch) {
+        if (std::string(state.cone[id].launch) != "constant") {
+          starts.insert(id);
+        }
+      } else if (state.rawInputs[id].empty()) {
+        starts.insert(id);
+      } else {
+        work.insert(work.end(), state.rawInputs[id].begin(), state.rawInputs[id].end());
+      }
+    }
+    startpoints.emplace(out, std::vector<size_t>(starts.begin(), starts.end()));
+  }
+  std::vector<std::map<size_t, size_t>> stages(size);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto& [out, starts]: startpoints) {
+      auto candidates = empty;
+      for (auto pin : state.asyncInputs[out]) {
+        candidates |= state.resets[pin];
+      }
+      for (auto domain = candidates.find_first(); domain != TEdge::ClockMask::npos; domain = candidates.find_next(domain)) {
+        if (stages[out].count(domain)) {
+          continue;
+        }
+        bool derived = true;
+        size_t stage = 1;
+        for (auto start: starts) {
+          auto found = stages[start].find(domain);
+          if (found == stages[start].end()) { derived = false; break; }
+          stage = std::max(stage, found->second + 1);
+        }
+        if (!derived) {
+          continue;
+        }
+        stages[out][domain] = stage;
+        state.synchronizers.push_back({out, domain, stage});
+        state.resets[out].set(domain); schedule(out); changed = true;
+      }
+    }
+    propagate();
+  }
+  // Reset provenance of disabled inputs propagates over the physical D cone
+  // up to state outputs. Shared fanout is summarized once, not walked per row.
+  for (const auto& edge: graph.getEdgesStorage()) {
+    if (!edge.isAlive() || edge.isDisabled() || !edge.isDataDisabled()) {
+      continue;
+    }
+    state.syncResets[edge.getTarget()] |= state.resets[edge.getSource()];
+  }
+  for (size_t id = 0; id < size; ++id) {
+    if (state.syncResets[id].any()) {
+      schedule(id);
+    }
+  }
+  while (!pending.empty()) {
+    auto id = pending.front(); pending.pop_front(); queued[id] = false;
+    for (auto edgeId: graph.getNode(id)->getOutEdges()) {
+      const auto& edge = *graph.getEdge(edgeId);
+      if (!edge.isAlive() || edge.isDisabled() || edge.getKind() == TEdge::Kind::State) {
+        continue;
+      }
+      auto to = edge.getTarget();
+      if (state.syncResets[id].is_subset_of(state.syncResets[to])) {
+        continue;
+      }
+      state.syncResets[to] |= state.syncResets[id]; schedule(to);
+    }
+  }
+  for (size_t out = 0; out < size; ++out) {
+    for (auto input : state.asyncInputs[out]) {
+      state.asyncResets[out] |= state.resets[input];
+    }
+    for (auto input: state.dataInputs[out]) {
+      state.syncResets[out] |= state.syncResets[input];
+      auto role = graph.getNode(input)->getPinRole();
+      if (role == TNode::PinRole::SyncReset || role == TNode::PinRole::SyncSet) {
+        state.syncResets[out] |= state.resets[input];
+      }
+    }
+  }
+  for (size_t id = 0; id < size; ++id) {
+    auto role = graph.getNode(id)->getPinRole();
+    if (role == TNode::PinRole::AsyncReset || role == TNode::PinRole::AsyncSet) {
+      for (auto out : state.cone[id].outputs) {
+        state.asyncResets[out] |= state.resets[id];
+      }
+    }
+    if (role == TNode::PinRole::SyncReset || role == TNode::PinRole::SyncSet) {
+      for (auto out : state.cone[id].outputs) {
+        state.syncResets[out] |= state.resets[id];
+      }
+    }
+  }
+  std::sort(state.synchronizers.begin(), state.synchronizers.end(), [](const auto& a, const auto& b) {
+    return std::tie(a.output, a.domain) < std::tie(b.output, b.domain);
+  });
 }
 
 // Provenance is a union DAG, not an expanded set at each intermediate pin.
@@ -753,7 +979,80 @@ PyObject* associations(View* self, bool generated) {
   }
   return list;
 }
+PyObject* resetSynchronizers(View* self) {
+  auto& state = **self->state;
+  auto* list = PyList_New(0);
+  if (!list) {
+    return nullptr;
+  }
+  for (size_t i = 0; i < state.synchronizers.size();) {
+    auto entry = state.synchronizers[i];
+    TEdge::ClockMask mask(state.constructor.getResetDomains().size());
+    while (i < state.synchronizers.size() && state.synchronizers[i].output == entry.output && state.synchronizers[i].stage == entry.stage) {
+      mask.set(state.synchronizers[i++].domain);
+    }
+    auto* row = PyDict_New();
+    if (!row || !put(row, "output", occurrence(self, entry.output)) || !put(row, "resets", resets(self, mask)) ||
+        !put(row, "stage", PyLong_FromSize_t(entry.stage))) { Py_XDECREF(row); Py_DECREF(list); return nullptr; }
+    if (!append(list, row)) { Py_DECREF(list); return nullptr; }
+  }
+  return list;
+}
+PyObject* resetControls(View* self) {
+  auto& state = **self->state;
+  const auto& graph = state.constructor.getGraph();
+  struct Control { TEdge::ClockMask domains; std::set<size_t> other; };
+  std::map<SNLOccurrence, Control> controls;
+  for (const auto& edge: graph.getEdgesStorage()) {
+    if (!edge.isAlive() || edge.isDisabled() || edge.getKind() == TEdge::Kind::State) {
+      continue;
+    }
+    auto* arc = static_cast<const TSNLEdgeProxy*>(edge.getProxy());
+    if (arc->getKind() == TSNLEdgeProxy::Kind::Connectivity) {
+      continue;
+    }
+    auto [it, added] = controls.try_emplace(arc->getOccurrence(), Control{TEdge::ClockMask(state.constructor.getResetDomains().size()), {}});
+    auto id = edge.getSource();
+    if (state.resets[id].any()) {
+      it->second.domains |= state.resets[id];
+    } else {
+      auto* net = proxy(state, id)->getOccurrence().getComponentBitNet();
+      if (!net || !net->isConstant()) {
+        it->second.other.insert(id);
+      }
+    }
+  }
+  auto* list = PyList_New(0);
+  if (!list) {
+    return nullptr;
+  }
+  for (const auto& [cell, control]: controls) {
+    if (control.domains.none() || control.other.empty()) {
+      continue;
+    }
+    auto* pins = PyTuple_New(control.other.size());
+    if (!pins) { Py_DECREF(list); return nullptr; }
+    size_t i = 0;
+    for (auto id: control.other) {
+      auto* pin = occurrence(self, id);
+      if (!pin) { Py_DECREF(pins); Py_DECREF(list); return nullptr; }
+      PyTuple_SET_ITEM(pins, i++, pin);
+    }
+    auto* row = PyDict_New();
+    if (!row || !put(row, "occurrence", linkedOccurrence(self, cell)) ||
+        !put(row, "resets", resets(self, control.domains)) || !put(row, "nonResetInputs", pins)) {
+      Py_XDECREF(row); Py_DECREF(list); return nullptr;
+    }
+    if (!append(list, row)) { Py_DECREF(list); return nullptr; }
+  }
+  return list;
+}
 #define METHOD(name, function, flags, doc) {name, reinterpret_cast<PyCFunction>(function), flags, doc}
+PyMethodDef resetMethods[] = {
+  METHOD("getNLReset", nlReset, METH_NOARGS, "Return the NLReset declaration."),
+  METHOD("getSources", resetSources, METH_NOARGS, "Return reset source occurrences."),
+  {nullptr, nullptr, 0, nullptr}
+};
 PyMethodDef clockMethods[] = {
   METHOD("getNLClock", nlClock, METH_NOARGS, "Return the NLClock declaration of this occurrence-specific domain."),
   METHOD("getSources", sources, METH_NOARGS, "Return the clock source occurrences in this domain."),
@@ -787,9 +1086,19 @@ PyObject* PySNLDesign_analyzeTiming(PyObject* object, PyObject*) {
     // Raw writers have no shared native lock. Retain the GIL throughout.
     naja::DNL::destroy();
     next->constructor.construct();
+    if (!next->constructor.getResetDomains().empty()) {
+      std::vector<TConstantPropagator::Seed> seeds;
+      for (const auto& domain : next->constructor.getResetDomains()) {
+        for (auto id : domain.sources) {
+          seeds.emplace_back(id, domain.declaration->getInactiveValue() ? TConstantPropagator::Value::One : TConstantPropagator::Value::Zero);
+        }
+      }
+      next->values = TConstantPropagator::run(next->constructor, seeds);
+    }
     next->result = TClockPropagator::run(next->constructor.getGraph());
     collectMasks(*next);
     collectCone(*next);
+    collectResets(*next);
     next->generation = pythonNetlistGeneration();
     auto* property = dynamic_cast<TimingProperty*>(design->getProperty(TimingProperty::Name));
     if (property) property->replace(next);
@@ -834,6 +1143,16 @@ PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
     }
     return list;
   }
+  if (query == 5) {
+    auto* list = PyList_New(0);
+    if (!list) {
+      return nullptr;
+    }
+    for (size_t id = 0; id < state->constructor.getResetDomains().size(); ++id) {
+      if (!append(list, view(resetType, state, id))) { Py_DECREF(list); return nullptr; }
+    }
+    return list;
+  }
   if (query == 3) {
     auto* list = PyList_New(0);
     if (!list) return nullptr;
@@ -849,6 +1168,11 @@ PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
       !put(dict, "clockControls", associations(&temporary, false))) {
     Py_DECREF(dict); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
+  if (!state->constructor.getResetDomains().empty() &&
+      (!put(dict, "resetSynchronizers", resetSynchronizers(&temporary)) ||
+       !put(dict, "resetControls", resetControls(&temporary)))) {
+    Py_DECREF(dict); return nullptr;
+  }
   return dict;
   NLCATCH
 }
@@ -863,8 +1187,8 @@ PyObject* PySNLOccurrence_getTimingClocks(PyObject* object, int query) {
   TRY
   auto state = designState(occ->getDesign());
   if (!state) return nullptr;
-  TEdge::ClockMask mask(state->constructor.getGraph().getClocksCount());
-  const auto& masks = query == 0 ? state->driving : query == 1 ? state->receiving : state->result->clockOrigins;
+  TEdge::ClockMask mask(query == 3 ? state->constructor.getResetDomains().size() : state->constructor.getGraph().getClocksCount());
+  const auto& masks = query == 3 ? state->resets : query == 0 ? state->driving : query == 1 ? state->receiving : state->result->clockOrigins;
   bool found = false;
   auto add = [&](const SNLOccurrence& pin) {
     for (auto id: {state->constructor.getNode(pin), state->constructor.getDriverNode(pin)}) {
@@ -883,7 +1207,7 @@ PyObject* PySNLOccurrence_getTimingClocks(PyObject* object, int query) {
   if (!found) { setError("Occurrence is absent from the analyzed top"); return nullptr; }
   View temporary {};
   temporary.state = &state;
-  return clocks(&temporary, mask);
+  return query == 3 ? resets(&temporary, mask) : clocks(&temporary, mask);
   NLCATCH
 }
 PyObject* PySNLDesign_getEndpoints(PyObject* object, PyObject* args, PyObject* kwargs) {
@@ -944,7 +1268,9 @@ PyObject* PySNLOccurrence_getTimingCone(PyObject* object, PyObject* args, PyObje
       auto driver = state->constructor.getDriverNode(pin);
       // Clock declarations on inferred opaque outputs seed their drive role;
       // the public launch query includes that role as well as the sampled one.
-      if (driver != invalid && driver != id && state->seeds[driver].any()) roots.push_back(driver);
+      if (driver != invalid && driver != id && (state->seeds[driver].any() || (driver < state->resetSeeds.size() && state->resetSeeds[driver].any()))) {
+        roots.push_back(driver);
+      }
     }
     if (forward && !netQuery && !state->cone[id].outputs.empty() &&
         (graph.getNode(id)->getPinRole() == TNode::PinRole::Clock || graph.getNode(id)->getPinRole() == TNode::PinRole::Gate)) {
@@ -1016,8 +1342,28 @@ PyObject* PySNLOccurrence_getTimingCone(PyObject* object, PyObject* args, PyObje
       if (row.pin < state->driving.size()) mask = state->driving[row.pin];
       if (row.startpoint != invalid) mask = state->result->clockOrigins[row.startpoint] | state->seeds[row.pin];
       if (std::string(info.launch) == "clock") mask = state->seeds[row.pin];
+      if (std::string(info.launch) == "reset") {
+        mask.reset();
+      }
       ok = ok && put(dict, "launchClocks", clocks(&temporary, mask)) &&
         put(dict, "startpoint", occurrence(&temporary, row.startpoint != invalid ? row.startpoint : row.pin));
+    }
+    if (!state->constructor.getResetDomains().empty()) {
+      const std::string kind = forward ? info.stop : info.launch;
+      if (kind == "reset") {
+        ok = ok && put(dict, "resets", resets(&temporary, state->resetSeeds[row.pin]));
+      }
+      if (kind == "register" || (forward && kind == "recovery")) {
+        TEdge::ClockMask async(state->constructor.getResetDomains().size()), sync(async);
+        if (!forward) { async = state->asyncResets[row.pin]; sync = state->syncResets[row.pin];
+        } else {
+          for (auto out : info.outputs) {
+            async |= state->asyncResets[out];
+            sync |= state->syncResets[out];
+          }
+        }
+        ok = ok && put(dict, "asyncResets", resets(&temporary, async)) && put(dict, "syncResets", resets(&temporary, sync));
+      }
     }
     if (withCells) {
       auto* cells = PyFrozenSet_New(nullptr);
@@ -1048,6 +1394,11 @@ int PySNLTimingAnalysis_addTypes(PyObject* module) {
   occurrenceType.tp_richcompare = occurrenceCompare;
   if (PyType_Ready(&occurrenceType) < 0) return -1;
   occurrenceType.tp_new = nullptr;
+  resetType.tp_hash = reinterpret_cast<hashfunc>(clockHash);
+  resetType.tp_richcompare = reinterpret_cast<richcmpfunc>(clockCompare);
+  if (ready(resetType, "naja.SNLResetDomain", resetMethods) < 0 || PyModule_AddType(module, &resetType) < 0) {
+    return -1;
+  }
   clockType.tp_hash = reinterpret_cast<hashfunc>(clockHash);
   clockType.tp_richcompare = reinterpret_cast<richcmpfunc>(clockCompare);
   if (ready(clockType, "naja.SNLClockDomain", clockMethods) < 0) return -1;

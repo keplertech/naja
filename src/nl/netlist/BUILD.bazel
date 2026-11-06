@@ -22,6 +22,7 @@ cc_library(
         "core/NLDB.cpp",
         "core/NLDB0.cpp",
         "core/NLClock.cpp",
+        "core/NLReset.cpp",
         "core/NLLibrary.cpp",
         "core/NLDesign.cpp",
         "snl/SNLAttributes.cpp",

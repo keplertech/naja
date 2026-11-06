@@ -8,6 +8,7 @@
 #include "NLObject.h"
 #include "NLLibrary.h"
 #include "NLClock.h"
+#include "NLReset.h"
 
 namespace naja::NL {
 
@@ -75,6 +76,7 @@ class NLDB final: public NLObject {
 
     /// \return every NLClock defined in the designs of this NLDB, across all its libraries.
     NajaCollection<NLClock*> getClocks() const;
+    NajaCollection<NLReset*> getResets() const;
     /// \return the all the Libraries owned (directly or indirectly) by this NLDB.
     NajaCollection<NLLibrary*> getGlobalLibraries() const;
     /// \return the Primitive Libraries owned (directly or indirectly) by this NLDB.

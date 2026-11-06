@@ -15,6 +15,7 @@
 #include "SNLInstance.h"
 #include "SNLParameter.h"
 #include "NLClock.h"
+#include "NLReset.h"
 
 namespace naja::NL {
 
@@ -49,6 +50,7 @@ class SNLDesign final: public NLObject {
     friend class SNLParameter;
     friend class SNLRTLInfos;
     friend class NLClock;
+    friend class NLReset;
     using super = NLObject;
 
     class Type {
@@ -189,6 +191,7 @@ class SNLDesign final: public NLObject {
 
     /// \return the NLClock defined in this SNLDesign.
     NajaCollection<NLClock*> getClocks() const;
+    NajaCollection<NLReset*> getResets() const;
 
     /**
      * \return the collection of SNLInstance instantiated IN this SNLDesign (instance/parent relationship)
@@ -354,6 +357,8 @@ class SNLDesign final: public NLObject {
     void addNet(SNLNet* net);
     void addNetAndSetID(SNLNet* net);
     void removeNet(SNLNet* net);
+    void addReset(NLReset* reset);
+    void removeReset(NLReset* reset);
     void addClock(NLClock* clock);
     void removeClock(NLClock* clock);
     void rename(SNLTerm* term, const NLName& previousName);
@@ -400,6 +405,7 @@ class SNLDesign final: public NLObject {
     SNLDesignNets                       nets_               {};
     SNLDesignObjectNameIDMap            netNameIDMap_       {};
     SNLDesignParameters                 parameters_         {};
+    std::vector<NLReset*>               resets_ {};
     std::vector<NLClock*>               clocks_             {};
     SNLRTLInfos*                        rtlInfos_           {nullptr};
 };

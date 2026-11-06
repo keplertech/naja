@@ -37,6 +37,8 @@
 #include "SNLScalarTerm.h"
 #include "SNLSVConstructor.h"
 #include "TClockPropagator.h"
+#include "TConstantPropagator.h"
+#include <sstream>
 #include "TSNLGraphConstructor.h"
 
 using namespace naja::NL;
@@ -2338,4 +2340,102 @@ TEST_F(TSNLGraphConstructorTests, modeledSingleDriverInoutKeepsOneNode) {
   EXPECT_EQ(0u, constructor.getConstructionStats().splitPins);
   EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::InOut));
   EXPECT_NO_THROW(TClockPropagator::run(constructor.getGraph()));
+}
+
+TEST_F(TSNLGraphConstructorTests, ResetDeclarationAndDataView) {
+  loadSV(R"(
+    module loaded(input c, rst_n, d, output reg q);
+      wire next_data = rst_n ? d : 1'b0;
+      always @(posedge c) q <= next_data;
+    endmodule
+  )");
+  auto* reset = NLReset::create(top_, NLName("domain"), {top_->getScalarTerm(NLName("rst_n"))},
+    NLReset::ActiveLevel::Low);
+  EXPECT_EQ(1, reset->getInactiveValue());
+  EXPECT_EQ(NLReset::Timing::Async, reset->getAssertion());
+  EXPECT_EQ(NLReset::Timing::Sync, reset->getDeassertion());
+  EXPECT_EQ(top_, reset->getDesign());
+  EXPECT_EQ(NLName("domain"), reset->getName());
+  EXPECT_EQ(1u, top_->getResets().size());
+  EXPECT_EQ(1u, reset->getSources().size());
+  EXPECT_EQ("NLReset", std::string(reset->getTypeName()));
+  EXPECT_EQ("domain", reset->getString());
+  EXPECT_EQ("NLReset domain", reset->getDescription());
+  std::ostringstream stream;
+  reset->debugDump(2, true, stream);
+  EXPECT_EQ("  NLReset domain\n", stream.str());
+  auto* foreign = SNLDesign::create(library_, NLName("other"));
+  auto* foreignSource = port(foreign, "reset", SNLTerm::Direction::Input);
+  auto* source = top_->getScalarTerm(NLName("rst_n"));
+  EXPECT_THROW(NLReset::create(nullptr, NLName("bad"), {source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName(), {source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("domain"), {source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {nullptr}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {foreignSource}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source, source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source}, NLReset::ActiveLevel::NA), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source}, NLReset::ActiveLevel::Low,
+    static_cast<NLReset::Timing>(-1)), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source}, NLReset::ActiveLevel::Low,
+    NLReset::Timing::Async, static_cast<NLReset::Timing>(-1)), NLException);
+  EXPECT_THROW(NLClock::createPrimary(top_, NLName("clock"), 10, "ns", {source}), NLException);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  ASSERT_EQ(1u, constructor.getResetDomains().size());
+  const auto& domain = constructor.getResetDomains()[0];
+  EXPECT_EQ(reset, domain.declaration);
+  ASSERT_EQ(1u, domain.sources.size());
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {{domain.sources[0], V::One}});
+  EXPECT_EQ(V::One, values[domain.sources[0]]);
+  size_t pruned = 0, transparent = 0;
+  for (const auto& edge: constructor.getGraph().getEdgesStorage()) {
+    pruned += edge.isDataDisabled();
+    transparent += edge.isDataTransparent();
+  }
+  EXPECT_EQ(2u, pruned);
+  EXPECT_EQ(1u, transparent);
+  EXPECT_NO_THROW(TClockPropagator::run(constructor.getGraph()));
+  EXPECT_THROW(TConstantPropagator::run(constructor, {{domain.sources[0], V::One}, {domain.sources[0], V::Zero}}), NLException);
+  reset->destroy();
+  EXPECT_TRUE(top_->getResets().empty());
+}
+
+TEST_F(TSNLGraphConstructorTests, ResetTimingMetadata) {
+  auto* source = port(top_, "reset", SNLTerm::Direction::Input);
+  for (auto assertion : {NLReset::Timing::Async, NLReset::Timing::Sync}) {
+    for (auto deassertion : {NLReset::Timing::Async, NLReset::Timing::Sync}) {
+      auto* reset = NLReset::create(top_, NLName("domain"), {source},
+        NLReset::ActiveLevel::Low, assertion, deassertion);
+      EXPECT_EQ(assertion, reset->getAssertion());
+      EXPECT_EQ(deassertion, reset->getDeassertion());
+      reset->destroy();
+    }
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewPreservesAssignWiresAndUnknownDrivers) {
+  auto* reset = port(top_, "reset", SNLTerm::Direction::Input);
+  auto* other = port(top_, "other", SNLTerm::Direction::Input);
+  auto* output = port(top_, "output", SNLTerm::Direction::Output);
+  auto* assign = SNLInstance::create(top_, NLDB0::getAssign());
+  auto* input = assign->getInstTerm(NLDB0::getAssignInput());
+  auto* result = assign->getInstTerm(NLDB0::getAssignOutput());
+  connect(top_, {reset, other, input});
+  connect(top_, {result, output});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto source = constructor.getNode(SNLOccurrence(reset));
+  auto second = constructor.getNode(SNLOccurrence(other));
+  auto target = constructor.getNode(SNLOccurrence(output));
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {{source, V::One}});
+  EXPECT_EQ(V::Unknown, values[target]);
+  values = TConstantPropagator::run(constructor, {{source, V::One}, {second, V::One}});
+  EXPECT_EQ(V::One, values[target]);
+  auto arc = edge(constructor.getGraph(), constructor.getNode(SNLOccurrence(input)),
+    constructor.getNode(SNLOccurrence(result)));
+  ASSERT_NE(TGraph::kInvalidEdge, arc);
+  EXPECT_FALSE(constructor.getGraph().getEdge(arc)->isDataDisabled());
 }
