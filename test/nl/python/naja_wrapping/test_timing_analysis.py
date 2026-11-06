@@ -501,7 +501,7 @@ class TimingAnalysisTests(unittest.TestCase):
                 add_source(pin)
             elif complete:
                 endpoints.append(pin)
-        for clock in top.getClockDomains():
+        for clock in list(top.getClockDomains()) + list(top.getResetDomains()):
             for source in clock.getSources():
                 add_source(source)
         pending = [(naja.SNLPath(), top)]
@@ -538,7 +538,7 @@ class TimingAnalysisTests(unittest.TestCase):
                 self.assertEqual([{k: v for k, v in row.items() if k != "cells"} for row in rows], sparse)
                 for row in rows:
                     if not pin.getLaunchClocks():
-                        self.assertIn(row["kind"], ("input", "blackbox", "constant", "register"))
+                        self.assertIn(row["kind"], ("input", "blackbox", "constant", "register", "reset"))
                         self.assertFalse(row["launchClocks"])
                     add_source(row["launchPin"])
                 fanin_cache[pin] = rows
@@ -579,6 +579,393 @@ class TimingAnalysisTests(unittest.TestCase):
                 self.assertTrue(backward, (str(source), str(endpoint)))
                 for row in backward:
                     equal_path(row, forward)
+
+    def reset(self, top, name="domain", term="rst_n", level=None):
+        return naja.NLReset.create(top, name, [top.getScalarTerm(term)],
+                                   naja.SNLActiveLevel.Low if level is None else level,
+                                   assertion="async", deassertion="sync")
+
+    def depth(self, source, clock):
+        def walk(output, visited):
+            if output in visited:
+                return 0
+            stages = []
+            for row in output.getFanoutEndpoints():
+                if row["kind"] == "register" and row["direct"] and row["captureClocks"] == {clock}:
+                    stages.extend(1 + walk(q, visited | {output}) for q in row["registerOutputs"])
+            return max(stages, default=0)
+        return walk(source, set())
+
+    def test_declared_synchronous_reset_depth(self):
+        for count in (2, 3):
+            with self.subTest(count=count):
+                top = self.load(f"""module sample(input clka, clkb, rst_n, data,
+                    output reg src, output reg [{count-1}:0] stages);
+                    always @(posedge clka) src <= data;
+                    wire [{count-1}:0] next_stages = rst_n ? {{stages[{count-2}:0], src}} : '0;
+                    always @(posedge clkb) stages <= next_stages;
+                endmodule""")
+                self.primary(top, "a", "clka")
+                self.primary(top, "b", "clkb")
+                top.analyzeTiming()
+                src = self.state_output(top, "src")
+                self.assertTrue(any(not r["direct"] for r in src.getFanoutEndpoints() if r["kind"] == "register"))
+                first = next(r for r in src.getFanoutEndpoints() if r["kind"] == "register")["registerOutputs"][0]
+                self.assertEqual(1, 1 + self.depth(first, top.getClockDomains()[1]))
+                self.reset(top)
+                top.analyzeTiming()
+                src = self.state_output(top, "src")
+                domain = top.getResetDomains()[0]
+                self.assertEqual(count, self.depth(src, top.getClockDomains()[1]))
+                rows = [r for r in src.getFanoutEndpoints() if r["kind"] == "register"]
+                self.assertTrue(all(r["direct"] and r["syncResets"] == {domain} for r in rows))
+                self.assert_cones(top)
+                self.universe.destroy()
+                self.setUp()
+
+    def test_declared_vector_reset_is_bitwise(self):
+        top = self.load("""module sample(input a, b, rst_n, input [3:0] data,
+            output reg [3:0] src, meta, sync);
+            always @(posedge a) src <= data;
+            wire [3:0] next_meta = rst_n ? src : 4'b0;
+            wire [3:0] next_sync = rst_n ? meta : 4'b0;
+            always @(posedge b) begin meta <= next_meta; sync <= next_sync; end
+        endmodule""")
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.reset(top)
+        top.analyzeTiming()
+        for bit in range(4):
+            source = naja.SNLOccurrence(top.getNet("src").getBit(bit))
+            launch = next(r["launchPin"] for r in source.getFaninStartpoints() if r["kind"] == "register")
+            rows = [r for r in launch.getFanoutEndpoints() if r["kind"] == "register"]
+            self.assertEqual(1, len(rows))
+            self.assertTrue(rows[0]["direct"])
+            self.assertEqual(1, len(rows[0]["registerOutputs"]))
+            target = rows[0]["registerOutputs"][0]
+            expected = naja.SNLOccurrence(top.getNet("meta").getBit(bit)).getFaninStartpoints()
+            self.assertEqual(target, next(r["launchPin"] for r in expected if r["kind"] == "register"))
+            self.assertEqual(2, self.depth(launch, top.getClockDomains()[1]))
+        self.assert_cones(top)
+
+    def test_declared_reset_domain_crossing(self):
+        top = self.load("""module sample(input c, rst_a_n, rst_b_n, d,
+            output reg q, r);
+            always @(posedge c or negedge rst_a_n) if (!rst_a_n) q <= 0; else q <= d;
+            always @(posedge c or negedge rst_b_n) if (!rst_b_n) r <= 0; else r <= q;
+        endmodule""")
+        self.primary(top, "c", "c")
+        self.reset(top, "a", "rst_a_n")
+        self.reset(top, "b", "rst_b_n")
+        top.analyzeTiming()
+        a, b = top.getResetDomains()
+        src = self.state_output(top, "q")
+        target = self.state_pin(self.state_output(top, "r"), "D")
+        row = next(r for r in target.getFaninStartpoints() if r["kind"] == "register")
+        self.assertEqual({a}, row["asyncResets"])
+        row = next(r for r in src.getFanoutEndpoints() if r["endpoint"] == target)
+        self.assertEqual({b}, row["asyncResets"])
+        self.assertEqual(frozenset(), row["syncResets"])
+        self.assert_cones(top)
+
+    def test_declared_reset_synchronizer(self):
+        top = self.load("""module sample(input c, rst_n, input [99:0] data,
+            output reg first, second, output reg [99:0] q);
+            always @(posedge c or negedge rst_n)
+              if (!rst_n) begin first <= 0; second <= 0; end
+              else begin first <= 1; second <= first; end
+            for (genvar i=0; i<100; i=i+1)
+              always @(posedge c or negedge second)
+                if (!second) q[i] <= 0; else q[i] <= data[i];
+        endmodule""")
+        self.primary(top, "c", "c")
+        self.reset(top)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        stages = top.getTimingDiagnostics()["resetSynchronizers"]
+        self.assertEqual([1, 2], sorted(r["stage"] for r in stages))
+        self.assertTrue(all(r["resets"] == {domain} for r in stages))
+        for pin in top.getEndpoints(check="recovery"):
+            self.assertEqual({domain}, pin.getResets())
+        source = self.state_output(top, "second")
+        rows = [r for r in source.getFanoutEndpoints() if r["kind"] == "recovery"]
+        self.assertEqual(100, len(rows))
+        self.assert_cones(top)
+
+    def test_declared_reset_gating(self):
+        top = self.load("""module sample(input c, rst_n, other, d, output reg q);
+            wire rn = rst_n & other;
+            always @(posedge c or negedge rn) if (!rn) q <= 0; else q <= d;
+        endmodule""")
+        self.primary(top, "c", "c")
+        self.reset(top)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        pin = top.getEndpoints(check="recovery")[0]
+        self.assertEqual({domain}, pin.getResets())
+        rows = pin.getFaninStartpoints()
+        self.assertEqual([naja.SNLOccurrence(top.getScalarTerm("other"))], [r["launchPin"] for r in rows])
+        self.assertTrue(rows[0]["direct"])
+        controls = top.getTimingDiagnostics()["resetControls"]
+        self.assertEqual(1, len(controls))
+        self.assertEqual({domain}, controls[0]["resets"])
+        self.assertEqual(1, len(controls[0]["nonResetInputs"]))
+        self.assert_cones(top)
+        # With active-high assertion, inactive 0 makes this AND constant 0.
+        # The recovery endpoint must remain visible in the physical reset view.
+        list(top.getResets())[0].destroy()
+        self.reset(top, level=naja.SNLActiveLevel.High)
+        top.analyzeTiming()
+        pin = top.getEndpoints(check="recovery")[0]
+        self.assertEqual({top.getResetDomains()[0]}, pin.getResets())
+        self.assertEqual([], pin.getFaninStartpoints())
+        self.assert_cones(top)
+
+    def test_declared_foreign_recovery_crossing(self):
+        top = self.load("""module sample(input a, b, rst_n, d, output reg foreign_reset, q);
+            always @(posedge a or negedge rst_n) if (!rst_n) foreign_reset <= 0; else foreign_reset <= d;
+            always @(posedge b or negedge foreign_reset) if (!foreign_reset) q <= 0; else q <= d;
+        endmodule""")
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.reset(top)
+        top.analyzeTiming()
+        output = self.state_output(top, "foreign_reset")
+        rows = [r for r in output.getFanoutEndpoints() if r["kind"] == "recovery"]
+        self.assertEqual(1, len(rows))
+        self.assertEqual({top.getClockDomains()[0]}, rows[0]["endpoint"].getLaunchClocks())
+        self.assertEqual({top.getResetDomains()[0]}, output.getFaninStartpoints()[0]["asyncResets"])
+        # A data-driven reset is not inferred as a reset synchronizer.
+        self.assertFalse(rows[0]["endpoint"].getResets())
+        self.assert_cones(top)
+
+    def test_declared_blackbox_reset_domains(self):
+        top = self.load("""module sample(input a, b, c, d, output reg q, r);
+            wire left_reset, right_reset;
+            controller left(.ref_i(a), .rst_o(left_reset));
+            controller right(.ref_i(b), .rst_o(right_reset));
+            always @(posedge c or negedge left_reset) if (!left_reset) q <= 0; else q <= d;
+            always @(posedge c or negedge right_reset) if (!right_reset) r <= 0; else r <= d;
+        endmodule""")
+        self.primary(top, "c", "c")
+        model = top.getInstance("left").getModel()
+        self.reset(model, "domain", "rst_o")
+        top.analyzeTiming()
+        domains = top.getResetDomains()
+        self.assertEqual(2, len(domains))
+        self.assertEqual(domains[0].getNLReset(), domains[1].getNLReset())
+        self.assertNotEqual(domains[0].getSources(), domains[1].getSources())
+        for domain in domains:
+            source = domain.getSources()[0]
+            rows = [r for r in source.getFaninStartpoints() if r["kind"] == "reset"]
+            self.assertEqual(1, len(rows))
+            self.assertEqual({domain}, rows[0]["resets"])
+        self.assertEqual({frozenset({d}) for d in domains},
+                         {p.getResets() for p in top.getEndpoints(check="recovery")})
+        self.assert_cones(top)
+
+    def test_declared_reset_validation_and_staleness(self):
+        top = self.crossing()
+        other = top.clone("other")
+        with self.assertRaisesRegex(RuntimeError, "another design"):
+            naja.NLReset.create(top, "bad", [other.getScalarTerm("d")], naja.SNLActiveLevel.Low)
+        with self.assertRaisesRegex(RuntimeError, "duplicate source"):
+            naja.NLReset.create(top, "bad", [top.getScalarTerm("d")]*2, naja.SNLActiveLevel.Low)
+        for sources, level, kwargs in (([], naja.SNLActiveLevel.Low, {}),
+                ([top.getScalarTerm("d")], naja.SNLActiveLevel.NA, {}),
+                ([top.getScalarTerm("d")], naja.SNLActiveLevel.Low, {"assertion": "invalid"}),
+                ([top.getScalarTerm("d")], naja.SNLActiveLevel.Low, {"deassertion": "invalid"}),
+                ([top], naja.SNLActiveLevel.Low, {}),
+                ([None], naja.SNLActiveLevel.Low, {}),
+                (tuple([top.getScalarTerm("d")]), naja.SNLActiveLevel.Low, {}),
+                ([next(iter(next(iter(top.getInstances())).getInstTerms()))], naja.SNLActiveLevel.Low, {})):
+            with self.assertRaises(RuntimeError):
+                naja.NLReset.create(top, "bad", sources, level, **kwargs)
+        with self.assertRaises(TypeError):
+            naja.NLReset.create()
+        top.analyzeTiming()
+        old = top.getEndpoints()[0]
+        declaration = self.reset(top, "reset", "d")
+        self.assertEqual([declaration], list(top.getResets()))
+        self.assertEqual([declaration], list(self.db.getResets()))
+        self.assertEqual("reset", declaration.getName())
+        self.assertEqual(top, declaration.getDesign())
+        self.assertEqual([top.getScalarTerm("d")], declaration.getSources())
+        self.assertEqual(naja.SNLActiveLevel.Low, declaration.getActiveLevel())
+        self.assertEqual(1, declaration.getInactiveValue())
+        self.assertEqual("async", declaration.getAssertion())
+        self.assertEqual("sync", declaration.getDeassertion())
+        with self.assertRaisesRegex(RuntimeError, "Stale"):
+            old.getResets()
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        self.assertEqual(domain, top.getResetDomains()[0])
+        self.assertEqual(1, len({domain, domain}))
+        self.assert_cones(top)
+        declaration.destroy()
+        with self.assertRaisesRegex(RuntimeError, "Stale"):
+            domain.getSources()
+        top.analyzeTiming()
+        self.assertEqual([], top.getResetDomains())
+        self.assertEqual([], list(top.getResets()))
+
+    def test_declared_reset_timing_metadata(self):
+        top = self.crossing()
+        for assertion in ("async", "sync"):
+            for deassertion in ("async", "sync"):
+                with self.subTest(assertion=assertion, deassertion=deassertion):
+                    reset = naja.NLReset.create(
+                        top, "reset", [top.getScalarTerm("d")], naja.SNLActiveLevel.Low,
+                        assertion=assertion, deassertion=deassertion)
+                    self.assertEqual(assertion, reset.getAssertion())
+                    self.assertEqual(deassertion, reset.getDeassertion())
+                    reset.destroy()
+        for argument in ("assertion", "deassertion"):
+            with self.assertRaises(TypeError):
+                naja.NLReset.create(top, "reset", [top.getScalarTerm("d")],
+                                    naja.SNLActiveLevel.Low, **{argument: None})
+
+    def test_declared_native_sync_reset(self):
+        top = self.load("""module sample(input a, b, rst_n, d, output reg src, meta, sync);
+            always @(posedge a) src <= d;
+            always @(posedge b) if (!rst_n) begin meta <= 0; sync <= 0; end
+              else begin meta <= src; sync <= meta; end
+        endmodule""")
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        self.reset(top)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        source = self.state_output(top, "src")
+        self.assertEqual(2, self.depth(source, top.getClockDomains()[1]))
+        rows = [r for r in source.getFanoutEndpoints() if r["kind"] == "register"]
+        self.assertTrue(all(r["syncResets"] == {domain} for r in rows))
+        self.assert_cones(top)
+
+    def test_declared_reset_order_and_wire_startpoints(self):
+        top = self.load("""module branch(input c, rn, d, output reg q);
+            always @(posedge c or negedge rn) if (!rn) q <= 0; else q <= d;
+        endmodule
+        module sample(input c, rst_a_n, rst_b_n, d, output q, r);
+            branch left(c, rst_a_n, d, q);
+            branch right(c, rst_b_n, d, r);
+        endmodule""")
+        self.primary(top, "c", "c")
+        def snapshot(order):
+            declarations = [self.reset(top, "domain_"+n, "rst_"+n+"_n") for n in order]
+            top.analyzeTiming()
+            rows = []
+            for endpoint in top.getEndpoints(check="recovery"):
+                fanin = endpoint.getFaninStartpoints()
+                self.assertEqual(1, len(fanin))
+                self.assertEqual("reset", fanin[0]["kind"])
+                self.assertEqual(fanin[0]["launchPin"], fanin[0]["startpoint"])
+                self.assertFalse(fanin[0]["launchClocks"])
+                self.assertEqual(endpoint.getResets(), fanin[0]["resets"])
+                rows.append((tuple(endpoint.getPath().getInstanceIDs()),
+                    tuple(sorted(d.getNLReset().getName() for d in endpoint.getResets()))))
+            self.assertEqual(["domain_a", "domain_b"], [d.getNLReset().getName() for d in top.getResetDomains()])
+            self.assert_cones(top)
+            for d in declarations:
+                d.destroy()
+            return rows
+        self.assertEqual(snapshot(("b", "a")), snapshot(("a", "b")))
+
+    def test_declared_reset_independent_inputs_have_no_crossing_pair(self):
+        top = self.load("""module sample(input c, rst_a_n, rst_b_n, d,
+            output reg q, r);
+            always @(posedge c or negedge rst_a_n) if (!rst_a_n) q <= 0; else q <= d;
+            always @(posedge c or negedge rst_b_n) if (!rst_b_n) r <= 0; else r <= d;
+        endmodule""")
+        self.primary(top, "c", "c")
+        self.reset(top, "a", "rst_a_n")
+        self.reset(top, "b", "rst_b_n")
+        top.analyzeTiming()
+        self.assertTrue(all(not any(r["kind"] == "register" for r in e.getFaninStartpoints())
+                            for e in top.getEndpoints(check="setup")))
+        self.assert_cones(top)
+
+    def test_declared_compact_truth_tables(self):
+        # Constant reset bits enter arithmetic, shifts, indexed reads and
+        # updates. Every output bit must retain only its matching input bit.
+        expressions = ["d + {3{rst}}", "d - {3{rst}}", "d * {2'b0, !rst}",
+                       "d << {rst, rst}", "d >> {rst, rst}",
+                       "d / {2'b0, !rst}", "d % 4'b1000", "({3'b0, d} >> {rst,rst})",
+                       "$signed(d) >>> {rst,rst}", "d[rst +: 3]", "d[$signed(rst) +: 3]", "words[rst]", "adjust(d,rst)"]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                top = self.load(f"""module sample(input c, rst, input [2:0] d, output reg [2:0] q);
+                    wire [2:0] words [0:1];
+                    assign words[0] = d;
+                    assign words[1] = 3'b101;
+                    function automatic [2:0] adjust(input [2:0] x, input flag);
+                      adjust = x;
+                      adjust[flag +: 1] = x[0];
+                    endfunction
+                    wire [2:0] next_data = {expression};
+                    always @(posedge c) q <= next_data;
+                endmodule""")
+                self.primary(top, "c", "c")
+                self.reset(top, term="rst", level=naja.SNLActiveLevel.High)
+                top.analyzeTiming()
+                for endpoint in top.getEndpoints(check="setup"):
+                    rows = endpoint.getFaninStartpoints()
+                    self.assertEqual(1, len(rows))
+                    self.assertTrue(rows[0]["direct"])
+                    self.assertEqual("d", rows[0]["launchPin"].getNetComponent().getName())
+                self.assert_cones(top)
+                self.universe.destroy()
+                self.setUp()
+
+    def test_declared_reset_removal_restores_original_queries(self):
+        top = self.load("""module sample(input a, b, rst_n, d, output reg src, q);
+            wire next_data = rst_n ? src : 1'b0;
+            always @(posedge a) src <= d;
+            always @(posedge b) q <= next_data;
+        endmodule""")
+        self.primary(top, "a", "a")
+        self.primary(top, "b", "b")
+        def identity(occurrence):
+            obj = occurrence.getNetComponent() or occurrence.getInstance()
+            if obj is None:
+                obj = next(n for n in top.getBitNets() if naja.SNLOccurrence(n) == occurrence)
+            return (tuple(occurrence.getPath().getInstanceIDs()), tuple(obj.getNLID().toTuple()))
+        def value(item):
+            if isinstance(item, naja.SNLOccurrence):
+                return identity(item)
+            if isinstance(item, naja.SNLClockDomain):
+                return (item.getNLClock().getName(), tuple(identity(o) for o in item.getSources()))
+            if isinstance(item, dict):
+                return tuple((k, value(v)) for k, v in sorted(item.items()))
+            if isinstance(item, frozenset):
+                return tuple(sorted(value(i) for i in item))
+            if isinstance(item, (tuple, list)):
+                return tuple(value(i) for i in item)
+            return item
+        def snapshot():
+            return [(identity(e), value(e.getLaunchClocks()), value(e.getCaptureClocks()), value(e.getClocks()),
+                     value(e.getFaninStartpoints()), value(e.getFanoutEndpoints())) for e in top.getEndpoints()]
+        top.analyzeTiming()
+        before = snapshot()
+        self.assertEqual({"noClock", "generatedClocks", "clockControls"}, set(top.getTimingDiagnostics()))
+        declaration = self.reset(top)
+        top.analyzeTiming()
+        self.assert_cones(top)
+        declaration.destroy()
+        top.analyzeTiming()
+        self.assertEqual(before, snapshot())
+        self.assert_cones(top)
+
+    def test_declared_reset_clock_overlap_rejected(self):
+        top = self.crossing()
+        with self.assertRaisesRegex(RuntimeError, "clock source"):
+            self.reset(top, term="a")
+        declaration = self.reset(top, term="d")
+        with self.assertRaisesRegex(RuntimeError, "reset source"):
+            self.primary(top, "bad", "d")
+        declaration.destroy()
+        self.analyze()
+        self.assert_cones(top)
 
     def test_reference_structural_queries(self):
         # Export every state bit to keep the example independent of dead-state
@@ -1111,6 +1498,82 @@ class TimingAnalysisTests(unittest.TestCase):
         self.assertEqual("drive", caught.exception.role)
         self.assertIn("(drive)", caught.exception.description)
         self.assertIsInstance(caught.exception.occurrence, naja.SNLOccurrence)
+
+
+    def test_declared_native_sync_roles(self):
+        designs = naja.NLLibrary.create(self.db)
+        primitives = naja.NLLibrary.createPrimitives(self.db)
+        top = naja.SNLDesign.create(designs, "sample")
+        model = naja.SNLDesign.createPrimitive(primitives, "sync_cell")
+        pins = {name: naja.SNLScalarTerm.create(model, direction, name)
+                for name, direction in (
+                    ("c", naja.SNLTerm.Direction.Input),
+                    ("rst", naja.SNLTerm.Direction.Input),
+                    ("d", naja.SNLTerm.Direction.Input),
+                    ("q", naja.SNLTerm.Direction.Output))}
+        model.setSequentialModel(kind="flip_flop", clocked_on="c",
+            states=[dict(name="state", next_state="rst & d")],
+            outputs=[(pins["q"], "state")])
+        for name, role in (("c", naja.SNLTermRole.Clock),
+                           ("d", naja.SNLTermRole.DataInput),
+                           ("q", naja.SNLTermRole.DataOutput),
+                           ("rst", naja.SNLTermRole.SyncReset)):
+            pins[name].setRole(role)
+        naja.SNLDesign.addInputsToClockArcs([pins["rst"], pins["d"]], pins["c"])
+        naja.SNLDesign.addClockToOutputsArcs(pins["c"], [pins["q"]])
+        instance = naja.SNLInstance.create(top, model, "storage")
+        for name, pin in pins.items():
+            terminal = naja.SNLScalarTerm.create(top, pin.getDirection(), name)
+            net = naja.SNLScalarNet.create(top, name)
+            terminal.setNet(net)
+            instance.getInstTerm(pin).setNet(net)
+        self.universe.setTopDesign(top)
+        self.primary(top, "clock", "c")
+        self.reset(top, term="rst", level=naja.SNLActiveLevel.High)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        rows = [row for row in naja.SNLOccurrence(top.getScalarTerm("d")).getFanoutEndpoints()
+                if row["kind"] == "register"]
+        self.assertEqual(1, len(rows))
+        self.assertEqual({domain}, rows[0]["syncResets"])
+        self.assertNotEqual(domain, top.getClockDomains()[0])
+        self.assertNotEqual(domain, object())
+        with self.assertRaises(TypeError):
+            domain < domain
+        self.assert_cones(top)
+        with self.assertRaisesRegex(RuntimeError, "expects an SNLDesign"):
+            naja.NLReset.create(None, "bad", [top.getScalarTerm("rst")],
+                                naja.SNLActiveLevel.High)
+
+    def test_declared_raw_reset_startpoints(self):
+        top = self.load('''module sample(input c, rst_n, d, a, b, output reg q, r);
+            wire floating;
+            always @(posedge c or negedge rst_n)
+                if (!rst_n) q <= 0; else q <= (d & a) | (d & b);
+            always @(posedge c or negedge rst_n)
+                if (!rst_n) r <= 0; else r <= floating;
+        endmodule''')
+        self.primary(top, "clock", "c")
+        self.reset(top)
+        top.analyzeTiming()
+        # Reconvergence and an undriven D pin must not create reset synchronizers.
+        self.assertEqual([], top.getTimingDiagnostics()["resetSynchronizers"])
+        self.assert_cones(top)
+
+    def test_declared_reset_clock_edges(self):
+        top = self.load('''module sample(input c, rst, d, output reg q);
+            wire derived = c & rst;
+            always @(posedge derived) q <= d;
+        endmodule''')
+        self.primary(top, "clock", "c")
+        self.reset(top, term="rst", level=naja.SNLActiveLevel.High)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        # Physical and reset-inactive provenance stop at state boundaries.
+        self.assertEqual([], top.getTimingDiagnostics()["resetSynchronizers"])
+        self.assertEqual(frozenset(), naja.SNLOccurrence(top.getScalarTerm("q")).getResets())
+        self.assertEqual({domain}, domain.getSources()[0].getResets())
+        self.assert_cones(top)
 
 
 if __name__ == "__main__":

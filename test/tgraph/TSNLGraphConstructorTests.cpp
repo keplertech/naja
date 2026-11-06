@@ -37,6 +37,8 @@
 #include "SNLScalarTerm.h"
 #include "SNLSVConstructor.h"
 #include "TClockPropagator.h"
+#include "TConstantPropagator.h"
+#include <sstream>
 #include "TSNLGraphConstructor.h"
 
 using namespace naja::NL;
@@ -373,6 +375,8 @@ TEST_F(TSNLGraphConstructorTests, constantsAndUnconnectedPinsDoNotInventDependen
   auto unused = constructor.getNode(SNLOccurrence(term(instance, "unused")));
   EXPECT_EQ(0u, graph.getNode(unused)->getOutDegree());
   EXPECT_NO_THROW(TClockPropagator::run(graph));
+  auto values = TConstantPropagator::run(constructor, {});
+  EXPECT_EQ(TConstantPropagator::Value::Unknown, values[constructor.getNode(SNLOccurrence(output))]);
 }
 
 TEST_F(TSNLGraphConstructorTests, mixedSequentialOutputsAreReportedOpaque) {
@@ -2338,4 +2342,222 @@ TEST_F(TSNLGraphConstructorTests, modeledSingleDriverInoutKeepsOneNode) {
   EXPECT_EQ(0u, constructor.getConstructionStats().splitPins);
   EXPECT_EQ(1u, constructor.getCoverageCounts().at(TSNLGraphConstructor::CoverageReason::InOut));
   EXPECT_NO_THROW(TClockPropagator::run(constructor.getGraph()));
+}
+
+TEST_F(TSNLGraphConstructorTests, ResetDeclarationAndDataView) {
+  loadSV(R"(
+    module loaded(input c, rst_n, d, output reg q);
+      wire next_data = rst_n ? d : 1'b0;
+      always @(posedge c) q <= next_data;
+    endmodule
+  )");
+  auto* reset = NLReset::create(top_, NLName("domain"), {top_->getScalarTerm(NLName("rst_n"))},
+    NLReset::ActiveLevel::Low);
+  EXPECT_EQ(1, reset->getInactiveValue());
+  EXPECT_EQ(NLReset::Timing::Async, reset->getAssertion());
+  EXPECT_EQ(NLReset::Timing::Sync, reset->getDeassertion());
+  EXPECT_EQ(top_, reset->getDesign());
+  EXPECT_EQ(NLName("domain"), reset->getName());
+  EXPECT_EQ(1u, top_->getResets().size());
+  EXPECT_EQ(1u, reset->getSources().size());
+  EXPECT_EQ("NLReset", std::string(reset->getTypeName()));
+  EXPECT_EQ("domain", reset->getString());
+  EXPECT_EQ("NLReset domain", reset->getDescription());
+  std::ostringstream stream;
+  reset->debugDump(2, true, stream);
+  EXPECT_EQ("  NLReset domain\n", stream.str());
+  auto* foreign = SNLDesign::create(library_, NLName("other"));
+  auto* foreignSource = port(foreign, "reset", SNLTerm::Direction::Input);
+  auto* source = top_->getScalarTerm(NLName("rst_n"));
+  EXPECT_THROW(NLReset::create(nullptr, NLName("bad"), {source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName(), {source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("domain"), {source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {nullptr}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {foreignSource}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source, source}, NLReset::ActiveLevel::Low), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source}, NLReset::ActiveLevel::NA), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source}, NLReset::ActiveLevel::Low,
+    static_cast<NLReset::Timing>(-1)), NLException);
+  EXPECT_THROW(NLReset::create(top_, NLName("bad"), {source}, NLReset::ActiveLevel::Low,
+    NLReset::Timing::Async, static_cast<NLReset::Timing>(-1)), NLException);
+  EXPECT_THROW(NLClock::createPrimary(top_, NLName("clock"), 10, "ns", {source}), NLException);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  ASSERT_EQ(1u, constructor.getResetDomains().size());
+  const auto& domain = constructor.getResetDomains()[0];
+  EXPECT_EQ(reset, domain.declaration);
+  ASSERT_EQ(1u, domain.sources.size());
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {{domain.sources[0], V::One}});
+  EXPECT_EQ(V::One, values[domain.sources[0]]);
+  size_t pruned = 0, transparent = 0;
+  for (const auto& edge: constructor.getGraph().getEdgesStorage()) {
+    pruned += edge.isDataDisabled();
+    transparent += edge.isDataTransparent();
+  }
+  EXPECT_EQ(2u, pruned);
+  EXPECT_EQ(1u, transparent);
+  EXPECT_NO_THROW(TClockPropagator::run(constructor.getGraph()));
+  EXPECT_THROW(TConstantPropagator::run(constructor, {{domain.sources[0], V::One}, {domain.sources[0], V::Zero}}), NLException);
+  reset->destroy();
+  EXPECT_TRUE(top_->getResets().empty());
+}
+
+TEST_F(TSNLGraphConstructorTests, ResetTimingMetadata) {
+  auto* source = port(top_, "reset", SNLTerm::Direction::Input);
+  for (auto assertion : {NLReset::Timing::Async, NLReset::Timing::Sync}) {
+    for (auto deassertion : {NLReset::Timing::Async, NLReset::Timing::Sync}) {
+      auto* reset = NLReset::create(top_, NLName("domain"), {source},
+        NLReset::ActiveLevel::Low, assertion, deassertion);
+      EXPECT_EQ(assertion, reset->getAssertion());
+      EXPECT_EQ(deassertion, reset->getDeassertion());
+      reset->destroy();
+    }
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewPreservesAssignWiresAndUnknownDrivers) {
+  auto* reset = port(top_, "reset", SNLTerm::Direction::Input);
+  auto* other = port(top_, "other", SNLTerm::Direction::Input);
+  auto* output = port(top_, "output", SNLTerm::Direction::Output);
+  auto* assign = SNLInstance::create(top_, NLDB0::getAssign());
+  auto* input = assign->getInstTerm(NLDB0::getAssignInput());
+  auto* result = assign->getInstTerm(NLDB0::getAssignOutput());
+  connect(top_, {reset, other, input});
+  connect(top_, {result, output});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto source = constructor.getNode(SNLOccurrence(reset));
+  auto second = constructor.getNode(SNLOccurrence(other));
+  auto target = constructor.getNode(SNLOccurrence(output));
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {{source, V::One}});
+  EXPECT_EQ(V::Unknown, values[target]);
+  values = TConstantPropagator::run(constructor, {{source, V::One}, {second, V::One}});
+  EXPECT_EQ(V::One, values[target]);
+  auto arc = edge(constructor.getGraph(), constructor.getNode(SNLOccurrence(input)),
+    constructor.getNode(SNLOccurrence(result)));
+  ASSERT_NE(TGraph::kInvalidEdge, arc);
+  EXPECT_FALSE(constructor.getGraph().getEdge(arc)->isDataDisabled());
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewWideUnsignedSelect) {
+  loadSV(R"(
+    module loaded(input [63:0] offset, input [2:0] d, output [1:0] q);
+      assign q = d[offset +: 2];
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  std::vector<TConstantPropagator::Seed> seeds;
+  for (auto* bit : top_->getBusTerm(NLName("offset"))->getBits()) {
+    seeds.push_back({constructor.getNode(SNLOccurrence(bit)), V::Zero});
+  }
+  auto* data = top_->getBusTerm(NLName("d"));
+  seeds.push_back({constructor.getNode(SNLOccurrence(data->getBit(0))), V::One});
+  seeds.push_back({constructor.getNode(SNLOccurrence(data->getBit(1))), V::Zero});
+  auto values = TConstantPropagator::run(constructor, seeds);
+  auto* result = top_->getBusTerm(NLName("q"));
+  EXPECT_EQ(V::One, values[constructor.getNode(SNLOccurrence(result->getBit(0)))]);
+  EXPECT_EQ(V::Zero, values[constructor.getNode(SNLOccurrence(result->getBit(1)))]);
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewDisabledPrimitiveArcIsConservative) {
+  loadSV(R"(
+    module loaded(input a, b, output q);
+      assign q = a & b;
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  size_t disabled = TGraph::kInvalidEdge;
+  for (const auto& arc : graph.getEdgesStorage()) {
+    auto* proxy = static_cast<const TSNLEdgeProxy*>(arc.getProxy());
+    if (proxy->getKind() == TSNLEdgeProxy::Kind::Combinational) {
+      disabled = arc.getIndex();
+      break;
+    }
+  }
+  ASSERT_NE(TGraph::kInvalidEdge, disabled);
+  graph.getEdge(disabled)->setDisabled(true);
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("a")))), V::One},
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("b")))), V::One}});
+  EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("q"))))]);
+  EXPECT_TRUE(graph.getEdge(disabled)->isDisabled());
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewRejectsConflictingNetConstants) {
+  auto* instance = SNLInstance::create(top_, NLDB0::getAssign());
+  auto* input = SNLScalarNet::create(top_);
+  input->setType(SNLNet::Type::Assign1);
+  instance->getInstTerm(NLDB0::getAssignInput())->setNet(input);
+  auto* output = SNLScalarNet::create(top_);
+  output->setType(SNLNet::Type::Assign0);
+  instance->getInstTerm(NLDB0::getAssignOutput())->setNet(output);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_THROW(TConstantPropagator::run(constructor, {}), NLException);
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewDoesNotPropagateThroughStateOrLatchGate) {
+  loadSV(R"(
+    module loaded(input c, g, d, output reg q, r);
+      always @(posedge c) q <= d;
+      always_latch if (g) r <= d;
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("c")))), V::One},
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("g")))), V::One},
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("d")))), V::One}});
+  for (const auto* name : {"q", "r"}) {
+    EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName(name))))]);
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewPrunesUncoveredCellInputs) {
+  auto* primitives = NLLibrary::create(library_->getDB(), NLLibrary::Type::Primitives);
+  auto* model = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("uncovered"));
+  auto* a = port(model, "a", SNLTerm::Direction::Input);
+  auto* q = port(model, "q", SNLTerm::Direction::Output);
+  SNLDesignModeling::addCombinatorialArcs({a}, {q});
+  auto* cell = SNLInstance::create(top_, model);
+  auto* input = port(top_, "input", SNLTerm::Direction::Input);
+  connect(top_, {input, cell->getInstTerm(a)});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {{constructor.getNode(SNLOccurrence(input)), V::One}});
+  auto target = constructor.getNode(SNLOccurrence(cell->getInstTerm(q)));
+  EXPECT_EQ(V::Unknown, values[target]);
+  auto arc = edge(constructor.getGraph(), constructor.getNode(SNLOccurrence(cell->getInstTerm(a))), target);
+  ASSERT_NE(TGraph::kInvalidEdge, arc);
+  EXPECT_TRUE(constructor.getGraph().getEdge(arc)->isDataDisabled());
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewDoesNotFoldWritableMemory) {
+  loadSV(R"(
+    module loaded(input c, d, input [1:0] address, output q);
+      reg memory [0:3];
+      always @(posedge c) memory[address] <= d;
+      assign q = memory[address];
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  std::vector<TConstantPropagator::Seed> seeds;
+  for (auto* bit : top_->getBusTerm(NLName("address"))->getBits()) {
+    seeds.push_back({constructor.getNode(SNLOccurrence(bit)), V::Zero});
+  }
+  auto values = TConstantPropagator::run(constructor, seeds);
+  EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("q"))))]);
 }

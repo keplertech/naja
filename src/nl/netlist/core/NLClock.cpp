@@ -126,6 +126,13 @@ void NLClock::checkSource(const SNLDesign* design, NLObject* source) {
   if (!term) {
     throw NLException("NLClock: " + sourceDescription(source) + " is not a top-level terminal");
   }
+  for (auto* reset : design->getResets()) {
+    for (auto* resetSource : reset->getSources()) {
+      if (resetSource == source) {
+        throw NLException("NLClock: a reset source cannot also be a clock source");
+      }
+    }
+  }
   if (term->getDesign() != design) {
     throw NLException("NLClock: terminal " + sourceDescription(source) + " belongs to another design");
   }

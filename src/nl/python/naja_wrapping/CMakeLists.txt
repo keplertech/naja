@@ -13,7 +13,7 @@ set(SOURCES
   PySNLMemoryInterface.cpp
   PySNLAttribute.cpp
   PySNLParameter.cpp
-  PyNLClock.cpp PyNLClocks.cpp
+  PyNLClock.cpp PyNLClocks.cpp PyNLReset.cpp PyNLResets.cpp
   PySNLDesignObject.cpp
   PySNLNet.cpp PySNLBusNet.cpp PySNLBitNet.cpp PySNLScalarNet.cpp PySNLBusNetBit.cpp
   PySNLNetType.cpp

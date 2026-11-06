@@ -82,6 +82,10 @@ class TEdge {
     /// \return true if this edge was cut by a loop-breaking pass (e.g.
     /// TLoopBreaker) and should be skipped by graph traversals such as
     /// clock domain propagation.
+    bool isDataDisabled() const { return dataDisabled_; }
+    void setDataDisabled(bool value) { dataDisabled_ = value; }
+    bool isDataTransparent() const { return dataTransparent_; }
+    void setDataTransparent(bool value) { dataTransparent_ = value; }
     bool isDisabled() const { return disabled_; }
     void setDisabled(bool disabled) { disabled_ = disabled; }
 
@@ -120,6 +124,8 @@ class TEdge {
     ClockMask controlClocks_;
     Kind kind_ {Kind::Combinational};
     bool disabled_ {false};
+    bool dataDisabled_ {false};
+    bool dataTransparent_ {false};
 };
 
 }  // namespace naja::TG

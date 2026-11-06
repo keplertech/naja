@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set(GRAPH_SOURCES
+  TConstantPropagator.cpp
   TClock.cpp
   TClockPropagator.cpp
   TEdge.cpp
@@ -13,6 +14,7 @@ set(GRAPH_SOURCES
 )
 
 set(GRAPH_HEADERS
+  TConstantPropagator.h
   TClock.h
   TClockPropagator.h
   TCaptureEdge.h

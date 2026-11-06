@@ -91,7 +91,9 @@ void forward(const TGraph& graph, const std::vector<TGraph::NodeId>& order,
   for (auto n : order) {
     for (auto id : graph.getNode(n)->getOutEdges()) {
       const auto& edge = *graph.getEdge(id);
-      if (traversable(graph, edge, waveform)) masks[edge.getTarget()] |= masks[n];
+      if (traversable(graph, edge, waveform) && (waveform || !edge.isDataDisabled())) {
+        masks[edge.getTarget()] |= masks[n];
+      }
     }
   }
 }
@@ -267,7 +269,9 @@ TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
     if (graph.getNode(n)->isFlopDataOutput() || graph.getNode(n)->isLatchDataOutput()) continue;
     for (auto id : graph.getNode(n)->getInEdges()) {
       auto* edge = graph.getEdge(id);
-      if (!traversable(graph, *edge, false)) continue;
+      if (!traversable(graph, *edge, false) || edge->isDataDisabled()) {
+        continue;
+      }
       edge->setToClocks(capture[n]);
       edge->setClockGateControlClocks(control[n]);
       capture[edge->getSource()] |= capture[n];
@@ -275,7 +279,7 @@ TClockPropagator::Result TClockPropagator::run(TGraph& graph) {
     }
   }
   for (const auto& edge : graph.getEdgesStorage()) {
-    if (edge.isAlive() && !edge.isDisabled()) {
+    if (edge.isAlive() && !edge.isDisabled() && !edge.isDataDisabled()) {
       graph.getEdge(edge.getIndex())->setFromClocks(launch[edge.getSource()]);
     }
   }

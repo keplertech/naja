@@ -20,8 +20,10 @@
 #include "PySNLDesign.h"
 #include "PySNLParameter.h"
 #include "PyNLClock.h"
+#include "PyNLReset.h"
 #include "PySNLTimingAnalysis.h"
 #include "PyNLClocks.h"
+#include "PyNLResets.h"
 #include "PySNLNetType.h"
 #include "PySNLBusNet.h"
 #include "PySNLScalarNet.h"
@@ -849,6 +851,7 @@ PyMODINIT_FUNC PyInit_naja(void) {
   PyNLDB_LinkPyType();
   PyNLLibrary_LinkPyType();
   PyNLClock_LinkPyType();
+  PyNLReset_LinkPyType();
   PySNLAttribute_LinkPyType();
   PySNLDesign_LinkPyType();
   PySNLParameter_LinkPyType();
@@ -882,6 +885,7 @@ PyMODINIT_FUNC PyInit_naja(void) {
   PyNLDBs_LinkPyType();
   PyNLLibraries_LinkPyType();
   PyNLClocks_LinkPyType();
+  PyNLResets_LinkPyType();
   PySNLDesigns_LinkPyType();
   PySNLAttributes_LinkPyType();
   PySNLParameters_LinkPyType();
@@ -904,6 +908,7 @@ PyMODINIT_FUNC PyInit_naja(void) {
   PYTYPE_READY(NLID);
   PYTYPE_READY(NLUniverse);
   PYTYPE_READY(NLClock);
+  PYTYPE_READY(NLReset);
   PYTYPE_READY(NLDB);
   PYTYPE_READY(NLLibrary);
   PYTYPE_READY(SNLDesign);
@@ -939,7 +944,9 @@ PyMODINIT_FUNC PyInit_naja(void) {
   PYTYPE_READY(NLLibraries);
   PYTYPE_READY(NLLibrariesIterator);
   PYTYPE_READY(NLClocks);
+  PYTYPE_READY(NLResets);
   PYTYPE_READY(NLClocksIterator);
+  PYTYPE_READY(NLResetsIterator);
   PYTYPE_READY(SNLDesigns);
   PYTYPE_READY(SNLDesignsIterator);
   PYTYPE_READY(SNLParameters);
@@ -999,6 +1006,7 @@ PyMODINIT_FUNC PyInit_naja(void) {
   PyModule_AddType(mod, &PyTypeSNLDesign);
   PyModule_AddType(mod, &PyTypeSNLParameter);
   PyModule_AddType(mod, &PyTypeNLClock);
+  PyModule_AddType(mod, &PyTypeNLReset);
   if (PySNLTimingAnalysis_addTypes(mod) < 0) { Py_DECREF(mod); return nullptr; }
   PyModule_AddType(mod, &PyTypeSNLDesignObject);
   PyModule_AddType(mod, &PyTypeSNLNet);

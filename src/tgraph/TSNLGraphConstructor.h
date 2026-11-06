@@ -22,6 +22,8 @@ template<class Instance, class Terminal> class DNL;
 using DNLFull = DNL<DNLInstanceFull, DNLTerminalFull>;
 }
 
+namespace naja::NL { class NLReset; }
+
 namespace naja::TG {
 
 /// Terminal identity includes the containing hierarchy, even for shared models.
@@ -90,6 +92,11 @@ class TSNLGraphConstructor {
     };
     /// Counts are entry counts, not pin counts; absent reasons have zero entries.
     using CoverageCounts = std::map<CoverageReason, size_t>;
+    struct ResetDomain {
+      const naja::NL::NLReset* declaration;
+      std::vector<TGraph::NodeId> sources;
+    };
+    const std::vector<ResetDomain>& getResetDomains() const { getGraph(); return resets_; }
     TSNLGraphConstructor() = default;
     /// Published atomically with the graph; entries retain netlist occurrences.
     /// Throws before the first successful construct(). An empty report means
@@ -130,6 +137,7 @@ class TSNLGraphConstructor {
     const std::vector<ClockGate>& getClockGates() const;
 
   private:
+    std::vector<ResetDomain> resets_;
     ConstructionStats stats_;
     std::vector<CoverageEntry> coverage_;
     CoverageCounts coverageCounts_;

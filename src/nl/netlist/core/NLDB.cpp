@@ -190,6 +190,17 @@ NajaCollection<NLClock*> NLDB::getClocks() const {
   return getGlobalLibraries().getFlatCollection<NLLibrary*, NLClock*, NLClock*>(libraryClocksFlattener);
 }
 
+NajaCollection<NLReset*> NLDB::getResets() const {
+  //Two flattening levels: every library's designs, then every design's resets.
+  //getGlobalLibraries() is already the flat registry of every library in this
+  //NLDB (root, nested, and primitive), so no library-nesting flatten is needed.
+  auto designResetsFlattener = [](SNLDesign* design) { return design->getResets(); };
+  auto libraryResetsFlattener = [designResetsFlattener](NLLibrary* library) {
+    return library->getSNLDesigns().getFlatCollection<SNLDesign*, NLReset*, NLReset*>(designResetsFlattener);
+  }; // LCOV_EXCL_LINE Compiler-generated exception cleanup during collection construction.
+  return getGlobalLibraries().getFlatCollection<NLLibrary*, NLReset*, NLReset*>(libraryResetsFlattener);
+}
+
 NLID NLDB::getNLID() const {
   return NLID(id_);
 }

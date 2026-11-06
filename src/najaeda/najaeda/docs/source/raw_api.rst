@@ -765,16 +765,20 @@ semantic source of truth.
      - :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`, :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`, :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`, :meth:`createString <najaeda.naja.SNLParameter.createString>` (optional default value), :meth:`hasDefaultValue <najaeda.naja.SNLParameter.hasDefaultValue>`, :meth:`getValue <najaeda.naja.SNLParameter.getValue>`, :meth:`getName <najaeda.naja.SNLParameter.getName>`, :meth:`getDesign <najaeda.naja.SNLParameter.getDesign>`, :meth:`destroy <najaeda.naja.SNLParameter.destroy>`
    * - :class:`najaeda.naja.NLClock`
      - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform (primary only) <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
+   * - ``NLReset``
+     - ``create()``, ``getName()``, ``getDesign()``, ``getSources()``, ``getActiveLevel()``, ``getInactiveValue()``, ``getAssertion()``, ``getDeassertion()``, ``destroy()``
+   * - ``SNLResetDomain``
+     - ``getNLReset()``, ``getSources()``
    * - ``SNLDesign`` timing analysis
-     - ``analyzeTiming()``, ``getClockDomains()``, ``getEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
+     - ``analyzeTiming()``, ``getResets()``, ``getResetDomains()``, ``getClockDomains()``, ``getEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
    * - ``SNLOccurrence`` timing queries
-     - ``getLaunchClocks()``, ``getCaptureClocks()``, ``getClocks()``, ``getFaninStartpoints()``, ``getFanoutEndpoints()``
+     - ``getLaunchClocks()``, ``getCaptureClocks()``, ``getClocks()``, ``getResets()``, ``getFaninStartpoints()``, ``getFanoutEndpoints()``
    * - ``SNLClockDomain``, ``SNLTimingCycleError``
      - Domain: ``getNLClock()``, ``getSources()``; exception: ``occurrence``, ``description``, ``role``
    * - :class:`najaeda.naja.NLUniverse`
      - :meth:`getContentHash <najaeda.naja.NLUniverse.getContentHash>`, :meth:`create <najaeda.naja.NLUniverse.create>`, :meth:`destroy <najaeda.naja.NLUniverse.destroy>`, :meth:`get <najaeda.naja.NLUniverse.get>`, :meth:`getDB <najaeda.naja.NLUniverse.getDB>`, :meth:`getTopDB <najaeda.naja.NLUniverse.getTopDB>`, :meth:`setTopDB <najaeda.naja.NLUniverse.setTopDB>`, :meth:`getTopDesign <najaeda.naja.NLUniverse.getTopDesign>`, :meth:`setTopDesign <najaeda.naja.NLUniverse.setTopDesign>`, :meth:`getUserDBs <najaeda.naja.NLUniverse.getUserDBs>`, :meth:`getSNLDesign <najaeda.naja.NLUniverse.getSNLDesign>`, :meth:`getObject <najaeda.naja.NLUniverse.getObject>`, :meth:`applyDLE <najaeda.naja.NLUniverse.applyDLE>`, :meth:`applyConstantPropagation <najaeda.naja.NLUniverse.applyConstantPropagation>`, :meth:`getMaxFanout <najaeda.naja.NLUniverse.getMaxFanout>`, :meth:`getMaxLogicLevel <najaeda.naja.NLUniverse.getMaxLogicLevel>`
    * - :class:`najaeda.naja.NLDB`
-     - :meth:`getContentHash <najaeda.naja.NLDB.getContentHash>`, :meth:`create <najaeda.naja.NLDB.create>`, :meth:`destroy <najaeda.naja.NLDB.destroy>`, :meth:`getID <najaeda.naja.NLDB.getID>`, :meth:`getNLID <najaeda.naja.NLDB.getNLID>`, :meth:`isTopDB <najaeda.naja.NLDB.isTopDB>`, :meth:`getLibraries <najaeda.naja.NLDB.getLibraries>`, :meth:`getLibrary <najaeda.naja.NLDB.getLibrary>`, :meth:`getGlobalLibraries <najaeda.naja.NLDB.getGlobalLibraries>`, :meth:`getPrimitiveLibraries <najaeda.naja.NLDB.getPrimitiveLibraries>`, :meth:`getTopDesign <najaeda.naja.NLDB.getTopDesign>`, :meth:`loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>`, :meth:`loadVerilog (compatibility alias) <najaeda.naja.NLDB.loadVerilog>`, :meth:`loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>`, :meth:`loadVHDL <najaeda.naja.NLDB.loadVHDL>`, :meth:`loadLibertyPrimitives <najaeda.naja.NLDB.loadLibertyPrimitives>`, :meth:`loadNajaIF <najaeda.naja.NLDB.loadNajaIF>`, :meth:`dumpNajaIF <najaeda.naja.NLDB.dumpNajaIF>`, :meth:`dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>`, :meth:`dumpVerilog (compatibility alias) <najaeda.naja.NLDB.dumpVerilog>`, :meth:`getClocks <najaeda.naja.NLDB.getClocks>`
+     - :meth:`getContentHash <najaeda.naja.NLDB.getContentHash>`, :meth:`create <najaeda.naja.NLDB.create>`, :meth:`destroy <najaeda.naja.NLDB.destroy>`, :meth:`getID <najaeda.naja.NLDB.getID>`, :meth:`getNLID <najaeda.naja.NLDB.getNLID>`, :meth:`isTopDB <najaeda.naja.NLDB.isTopDB>`, :meth:`getLibraries <najaeda.naja.NLDB.getLibraries>`, :meth:`getLibrary <najaeda.naja.NLDB.getLibrary>`, :meth:`getGlobalLibraries <najaeda.naja.NLDB.getGlobalLibraries>`, :meth:`getPrimitiveLibraries <najaeda.naja.NLDB.getPrimitiveLibraries>`, :meth:`getTopDesign <najaeda.naja.NLDB.getTopDesign>`, :meth:`loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>`, :meth:`loadVerilog (compatibility alias) <najaeda.naja.NLDB.loadVerilog>`, :meth:`loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>`, :meth:`loadVHDL <najaeda.naja.NLDB.loadVHDL>`, :meth:`loadLibertyPrimitives <najaeda.naja.NLDB.loadLibertyPrimitives>`, :meth:`loadNajaIF <najaeda.naja.NLDB.loadNajaIF>`, :meth:`dumpNajaIF <najaeda.naja.NLDB.dumpNajaIF>`, :meth:`dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>`, :meth:`dumpVerilog (compatibility alias) <najaeda.naja.NLDB.dumpVerilog>`, :meth:`getClocks <najaeda.naja.NLDB.getClocks>`, :meth:`getResets <najaeda.naja.NLDB.getResets>`
    * - :class:`najaeda.naja.NLLibrary`
      - :meth:`getContentHash <najaeda.naja.NLLibrary.getContentHash>`, :meth:`create <najaeda.naja.NLLibrary.create>`, :meth:`createPrimitives <najaeda.naja.NLLibrary.createPrimitives>`, :meth:`getDB <najaeda.naja.NLLibrary.getDB>`, :meth:`getID <najaeda.naja.NLLibrary.getID>`, :meth:`getNLID <najaeda.naja.NLLibrary.getNLID>`, :meth:`getName <najaeda.naja.NLLibrary.getName>`, :meth:`setName <najaeda.naja.NLLibrary.setName>`, :meth:`isStandard <najaeda.naja.NLLibrary.isStandard>`, :meth:`isPrimitives <najaeda.naja.NLLibrary.isPrimitives>`, :meth:`getSNLDesign <najaeda.naja.NLLibrary.getSNLDesign>`, :meth:`getSNLDesigns <najaeda.naja.NLLibrary.getSNLDesigns>`, :meth:`getLibrary <najaeda.naja.NLLibrary.getLibrary>`, :meth:`getLibraries <najaeda.naja.NLLibrary.getLibraries>`
    * - :class:`najaeda.naja.SNLDesign`
@@ -1483,6 +1487,146 @@ A rejected combinational cycle raises ``SNLTimingCycleError`` (a ``RuntimeError`
 with ``occurrence``, ``description`` and diagnostic ``role`` attributes.
 No loop-breaking policy is applied.
 
+Reset declarations and the two analysis views
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``NLReset`` is owned by its ``SNLDesign``, like ``NLClock``. Declare a reset
+before analysis::
+
+   reset = naja.NLReset.create(top, "domain_a", [top.getScalarTerm("rst_a_n")],
+                              naja.SNLActiveLevel.Low,
+                              assertion="async", deassertion="sync")
+
+``create(design, name, sources, activeLevel, assertion="async",
+deassertion="sync")`` requires a nonempty unique name, a nonempty list of
+unique owning-design bit terminals, and ``Low`` or ``High``. Foreign terminals,
+whole buses, instance terminals and internal nets are rejected. Assertion and
+deassertion each accept ``"async"`` or ``"sync"``; these are checker metadata
+and do not alter propagation. A terminal cannot be both a clock source and a
+reset source; either declaration order rejects that overlap. This avoids
+forcing a clock source constant while retaining its waveform interpretation.
+
+The native C++ API uses ``NLReset::Timing::Async`` and ``NLReset::Timing::Sync``
+for both arguments and for the return values of ``getAssertion()`` and
+``getDeassertion()``. Its defaults are ``Timing::Async`` for assertion and
+``Timing::Sync`` for deassertion. The Python binding validates and converts
+``"async"``/``"sync"`` at the boundary; its accessors continue to return strings.
+
+Accessors are ``getName()``, ``getDesign()``, ``getSources()``,
+``getActiveLevel()``, ``getInactiveValue()`` (1 for active-low, 0 for active-high),
+``getAssertion()`` and ``getDeassertion()``. ``destroy()`` removes the declaration;
+``design.getResets()`` lists declarations in insertion order;
+``db.getResets()`` lists declarations across all libraries of the database. Declarations must
+outlive their analyses and source terminals. Like clocks, they are analysis
+constraints and must be recreated after a snapshot reload. Creating or destroying
+a reset invalidates the Python timing cache and all views from that analysis.
+
+``top.getResetDomains()`` returns ``SNLResetDomain`` objects, ordered by hierarchy
+occurrence and then declaration name, independently of reset declaration order.
+``domain.getNLReset()`` returns the declaration; ``domain.getSources()`` returns
+its source occurrences. Equality and hashing refer to one analysis's domain
+identity, as for ``SNLClockDomain``. A declaration on a shared model creates one
+domain per occurrence. This also works on a blackbox controller's output with
+``blackbox_unknown_modules=True``; hidden inout drive/load roles remain internal.
+
+With at least one reset declared, the **data view** forces declared source bits
+to their inactive values, includes binary net constants, and propagates 0, 1 or
+unknown forward through DB0 combinational truth tables, separately for each output
+bit. Finite tables, generic gates, arithmetic, shifts, table selects and indexed
+vector operations use their truth-table semantics. Propagation stops at storage,
+blackboxes and uncovered functions. A combinational input arc is disabled when
+its source is constant or when the output's restricted function is independent
+of that input. Connectivity and hierarchy ports remain physical wires.
+
+``getLaunchClocks()``, ``getCaptureClocks()``, ``getFaninStartpoints()`` and
+``getFanoutEndpoints()`` use the remaining data arcs. ``direct`` accepts a live
+cell arc whose restricted function is identity or inversion, including a mux
+with an inactive reset select and an AND with reset held at 1. Vector muxes
+retain bit-to-bit mapping in ``registerOutputs``. Canonical synchronous-reset RTL
+may already use a native DB0 synchronous-reset flop, so it can be direct even
+without a declaration; explicit reset muxes require the data-view reduction.
+There is no case-analysis API yet; the constant engine takes explicit seeds
+so another constraint provider can reuse it later. ``getClocks()`` keeps the
+original waveform propagation, independently of data pruning.
+
+The **reset view** propagates each declared domain over all physical
+combinational and connectivity arcs, including both sides of hierarchy ports,
+ignoring inactive-value pruning. It stops at blackboxes and state elements,
+except inferred reset synchronizers. A state output is derived from reset R
+when R reaches its asynchronous reset/set control and all physical data-cone
+startpoints are constants or outputs already inferred as derived from R.
+Inference reaches a fixed point; stage 1 has constant data, and a later stage
+is one plus the maximum predecessor stage for that domain. Ordinary data-driven
+reset signals do not meet this rule. ``SNLOccurrence.getResets()`` returns a
+frozenset of ``SNLResetDomain`` reaching that pin or bit net in this reset view.
+It is independent of the pin's data-view fanin.
+
+With reset declarations, ``getTimingDiagnostics()`` adds two lists:
+
+* ``resetSynchronizers``: dictionaries with ``output`` (state-output occurrence),
+  ``resets`` (reset-domain frozenset) and ``stage`` (1-based chain index).
+* ``resetControls``: dictionaries with ``occurrence`` (combinational cell),
+  ``resets`` and ``nonResetInputs`` (tuple of input-pin occurrences without a
+  reset domain). Literal constant inputs do not count as non-reset controls.
+
+Recovery endpoints are retained even when reset-inactive evaluation makes them
+constant. For example, recovery fanin of ``rst_n & other`` contains ``other``'s
+startpoints, while ``getResets()`` still identifies ``rst_n``'s domain. A declared
+reset source reached through wires/hierarchy with no disabled arc is a fanin
+record of kind ``"reset"``: ``launchPin == startpoint``, empty ``launchClocks``
+and a ``resets`` frozenset. With reset declarations present, register fanin rows
+also carry ``asyncResets`` and ``syncResets`` for the launching state output.
+Register and recovery fanout rows carry those fields for the capturing/owning
+state output(s). ``asyncResets`` unions the domains at asynchronous controls;
+``syncResets`` unions domains reaching disabled arcs in the physical D cone up
+to its startpoints, plus domains at native synchronous-reset/set controls.
+Without declarations, existing record shapes, diagnostic keys and traversal
+behavior are retained.
+
+For a declared synchronous reset, count direct same-domain hops through
+``registerOutputs`` (each starting output below is an occurrence)::
+
+   naja.NLReset.create(top, "reset", [top.getScalarTerm("rst_n")],
+                       naja.SNLActiveLevel.Low)
+   top.analyzeTiming()
+   dst = next(c for c in top.getClockDomains() if c.getNLClock().getName() == "dst")
+
+   def depth(output, visited=frozenset()):
+       if output in visited:
+           return 0
+       return max((1 + depth(q, visited | {output})
+                   for row in output.getFanoutEndpoints()
+                   if row["kind"] == "register" and row["direct"]
+                   and row["captureClocks"] == {dst}
+                   for q in row["registerOutputs"]), default=0)
+
+   # source_q is the launching Q occurrence. This reports 2 or 3 for those chains.
+   stages = depth(source_q)
+
+A checker can flag a reset-domain difference on a register-to-register path
+without walking the reset cones again::
+
+   for endpoint in top.getEndpoints(check="setup"):
+       for launch in endpoint.getFaninStartpoints():
+           if launch["kind"] != "register":
+               continue
+           launch_resets = launch["asyncResets"] | launch["syncResets"]
+           for capture in launch["launchPin"].getFanoutEndpoints():
+               if capture["endpoint"] != endpoint or capture["kind"] != "register":
+                   continue
+               capture_resets = capture["asyncResets"] | capture["syncResets"]
+               if launch_resets and capture_resets and launch_resets != capture_resets:
+                   print("reset-domain difference", launch["launchPin"], endpoint)
+
+This reports structural information for checkers; it does not assign CDC/RDC
+verdicts, reset sequencing guarantees, clock relationships or X-propagation rules.
+
+.. autoclass:: najaeda.naja.NLReset
+   :members:
+
+.. autoclass:: najaeda.naja.SNLResetDomain
+   :members:
+
 .. _structural-timing-cones:
 
 Structural data cones
@@ -1507,8 +1651,9 @@ Mux-specific classification and tests await the separate mux update.
 Every record contains ``direct``, a boolean, and, when ``withCells=True``,
 ``cells``, a frozenset of instance occurrences on any path to that record.
 Buffers and inverters are included; assign glue and hierarchy boundaries are
-excluded. ``direct`` is true only if this union is empty or consists entirely
-of canonical DB0 buffers and inverters. ``withCells=False`` omits ``cells`` and
+excluded. Without declared resets, ``direct`` is true only if this union is empty
+or consists entirely of canonical DB0 buffers and inverters. With declarations,
+it also accepts cells whose live bit function reduces to identity or inversion. ``withCells=False`` omits ``cells`` and
 skips allocating the cell-union DAG; it still computes ``direct``.
 Shared models in different hierarchies have distinct cell occurrences.
 
