@@ -375,6 +375,8 @@ TEST_F(TSNLGraphConstructorTests, constantsAndUnconnectedPinsDoNotInventDependen
   auto unused = constructor.getNode(SNLOccurrence(term(instance, "unused")));
   EXPECT_EQ(0u, graph.getNode(unused)->getOutDegree());
   EXPECT_NO_THROW(TClockPropagator::run(graph));
+  auto values = TConstantPropagator::run(constructor, {});
+  EXPECT_EQ(TConstantPropagator::Value::Unknown, values[constructor.getNode(SNLOccurrence(output))]);
 }
 
 TEST_F(TSNLGraphConstructorTests, mixedSequentialOutputsAreReportedOpaque) {
@@ -2438,4 +2440,124 @@ TEST_F(TSNLGraphConstructorTests, ConstantViewPreservesAssignWiresAndUnknownDriv
     constructor.getNode(SNLOccurrence(result)));
   ASSERT_NE(TGraph::kInvalidEdge, arc);
   EXPECT_FALSE(constructor.getGraph().getEdge(arc)->isDataDisabled());
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewWideUnsignedSelect) {
+  loadSV(R"(
+    module loaded(input [63:0] offset, input [2:0] d, output [1:0] q);
+      assign q = d[offset +: 2];
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  std::vector<TConstantPropagator::Seed> seeds;
+  for (auto* bit : top_->getBusTerm(NLName("offset"))->getBits()) {
+    seeds.push_back({constructor.getNode(SNLOccurrence(bit)), V::Zero});
+  }
+  auto* data = top_->getBusTerm(NLName("d"));
+  seeds.push_back({constructor.getNode(SNLOccurrence(data->getBit(0))), V::One});
+  seeds.push_back({constructor.getNode(SNLOccurrence(data->getBit(1))), V::Zero});
+  auto values = TConstantPropagator::run(constructor, seeds);
+  auto* result = top_->getBusTerm(NLName("q"));
+  EXPECT_EQ(V::One, values[constructor.getNode(SNLOccurrence(result->getBit(0)))]);
+  EXPECT_EQ(V::Zero, values[constructor.getNode(SNLOccurrence(result->getBit(1)))]);
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewDisabledPrimitiveArcIsConservative) {
+  loadSV(R"(
+    module loaded(input a, b, output q);
+      assign q = a & b;
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  auto& graph = constructor.getGraph();
+  size_t disabled = TGraph::kInvalidEdge;
+  for (const auto& arc : graph.getEdgesStorage()) {
+    auto* proxy = static_cast<const TSNLEdgeProxy*>(arc.getProxy());
+    if (proxy->getKind() == TSNLEdgeProxy::Kind::Combinational) {
+      disabled = arc.getIndex();
+      break;
+    }
+  }
+  ASSERT_NE(TGraph::kInvalidEdge, disabled);
+  graph.getEdge(disabled)->setDisabled(true);
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("a")))), V::One},
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("b")))), V::One}});
+  EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("q"))))]);
+  EXPECT_TRUE(graph.getEdge(disabled)->isDisabled());
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewRejectsConflictingNetConstants) {
+  auto* instance = SNLInstance::create(top_, NLDB0::getAssign());
+  auto* input = SNLScalarNet::create(top_);
+  input->setType(SNLNet::Type::Assign1);
+  instance->getInstTerm(NLDB0::getAssignInput())->setNet(input);
+  auto* output = SNLScalarNet::create(top_);
+  output->setType(SNLNet::Type::Assign0);
+  instance->getInstTerm(NLDB0::getAssignOutput())->setNet(output);
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  EXPECT_THROW(TConstantPropagator::run(constructor, {}), NLException);
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewDoesNotPropagateThroughStateOrLatchGate) {
+  loadSV(R"(
+    module loaded(input c, g, d, output reg q, r);
+      always @(posedge c) q <= d;
+      always_latch if (g) r <= d;
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("c")))), V::One},
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("g")))), V::One},
+    {constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("d")))), V::One}});
+  for (const auto* name : {"q", "r"}) {
+    EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName(name))))]);
+  }
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewPrunesUncoveredCellInputs) {
+  auto* primitives = NLLibrary::create(library_->getDB(), NLLibrary::Type::Primitives);
+  auto* model = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("uncovered"));
+  auto* a = port(model, "a", SNLTerm::Direction::Input);
+  auto* q = port(model, "q", SNLTerm::Direction::Output);
+  SNLDesignModeling::addCombinatorialArcs({a}, {q});
+  auto* cell = SNLInstance::create(top_, model);
+  auto* input = port(top_, "input", SNLTerm::Direction::Input);
+  connect(top_, {input, cell->getInstTerm(a)});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  auto values = TConstantPropagator::run(constructor, {{constructor.getNode(SNLOccurrence(input)), V::One}});
+  auto target = constructor.getNode(SNLOccurrence(cell->getInstTerm(q)));
+  EXPECT_EQ(V::Unknown, values[target]);
+  auto arc = edge(constructor.getGraph(), constructor.getNode(SNLOccurrence(cell->getInstTerm(a))), target);
+  ASSERT_NE(TGraph::kInvalidEdge, arc);
+  EXPECT_TRUE(constructor.getGraph().getEdge(arc)->isDataDisabled());
+}
+
+TEST_F(TSNLGraphConstructorTests, ConstantViewDoesNotFoldWritableMemory) {
+  loadSV(R"(
+    module loaded(input c, d, input [1:0] address, output q);
+      reg memory [0:3];
+      always @(posedge c) memory[address] <= d;
+      assign q = memory[address];
+    endmodule
+  )");
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  using V = TConstantPropagator::Value;
+  std::vector<TConstantPropagator::Seed> seeds;
+  for (auto* bit : top_->getBusTerm(NLName("address"))->getBits()) {
+    seeds.push_back({constructor.getNode(SNLOccurrence(bit)), V::Zero});
+  }
+  auto values = TConstantPropagator::run(constructor, seeds);
+  EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("q"))))]);
 }

@@ -350,7 +350,7 @@ PyObject* resetSources(View* self, PyObject*) {
   VIEW_HEAD
   auto* list = PyList_New(0);
   if (!list) {
-    return nullptr;
+    return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
   for (auto id : state->constructor.getResetDomains().at(self->index).sources) {
     if (!append(list, occurrence(self, id))) { Py_DECREF(list); return nullptr; }
@@ -983,7 +983,7 @@ PyObject* resetSynchronizers(View* self) {
   auto& state = **self->state;
   auto* list = PyList_New(0);
   if (!list) {
-    return nullptr;
+    return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
   for (size_t i = 0; i < state.synchronizers.size();) {
     auto entry = state.synchronizers[i];
@@ -1024,7 +1024,7 @@ PyObject* resetControls(View* self) {
   }
   auto* list = PyList_New(0);
   if (!list) {
-    return nullptr;
+    return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
   for (const auto& [cell, control]: controls) {
     if (control.domains.none() || control.other.empty()) {
@@ -1041,7 +1041,7 @@ PyObject* resetControls(View* self) {
     auto* row = PyDict_New();
     if (!row || !put(row, "occurrence", linkedOccurrence(self, cell)) ||
         !put(row, "resets", resets(self, control.domains)) || !put(row, "nonResetInputs", pins)) {
-      Py_XDECREF(row); Py_DECREF(list); return nullptr;
+      Py_XDECREF(row); Py_DECREF(list); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
     if (!append(list, row)) { Py_DECREF(list); return nullptr; }
   }
@@ -1135,18 +1135,18 @@ PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
   temporary.state = &state;
   if (query == 0) return coverage(&temporary, nullptr);
   if (query == 1) return coverageCounts(&temporary, nullptr);
-  if (query == 2) {
+  if (query == 2) { // LCOV_EXCL_START Legacy internal query; getEndpoints uses PySNLDesign_getEndpoints.
     auto* list = PyList_New(0);
     if (!list) return nullptr;
     for (auto id: state->endpoints) {
       if (!append(list, occurrence(&temporary, id))) { Py_DECREF(list); return nullptr; }
     }
     return list;
-  }
+  } // LCOV_EXCL_STOP
   if (query == 5) {
     auto* list = PyList_New(0);
     if (!list) {
-      return nullptr;
+      return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
     for (size_t id = 0; id < state->constructor.getResetDomains().size(); ++id) {
       if (!append(list, view(resetType, state, id))) { Py_DECREF(list); return nullptr; }
@@ -1171,7 +1171,7 @@ PyObject* PySNLDesign_getTimingData(PyObject* object, int query) {
   if (!state->constructor.getResetDomains().empty() &&
       (!put(dict, "resetSynchronizers", resetSynchronizers(&temporary)) ||
        !put(dict, "resetControls", resetControls(&temporary)))) {
-    Py_DECREF(dict); return nullptr;
+    Py_DECREF(dict); return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
   return dict;
   NLCATCH
@@ -1397,7 +1397,7 @@ int PySNLTimingAnalysis_addTypes(PyObject* module) {
   resetType.tp_hash = reinterpret_cast<hashfunc>(clockHash);
   resetType.tp_richcompare = reinterpret_cast<richcmpfunc>(clockCompare);
   if (ready(resetType, "naja.SNLResetDomain", resetMethods) < 0 || PyModule_AddType(module, &resetType) < 0) {
-    return -1;
+    return -1; // LCOV_EXCL_LINE CPython allocation failure.
   }
   clockType.tp_hash = reinterpret_cast<hashfunc>(clockHash);
   clockType.tp_richcompare = reinterpret_cast<richcmpfunc>(clockCompare);

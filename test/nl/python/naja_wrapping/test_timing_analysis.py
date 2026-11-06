@@ -1500,5 +1500,81 @@ class TimingAnalysisTests(unittest.TestCase):
         self.assertIsInstance(caught.exception.occurrence, naja.SNLOccurrence)
 
 
+    def test_declared_native_sync_roles(self):
+        designs = naja.NLLibrary.create(self.db)
+        primitives = naja.NLLibrary.createPrimitives(self.db)
+        top = naja.SNLDesign.create(designs, "sample")
+        model = naja.SNLDesign.createPrimitive(primitives, "sync_cell")
+        pins = {name: naja.SNLScalarTerm.create(model, direction, name)
+                for name, direction in (
+                    ("c", naja.SNLTerm.Direction.Input),
+                    ("rst", naja.SNLTerm.Direction.Input),
+                    ("d", naja.SNLTerm.Direction.Input),
+                    ("q", naja.SNLTerm.Direction.Output))}
+        model.setSequentialModel(kind="flip_flop", clocked_on="c",
+            states=[dict(name="state", next_state="rst & d")],
+            outputs=[(pins["q"], "state")])
+        for name, role in (("c", naja.SNLTermRole.Clock),
+                           ("d", naja.SNLTermRole.DataInput),
+                           ("q", naja.SNLTermRole.DataOutput),
+                           ("rst", naja.SNLTermRole.SyncReset)):
+            pins[name].setRole(role)
+        naja.SNLDesign.addInputsToClockArcs([pins["rst"], pins["d"]], pins["c"])
+        naja.SNLDesign.addClockToOutputsArcs(pins["c"], [pins["q"]])
+        instance = naja.SNLInstance.create(top, model, "storage")
+        for name, pin in pins.items():
+            terminal = naja.SNLScalarTerm.create(top, pin.getDirection(), name)
+            net = naja.SNLScalarNet.create(top, name)
+            terminal.setNet(net)
+            instance.getInstTerm(pin).setNet(net)
+        self.universe.setTopDesign(top)
+        self.primary(top, "clock", "c")
+        self.reset(top, term="rst", level=naja.SNLActiveLevel.High)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        rows = [row for row in naja.SNLOccurrence(top.getScalarTerm("d")).getFanoutEndpoints()
+                if row["kind"] == "register"]
+        self.assertEqual(1, len(rows))
+        self.assertEqual({domain}, rows[0]["syncResets"])
+        self.assertNotEqual(domain, top.getClockDomains()[0])
+        self.assertNotEqual(domain, object())
+        with self.assertRaises(TypeError):
+            domain < domain
+        self.assert_cones(top)
+        with self.assertRaisesRegex(RuntimeError, "expects an SNLDesign"):
+            naja.NLReset.create(None, "bad", [top.getScalarTerm("rst")],
+                                naja.SNLActiveLevel.High)
+
+    def test_declared_raw_reset_startpoints(self):
+        top = self.load('''module sample(input c, rst_n, d, a, b, output reg q, r);
+            wire floating;
+            always @(posedge c or negedge rst_n)
+                if (!rst_n) q <= 0; else q <= (d & a) | (d & b);
+            always @(posedge c or negedge rst_n)
+                if (!rst_n) r <= 0; else r <= floating;
+        endmodule''')
+        self.primary(top, "clock", "c")
+        self.reset(top)
+        top.analyzeTiming()
+        # Reconvergence and an undriven D pin must not create reset synchronizers.
+        self.assertEqual([], top.getTimingDiagnostics()["resetSynchronizers"])
+        self.assert_cones(top)
+
+    def test_declared_reset_clock_edges(self):
+        top = self.load('''module sample(input c, rst, d, output reg q);
+            wire derived = c & rst;
+            always @(posedge derived) q <= d;
+        endmodule''')
+        self.primary(top, "clock", "c")
+        self.reset(top, term="rst", level=naja.SNLActiveLevel.High)
+        top.analyzeTiming()
+        domain = top.getResetDomains()[0]
+        # Physical and reset-inactive provenance stop at state boundaries.
+        self.assertEqual([], top.getTimingDiagnostics()["resetSynchronizers"])
+        self.assertEqual(frozenset(), naja.SNLOccurrence(top.getScalarTerm("q")).getResets())
+        self.assertEqual({domain}, domain.getSources()[0].getResets())
+        self.assert_cones(top)
+
+
 if __name__ == "__main__":
     unittest.main()

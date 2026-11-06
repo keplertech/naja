@@ -133,7 +133,7 @@ static PyObject* PyNLReset_getSources(PyNLReset* self) {
   METHOD_HEAD("NLReset.getSources()")
   PyObject* list = PyList_New(0);
   if (!list) {
-    return nullptr;
+    return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
   }
   for (NLObject* source : selfObject->getSources()) {
     PyObject* linked = linkSource(source);
@@ -146,8 +146,8 @@ static PyObject* PyNLReset_getSources(PyNLReset* self) {
     const int status = PyList_Append(list, linked);
     Py_DECREF(linked);
     if (status < 0) {
-      Py_DECREF(list);
-      return nullptr;
+      Py_DECREF(list); // LCOV_EXCL_LINE CPython allocation failure.
+      return nullptr; // LCOV_EXCL_LINE CPython allocation failure.
     }
   }
   return list;

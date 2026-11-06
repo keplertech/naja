@@ -234,7 +234,7 @@ Evaluation evaluateGeneric(const SNLTruthTable& table, const std::vector<Value>&
     result = f.mux(sign, result, f.add(zero, result, true));
     output = f.mux(f.equal(b, 0), result.at(table.getDivModOutputBit()), unknown());
   } else {
-    throw NLException("Unsupported generic truth table in timing constant propagation");
+    throw NLException("Unsupported generic truth table in timing constant propagation"); // LCOV_EXCL_LINE All supported GenericType values are handled above.
   }
   Evaluation result{output < 2 ? (output ? Value::One : Value::Zero) : Value::Unknown,
                     std::vector<bool>(inputs.size(), false), false};
@@ -381,7 +381,7 @@ std::vector<Value> TConstantPropagator::run(TSNLGraphConstructor& constructor, c
     const auto* proxy = static_cast<const TSNLNodeProxy*>(graph.getNode(id)->getProxy());
     auto* pin = proxy->getOccurrence().getInstTerm();
     if (!pin) {
-      return;
+      return; // LCOV_EXCL_LINE Builder emits combinational drivers/arcs only on instance pins.
     }
     auto* model = pin->getInstance()->getModel();
     const bool db0 = NLDB0::isDB0Primitive(model);
