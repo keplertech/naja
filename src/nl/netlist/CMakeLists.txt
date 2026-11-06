@@ -105,6 +105,7 @@ set(HEADERS
   pnl/PNLSite.h
   pnl/PNLTechnology.h
   decorators/SNLDesignModeling.h
+  decorators/SNLTruthTable.h
   decorators/NLBitVecDynamic.h
   decorators/NLBitDependencies.h
 )
