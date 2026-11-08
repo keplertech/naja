@@ -23,7 +23,7 @@ Design files used by the tutorials are in [`benchmarks/`](benchmarks/):
 ## Running Locally
 
 ```bash
-pip install najaeda==0.7.25 jupyter nbmake nbstripout
+pip install najaeda==0.7.35 jupyter nbmake nbstripout
 # one-time git hook to keep notebooks clean
 nbstripout --install
 # run all tutorials as a test suite
