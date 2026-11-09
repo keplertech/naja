@@ -95,6 +95,11 @@ struct Pattern {
 
 std::vector<Pattern> patterns(SNLDesign* design) {
   std::vector<Pattern> result;
+  const auto* scalarLatch = NLDB0::getDLatch();
+  bool hasLatch = false;
+  for (auto* instance : design->getInstances())
+    if (instance->getModel() == scalarLatch) { hasLatch = true; break; }
+  if (!hasLatch) return result;
   for (auto* gate : design->getInstances()) {
     auto* model = gate->getModel();
     if (!NLDB0::isGate(model) || NLDB0::GateType(NLDB0::getGateName(model)) != NLDB0::GateType::And ||
@@ -233,6 +238,7 @@ class Inference {
     std::unordered_map<SNLDesign*, std::vector<size_t>> uses;
     std::unordered_set<SNLInstance*> seenInstances;
     std::unordered_set<SNLDesign*> incomplete;
+    bool hasCandidates {false};
     Points clocks, declared;
     std::deque<Point> pending;
 
@@ -241,16 +247,23 @@ class Inference {
         pending.push_back({occurrence, net});
     }
 
+    // Discover candidates once per model before expanding shared occurrences.
+    // Most elaborated designs contain no clock-gating pattern at all.
+    void discover(SNLDesign* model) {
+      if (!model || model->isPrimitive() || model->isBlackBox() || candidates.contains(model)) return;
+      auto found = patterns(model);
+      hasCandidates |= !found.empty();
+      candidates.emplace(model, std::move(found));
+      models.push_back(model);
+      for (auto* child : model->getInstances()) discover(child->getModel());
+    }
+
     void collect(SNLDesign* model, size_t parent, SNLInstance* instance,
         std::unordered_set<SNLDesign*>& active) {
       if (!model || model->isPrimitive() || model->isBlackBox() || !active.insert(model).second) return;
       const auto id = occurrences.size();
       occurrences.push_back({model, parent, instance, {}});
       if (parent != NoParent) occurrences[parent].children.emplace(instance, id);
-      if (!candidates.contains(model)) {
-        candidates.emplace(model, patterns(model));
-        models.push_back(model);
-      }
       uses[model].push_back(id);
       for (auto* child : model->getInstances()) {
         seenInstances.insert(child);
@@ -446,6 +459,8 @@ SNLInstance* replace(SNLInstance* previous, Net clk, Net en, Net test, Net outpu
 
 size_t SNLClockGating::infer(const std::vector<SNLDesign*>& roots, const Hooks& hooks) {
   Inference inference;
+  for (auto* root : roots) inference.discover(root);
+  if (!inference.hasCandidates) return 0;
   std::unordered_set<SNLDesign*> active;
   for (auto* root : roots) inference.collect(root, NoParent, nullptr, active);
   // A shared owner referenced outside the analyzed hierarchy is ambiguous too.

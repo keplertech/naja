@@ -230,6 +230,51 @@ TEST_F(SNLClockGatingTest, cascadedGatesAreRecognizedTogether) {
   EXPECT_EQ(0u, SNLClockGating::infer(top));
 }
 
+TEST_F(SNLClockGatingTest, sharedHierarchyWithoutCandidatesIsUnchanged) {
+  auto* child = SNLDesign::create(library);
+  auto* input = port(child, "input", SNLTerm::Direction::Input);
+  auto* output = port(child, "output", SNLTerm::Direction::Output);
+  gate(child, NLDB0::GateType::Not, input->getNet(), nullptr, output->getNet());
+  // A compact model DAG represents over a million leaf occurrences. With no
+  // latch/AND candidate, inference must not need that expanded clock network.
+  for (size_t level = 0; level < 20; ++level) {
+    auto* parent = level == 19 ? top : SNLDesign::create(library);
+    auto* parentInput = port(parent, "input", SNLTerm::Direction::Input);
+    auto* parentOutput = port(parent, "output", SNLTerm::Direction::Output);
+    auto* middle = net(parent, "middle");
+    auto* first = SNLInstance::create(parent, child);
+    auto* second = SNLInstance::create(parent, child);
+    first->setTermNet(input, parentInput->getNet());
+    first->setTermNet(output, middle);
+    second->setTermNet(input, middle);
+    second->setTermNet(output, parentOutput->getNet());
+    child = parent;
+    input = parentInput;
+    output = parentOutput;
+  }
+  NLClock::createPrimary(top, NLName("source"), 10, "ns", {input});
+  SNLClockGating::Hooks hooks;
+  const auto unexpected = [](SNLInstance*) { ADD_FAILURE() << "Unexpected replacement"; };
+  hooks.beforeReplace = unexpected;
+  hooks.afterReplace = unexpected;
+  hooks.beforeRemove = unexpected;
+  EXPECT_EQ(0u, SNLClockGating::infer(top, hooks));
+  EXPECT_EQ(2u, top->getInstances().size());
+  EXPECT_EQ(3u, top->getBitNets().size());
+  EXPECT_EQ(1u, top->getClocks().size());
+}
+
+TEST_F(SNLClockGatingTest, candidateInLaterRootIsStillRecognized) {
+  auto* firstRoot = SNLDesign::create(library);
+  auto* model = wrapper();
+  auto* clock = port(top, "clock", SNLTerm::Direction::Input)->getNet();
+  auto* output = net(top, "gated");
+  instantiate(model, "clock_use", clock, output);
+  sink(output);
+  EXPECT_EQ(1u, SNLClockGating::infer(std::vector<SNLDesign*>{firstRoot, top}));
+  EXPECT_TRUE(NLDB0::isClockGate(top->getInstance(NLName("clock_use"))->getModel()));
+}
+
 TEST_F(SNLClockGatingTest, sharedOwnerWithClockAndDataContextsRemainsStructural) {
   auto* model = wrapper();
   auto* root = top;
