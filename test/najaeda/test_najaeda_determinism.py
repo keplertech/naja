@@ -773,6 +773,33 @@ module top(input logic [10:0] a, output wire [10:0] y);
 endmodule
 """)
 
+    def test_scheduled_overwrites(self):
+        self.check_determinism("sv", """
+module top(input clk,en,s,t, input [3:0] a,b, output reg [3:0] q,p,held);
+  always @(posedge clk) begin
+    if(s)q<=a;
+    if(t)q<=a;
+    q<=b;
+    p<=q;
+  end
+  always @(posedge clk) if(en)held<=b;
+endmodule
+""")
+        self.check_determinism("vhd", """
+entity top is port(clk,en,s,t : in bit; a,b : in bit_vector(3 downto 0);
+                   q,p,held : out bit_vector(3 downto 0)); end;
+architecture rtl of top is begin
+  process(clk) begin if rising_edge(clk) then
+    if s='1' then q<=a; end if;
+    if t='1' then q<=a; end if;
+    q<=b; p<=q;
+  end if; end process;
+  process(clk) begin if rising_edge(clk) then
+    if en='1' then held<=b; end if;
+  end if; end process;
+end;
+""")
+
     def test_vhdl_repeated_mux_selections(self):
         self.check_determinism("vhd", """
 entity leaf is port(a,b : in bit_vector(2 downto 0); s,t,u : in bit;

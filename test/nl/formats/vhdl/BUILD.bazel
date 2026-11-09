@@ -14,6 +14,8 @@ cc_test(
     srcs = ["VHDLConstructorTest.cpp", "VHDLTestUtils.h"],
     data = glob(["*.vhd", "*.sv"]),
     defines = [
+        'SNL_SCHEDULED_OVERWRITE_SV=\\"test/nl/formats/vhdl/scheduled_overwrite.sv\\"',
+        'SNL_SCHEDULED_OVERWRITE_VHDL=\\"test/nl/formats/vhdl/scheduled_overwrite.vhd\\"',
         'SNL_VHDL_EQUIVALENT_ARITHMETIC_SV=\\"test/nl/formats/vhdl/arithmetic_equivalent.sv\\"',
         'SNL_VHDL_INDEXED_TABLES=\\"test/nl/formats/vhdl/indexed_tables.vhd\\"',
         'SNL_VHDL_ASYNCHRONOUS_RESET=\\"test/nl/formats/vhdl/asynchronous_reset.vhd\\"',

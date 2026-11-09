@@ -3,6 +3,8 @@
 
 add_executable(snlVHDLConstructorTests VHDLConstructorTest.cpp)
 target_compile_definitions(snlVHDLConstructorTests PRIVATE
+  SNL_SCHEDULED_OVERWRITE_SV="${CMAKE_CURRENT_SOURCE_DIR}/scheduled_overwrite.sv"
+  SNL_SCHEDULED_OVERWRITE_VHDL="${CMAKE_CURRENT_SOURCE_DIR}/scheduled_overwrite.vhd"
   SNL_VHDL_EQUIVALENT_ARITHMETIC_SV="${CMAKE_CURRENT_SOURCE_DIR}/arithmetic_equivalent.sv"
   SNL_VHDL_INDEXED_TABLES="${CMAKE_CURRENT_SOURCE_DIR}/indexed_tables.vhd"
   SNL_VHDL_ASYNCHRONOUS_RESET="${CMAKE_CURRENT_SOURCE_DIR}/asynchronous_reset.vhd"
@@ -96,4 +98,12 @@ if(VHDL_NVC_EXECUTABLE AND Python3_Interpreter_FOUND)
     VHDLHierarchyReference VHDLEnableReference VHDLResetReference
     VHDLResetEnableReference
     PROPERTIES TIMEOUT 180)
+endif()
+
+if(Python3_Interpreter_FOUND AND VHDL_NVC_EXECUTABLE AND VHDL_IVERILOG_EXECUTABLE AND VHDL_VVP_EXECUTABLE)
+  add_test(NAME HDLScheduledOverwriteNative
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/compare_scheduled_overwrite.py"
+      --adapter $<TARGET_FILE:snlVHDLConstructorTests>
+      --nvc "${VHDL_NVC_EXECUTABLE}" --iverilog "${VHDL_IVERILOG_EXECUTABLE}" --vvp "${VHDL_VVP_EXECUTABLE}")
+  set_tests_properties(HDLScheduledOverwriteNative PROPERTIES TIMEOUT 180)
 endif()
