@@ -5139,7 +5139,8 @@ class RTLConstructor {
     }
   }
 
-  void merge(State& state, const State& yes, const State& no, SNLBitNet* condition) {
+  void merge(State& state, const State& yes, const State& no, SNLBitNet* condition,
+      const std::set<std::string>& overwritten = {}) {
     for (auto& [name, write] : state.memoryWrites) {
       const auto& a = yes.memoryWrites.at(name);
       const auto& b = no.memoryWrites.at(name);
@@ -5161,7 +5162,10 @@ class RTLConstructor {
       }
     }
     for (auto& [name, bits] : state.scheduled) {
-      bits = mux(condition, yes.scheduled.at(name), no.scheduled.at(name));
+      // Signal reads use the current value, never the pending scheduled value.
+      // Keep definite-write tracking even when a later whole write kills this merge.
+      if (!overwritten.contains(name))
+        bits = mux(condition, yes.scheduled.at(name), no.scheduled.at(name));
       for (size_t i = 0; i < bits.size(); ++i) {
         state.written.at(name)[i] = yes.written.at(name)[i] || no.written.at(name)[i];
       }
@@ -5301,8 +5305,45 @@ class RTLConstructor {
     ~IntegerFacts() { owner.integers_ = std::move(saved); }
   };
 
-  void statements(const std::vector<Statement>& statements, State& state) {
+  // Keep the first construction-time dead-value proof local to simple signal
+  // writes and ifs. Variables, calls, loops, selections and memory use the old path.
+  bool simpleScheduledStatements(const std::vector<Statement>& statements) const {
     for (const auto& statement : statements) {
+      if (statement.kind == Statement::Kind::Null) continue;
+      if (statement.kind == Statement::Kind::If) {
+        if (!simpleScheduledStatements(statement.statements) ||
+            !simpleScheduledStatements(statement.alternative)) return false;
+      } else if (statement.kind == Statement::Kind::Assignment) {
+        const auto& a = statement.assignment;
+        const auto found = objects_.find(key(a.target));
+        if (a.kind != vhdl::AssignmentKind::Signal || !a.indices.empty() || a.selector ||
+            !a.alternatives.empty() || found == objects_.end() || found->second.variable ||
+            memories_.contains(key(a.target))) return false;
+      } else return false;
+    }
+    return true;
+  }
+
+  void statements(const std::vector<Statement>& statements, State& state,
+      const std::set<std::string>& overwritten = {}) {
+    std::map<std::string, size_t> lastWrites;
+    auto discarded = overwritten;
+    if (simpleScheduledStatements(statements)) {
+      for (size_t i = 0; i < statements.size(); ++i) {
+        if (statements[i].kind == Statement::Kind::Assignment)
+          lastWrites[key(statements[i].assignment.target)] = i;
+      }
+      for (const auto& [name, index] : lastWrites) discarded.insert(name);
+    }
+    size_t index = 0;
+    for (const auto& statement : statements) {
+      if (statement.kind == Statement::Kind::Assignment) {
+        const auto name = key(statement.assignment.target);
+        if (const auto found = lastWrites.find(name);
+            found != lastWrites.end() && found->second == index && !overwritten.contains(name))
+          discarded.erase(name);
+      }
+      ++index;
       DiagnosticScope location(statement.span);
       IntegerFacts integerFacts(*this, state);
       if (++steps_ > 100000) fail("static process elaboration limit exceeded");
@@ -5313,14 +5354,14 @@ class RTLConstructor {
       else if (statement.kind == Statement::Kind::If) {
         const auto condition = conditionValue(expression(*statement.condition, state));
         if (auto selected = knownCondition(condition.bits.front(), state)) {
-          this->statements(*selected ? statement.statements : statement.alternative, state);
+          this->statements(*selected ? statement.statements : statement.alternative, state, discarded);
           continue;
         }
         auto yes = state, no = state;
         assume(yes, condition.bits.front(), true); assume(no, condition.bits.front(), false);
-        this->statements(statement.statements, yes);
-        this->statements(statement.alternative, no);
-        merge(state, yes, no, condition.bits.front());
+        this->statements(statement.statements, yes, discarded);
+        this->statements(statement.alternative, no, discarded);
+        merge(state, yes, no, condition.bits.front(), discarded);
       } else if (statement.kind == Statement::Kind::For) {
         const auto bounds = range(statement.range);
         const auto name = key(statement.iterator);

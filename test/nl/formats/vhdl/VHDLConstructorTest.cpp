@@ -7934,3 +7934,49 @@ TEST_F(VHDLConstructorTest, InitializerCaseRejectsRuntimeSelectors) {
   }
   EXPECT_TRUE(library_->getSNLDesigns().empty());
 }
+
+TEST_F(VHDLConstructorTest, ScheduledOverwritePreservesStorageAndOrigins) {
+  for (const bool sv : {false, true}) {
+    SCOPED_TRACE(sv ? "SystemVerilog" : "VHDL");
+    auto* library = NLLibrary::create(library_->getDB(), NLName(sv ? "sv" : "vhdl"));
+    SNLDesign* design = nullptr;
+    if (sv) {
+      SNLSVConstructor(library).construct(std::filesystem::path(SNL_SCHEDULED_OVERWRITE_SV));
+      design = library->getSNLDesign(NLName("scheduled_overwrite"));
+    } else {
+      design = VHDLConstructor(library).constructFile(std::filesystem::path(SNL_SCHEDULED_OVERWRITE_VHDL));
+    }
+    ASSERT_NE(design, nullptr);
+    size_t flops = 0, enabled = 0, muxes = 0;
+    for (auto* instance : design->getInstances()) {
+      auto* model = instance->getModel();
+      if (NLDB0::isMux2(model)) ++muxes;
+      if (NLDB0::isDFF(model)) ++flops;
+      if (NLDB0::isDFFE(model)) ++enabled;
+      if (NLDB0::isDFF(model) || NLDB0::isDFFE(model)) {
+        ASSERT_NE(instance->getRTLInfos(), nullptr);
+        EXPECT_TRUE(instance->getRTLInfos()->hasSourceLoc() ||
+          !instance->getRTLInfos()->getSourceOrigins().empty());
+      }
+    }
+    // Preserve the existing per-frontend enable representation.
+    EXPECT_EQ(muxes, sv ? 0u : 1u);
+    EXPECT_EQ(flops, sv ? 2u : 3u);
+    EXPECT_EQ(enabled, sv ? 1u : 0u);
+    for (const auto* name : {"a", "b", "q", "p"}) {
+      auto* net = design->getBusNet(NLName(name));
+      ASSERT_NE(net, nullptr);
+      ASSERT_NE(net->getRTLInfos(), nullptr);
+      EXPECT_TRUE(net->getRTLInfos()->hasSourceLoc() ||
+          !net->getRTLInfos()->getSourceOrigins().empty());
+    }
+    if (const auto* directory = std::getenv("SCHEDULED_OVERWRITE_DUMP")) {
+      auto path = std::filesystem::path(directory) / (sv ? "sv" : "vhdl");
+      std::filesystem::create_directories(path);
+      SNLVRLDumper dumper;
+      dumper.setSingleFile(true);
+      dumper.setTopFileName("scheduled_overwrite.v");
+      dumper.dumpDesign(design, path);
+    }
+  }
+}

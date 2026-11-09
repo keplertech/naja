@@ -31330,6 +31330,46 @@ endmodule
       return invertedConditionNet;
     }
 
+    // A deliberately small eligibility proof: no immediate updates, calls,
+    // partial targets, loops or control transfers. Scheduled writes cannot be
+    // observed by subsequent expressions in this list.
+    bool isSimpleScheduledStatement(const Statement& stmt) const {
+      const auto* current = unwrapStatement(stmt);
+      if (!current || current->kind == slang::ast::StatementKind::Empty) return true;
+      if (current->kind == slang::ast::StatementKind::List) {
+        for (const auto* item : current->as<slang::ast::StatementList>().list) {
+          if (item && !isSimpleScheduledStatement(*item)) return false;
+        }
+        return true;
+      }
+      const auto pure = [](const Expression& expr) {
+        bool result = true;
+        auto visitor = slang::ast::makeVisitor(
+          [&](auto&, const slang::ast::CallExpression&) { result = false; },
+          [&](auto&, const slang::ast::AssignmentExpression&) { result = false; },
+          [&](auto& visitor, const slang::ast::UnaryExpression& unary) {
+            using Op = slang::ast::UnaryOperator;
+            if (unary.op == Op::Preincrement || unary.op == Op::Postincrement ||
+                unary.op == Op::Predecrement || unary.op == Op::Postdecrement) result = false;
+            else visitor.visitDefault(unary);
+          });
+        expr.visit(visitor);
+        return result;
+      };
+      if (current->kind == slang::ast::StatementKind::Conditional) {
+        const auto& conditional = current->as<slang::ast::ConditionalStatement>();
+        if (conditional.conditions.size() != 1 || conditional.conditions[0].pattern ||
+            !pure(*conditional.conditions[0].expr)) return false;
+        return isSimpleScheduledStatement(conditional.ifTrue) &&
+          (!conditional.ifFalse || isSimpleScheduledStatement(*conditional.ifFalse));
+      }
+      const Expression* lhs = nullptr;
+      AssignAction action;
+      return extractAssignment(*current, lhs, action) && isIntegralNamedLHS(lhs) &&
+        action.scheduling == ProceduralAssignmentScheduling::NonBlocking &&
+        !assignmentActionRequiresCurrentBits(action) && action.rhs && pure(*action.rhs);
+    }
+
     bool applyGuardedDirectSequentialAssignment(
       SNLDesign* design,
       const GuardedDirectSequentialAssignment& assignment,
@@ -31341,7 +31381,8 @@ endmodule
       std::vector<SNLBitNet*>& dataBits,
       const std::optional<slang::SourceRange>& blockSourceRange,
       GuardedSequentialConditionNetCache& conditionNetCache,
-      std::string& failureReason) {
+      std::string& failureReason,
+      bool discardScheduledValue = false) {
       if (!assignment.lhs || !sameLhs(assignment.lhs, &lhsExpr)) {
         return true; // LCOV_EXCL_LINE
       }
@@ -31417,6 +31458,9 @@ endmodule
       if (assignedBits == priorBits) {
         return true;
       }
+
+      // Preserve RHS/guard validation, but do not allocate a dead selection.
+      if (discardScheduledValue) return true;
 
       std::vector<SNLBitNet*> mergedBits;
       if (!createMux2Instance(
@@ -31881,6 +31925,21 @@ endmodule
         return DirectSequentialConditionalLowering::NotApplicable;
       }
 
+      // Plan only dead scheduled results, before emitting any hardware. The
+      // existing collectors and lowering still validate every action and guard.
+      std::vector<bool> discardedUpdates(updateAssignments.assignments.size(), false);
+      std::unordered_set<const slang::ast::ValueSymbol*> discardedResets;
+      if (isSimpleScheduledStatement(*current)) {
+        for (const auto& [symbol, indices] : updateAssignments.bySymbol) {
+          bool overwritten = false;
+          for (auto it = indices.rbegin(); it != indices.rend(); ++it) {
+            discardedUpdates[*it] = overwritten;
+            if (updateAssignments.assignments[*it].guards.empty()) overwritten = true;
+          }
+          if (overwritten) discardedResets.insert(symbol);
+        }
+      }
+
       std::unordered_set<const slang::ast::ValueSymbol*> loweredSymbols;
       GuardedSequentialConditionNetCache conditionNetCache;
       size_t resetAssignmentIndex = 0;
@@ -31969,7 +32028,7 @@ endmodule
               dataBits,
               blockSourceRange,
               conditionNetCache,
-              failureReason)) {
+              failureReason, discardedResets.contains(symbol))) {
           return DirectSequentialConditionalLowering::Failed;
         }
         for (const auto assignmentIndex : updateIt->second) {
@@ -31987,7 +32046,7 @@ endmodule
                 dataBits,
                 blockSourceRange,
                 conditionNetCache,
-                failureReason)) {
+                failureReason, discardedUpdates[assignmentIndex])) {
             return DirectSequentialConditionalLowering::Failed;
           }
         }
@@ -32060,7 +32119,7 @@ endmodule
                 dataBits,
                 blockSourceRange,
                 conditionNetCache,
-                failureReason)) {
+                failureReason, discardedUpdates[assignmentIndex])) {
             return DirectSequentialConditionalLowering::Failed;
           }
         }
