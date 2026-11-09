@@ -11730,14 +11730,13 @@ endmodule
       }
 
       uint64_t unsignedValue = 0;
-      if (getConstantUnsigned(expr, unsignedValue)) {
-        if (unsignedValue > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
-          return false;
-        }
+      if (getConstantUnsigned(expr, unsignedValue) &&
+          unsignedValue <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
         value = static_cast<int32_t>(unsignedValue);
         return true;
       }
 
+      // A negative signed constant can have a large unsigned bit representation.
       int64_t signedValue = 0;
       if (!getConstantInt64(expr, signedValue)) {
         return false;
@@ -12038,10 +12037,6 @@ endmodule
           }
           case slang::ast::RangeSelectionKind::IndexedUp:
           case slang::ast::RangeSelectionKind::IndexedDown: {
-            // LCOV_EXCL_START
-            // Indexed static range selection is a defensive extension of this
-            // helper. The parser-backed coverage currently exercises simple
-            // static ranges and dynamic indexed ranges through later lowering.
             int32_t startIndex = 0;
             int32_t sliceWidth = 0;
             if (!getConstantInt32(rangeExpr.left(), startIndex) ||
@@ -12049,13 +12044,20 @@ endmodule
                 sliceWidth <= 0) {
               return false;
             }
-            int64_t lsbIndex = static_cast<int64_t>(startIndex);
+            const auto elementWidth =
+              getPackedElementSelectionWidth(*valueExpr->type, valueBits.size()).value_or(1);
+            const bool ascending = valueRange.left < valueRange.right;
+            int64_t lowIndex = startIndex;
             if (rangeExpr.getSelectionKind() ==
                 slang::ast::RangeSelectionKind::IndexedDown) {
-              lsbIndex -= static_cast<int64_t>(sliceWidth - 1);
+              lowIndex -= static_cast<int64_t>(sliceWidth - 1);
             }
+            // Collect whole packed elements from the result's LSB to MSB.
+            // +:/-: choose numeric bounds; declaration direction chooses bit order.
+            const int64_t firstIndex = ascending ? lowIndex + sliceWidth - 1 : lowIndex;
+            const int64_t step = ascending ? -1 : 1;
             for (int32_t elem = 0; elem < sliceWidth; ++elem) {
-              const int64_t elemIndex = lsbIndex + static_cast<int64_t>(elem);
+              const int64_t elemIndex = firstIndex + step * elem;
               if (elemIndex < std::numeric_limits<int32_t>::min() ||
                   elemIndex > std::numeric_limits<int32_t>::max()) {
                 bits.clear();
@@ -12063,14 +12065,20 @@ endmodule
               }
               const auto translated =
                 valueRange.translateIndex(static_cast<int32_t>(elemIndex));
-              if (translated < 0 || translated >= static_cast<int32_t>(valueBits.size())) {
+              if (translated < 0 || translated >= static_cast<int32_t>(valueRange.width())) {
                 bits.clear();
                 return false;
               }
-              bits.push_back(valueBits[static_cast<size_t>(translated)]);
+              const auto offset = static_cast<size_t>(translated) * elementWidth;
+              if (offset + elementWidth > valueBits.size()) {
+                bits.clear();
+                return false;
+              }
+              bits.insert(bits.end(),
+                valueBits.begin() + static_cast<std::ptrdiff_t>(offset),
+                valueBits.begin() + static_cast<std::ptrdiff_t>(offset + elementWidth));
             }
             return !bits.empty();
-            // LCOV_EXCL_STOP
           }
         }
       }
@@ -36700,6 +36708,14 @@ endmodule
             connectionExpr->kind == slang::ast::ExpressionKind::MemberAccess;
           if (!isSelectable) {
             return false;
+          }
+          // Output and inout actuals name storage, not computed read values.
+          if (term->getDirection() != SNLTerm::Direction::Input) {
+            if (!resolveAssignmentLHSBits(inst->getDesign(), *connectionExpr, bits)) {
+              return false;
+            }
+            return !bits.empty() && (bits.size() == targetWidth ||
+              (term->getDirection() == SNLTerm::Direction::Output && bits.size() < targetWidth));
           }
           // LCOV_EXCL_START
           if (!resolveExpressionBits(inst->getDesign(), *connectionExpr, targetWidth, bits)) {

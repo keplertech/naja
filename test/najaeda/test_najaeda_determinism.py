@@ -389,6 +389,20 @@ class NajaEDADeterminismTest(unittest.TestCase):
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 
+    def test_systemverilog_output_indexed_port_slices(self):
+        self.check_determinism("sv", """
+module source(input [5:0] a, output [5:0] y);
+  assign y = a;
+endmodule
+module top(input [11:0] a, output wire [3:0][2:0] y,
+           output wire [0:3][2:0] z);
+  source low(a[5:0], y[0 +: 2]);
+  source high(a[11:6], y[3 -: 2]);
+  source first(a[5:0], z[2 +: 2]);
+  source second(a[11:6], z[1 -: 2]);
+endmodule
+""")
+
     def test_systemverilog_inlined_loop_counters(self):
         self.check_determinism("sv", """
 module leaf(input logic [11:0] a, input logic [1:0] mode,

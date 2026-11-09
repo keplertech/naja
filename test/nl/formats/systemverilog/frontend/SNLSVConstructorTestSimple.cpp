@@ -11850,6 +11850,78 @@ endmodule
   EXPECT_EQ(static_cast<void*>(yNet->getBit(9)), static_cast<void*>(dBit0InstTerm->getNet()));
 }
 
+TEST_F(SNLSVConstructorTestSimple, parseInstanceOutputIndexedSlicesConnectStorageBits) {
+  const std::vector<std::tuple<std::string, std::string, std::string, std::string>> cases{
+    {"flat_up", "[11:0]", "y[0 +: 6]", "y[2*3 +: 6]"},
+    {"flat_down", "[11:0]", "y[5 -: 6]", "y[11 -: 6]"},
+    {"ascending", "[0:11]", "y[6 +: 6]", "y[0 +: 6]"},
+    {"packed_up", "[3:0][2:0]", "y[0 +: 2]", "y[2 +: 2]"},
+    {"packed_down", "[3:0][2:0]", "y[1 -: 2]", "y[3 -: 2]"},
+    {"packed_ascending", "[0:3][2:0]", "y[2 +: 2]", "y[0 +: 2]"},
+    {"packed_ascending_down", "[0:3][2:0]", "y[3 -: 2]", "y[1 -: 2]"},
+    {"packed_bounds", "[7:4][2:0]", "y[4 +: 2]", "y[6 +: 2]"},
+    {"packed_negative", "[-2:-5][2:0]", "y[-5 +: 2]", "y[-3 +: 2]"},
+    {"inout_packed", "[3:0][2:0]", "y[0 +: 2]", "y[2 +: 2]"},
+    {"nested", "[1:0][3:0][2:0]", "y[1][0 +: 2]", "y[1][2 +: 2]"},
+  };
+  for (const auto& [name, shape, low, high]: cases) {
+    SCOPED_TRACE(name);
+    const auto topName = "output_slices_" + name;
+    const auto childName = "slice_source_" + name;
+    const auto directory = std::filesystem::path(SNL_SV_DUMPER_TEST_PATH) / topName;
+    std::filesystem::create_directories(directory);
+    const auto source = directory / "source.sv";
+    std::ofstream sv(source);
+    sv << "module " << childName << "(input [5:0] a, "
+       << (name == "inout_packed" ? "inout" : "output") << " [5:0] y); assign y=a; endmodule\n"
+       << "module " << topName << "(input [11:0] a, output wire " << shape << " y);\n"
+       << childName << " low(.a(a[5:0]), .y(" << low << "));\n"
+       << childName << " high(.a(a[11:6]), .y(" << high << "));\nendmodule\n";
+    sv.close();
+    SNLSVConstructor constructor(library_);
+    constructor.construct(source);
+    auto* top = library_->getSNLDesign(NLName(topName));
+    ASSERT_NE(nullptr, top);
+    // Static output actuals must alias storage, without read-select primitives.
+    EXPECT_EQ(2u, top->getInstances().size());
+    auto* destination = top->getBusNet(NLName("y"));
+    ASSERT_NE(nullptr, destination);
+    for (int half = 0; half < 2; ++half) {
+      auto* instance = top->getInstance(NLName(half ? "high" : "low"));
+      ASSERT_NE(nullptr, instance);
+      auto* output = instance->getModel()->getBusTerm(NLName("y"));
+      ASSERT_NE(nullptr, output);
+      for (int bit = 0; bit < 6; ++bit) {
+        const int physical = half*6 + bit + (name == "nested" ? 12 : 0);
+        const int index = name == "ascending" ? 11-physical : physical;
+        EXPECT_EQ(destination->getBit(index), instance->getInstTerm(output->getBit(bit))->getNet());
+      }
+    }
+    const auto dumped = dumpTopAndGetVerilogPath(top, topName + "_dump");
+    if (std::system("command -v iverilog >/dev/null 2>&1") == 0 &&
+        std::system("command -v vvp >/dev/null 2>&1") == 0) {
+      const auto testbench = directory / "tb.sv";
+      std::ofstream tb(testbench);
+      tb << "module tb; reg [11:0] a; wire " << shape << " y;\n"
+         << topName << " dut(.a(a),.y(y));\n"
+         << "wire [11:0] observed = " << (name == "nested" ? "y[1]" : "y") << ";\n"
+         << "task check; begin #1; if (observed !== a) $fatal(1, \"output slice mismatch\"); end endtask\n"
+         << "integer pattern; initial begin\n"
+         << "for(pattern=0;pattern<4096;pattern=pattern+1) begin a=pattern; check; end\n"
+         << "a=12'b10xz01zx10xz; check; $finish; end endmodule\n";
+      tb.close();
+      const auto quote = [](const std::filesystem::path& path) {
+        return "'" + path.string() + "'";
+      };
+      const auto executable = directory / "simulation.vvp";
+      const auto compile = "iverilog -g2012 -s tb -o " + quote(executable) + " " +
+        quote(testbench) + " " + quote(dumped);
+      ASSERT_EQ(0, std::system(compile.c_str()));
+      ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+    }
+  }
+}
+
 TEST_F(SNLSVConstructorTestSimple, parseInstanceConnectionOutputPackedToFixedUnpackedSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
