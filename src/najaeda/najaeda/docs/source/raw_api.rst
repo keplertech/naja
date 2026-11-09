@@ -1705,11 +1705,14 @@ Fanout records contain:
 A fanout query starting at a register clock/gate pin first selects all its
 state outputs; starting at a Q bit selects exactly that bit. A memory write
 clock similarly selects the read-data bits associated with that port. Subsequent
-walking never follows state arcs. Starting from a clock source instead stops
-at the clock pins it reaches, without traversing their clock-to-Q arcs; it also
-reports any reached data endpoints. A clean clock pin's fanin contains its
-clock-source startpoint, preserving equality with ``getLaunchClocks()``. A clock
-used as data similarly appears as a ``clock`` startpoint. Write inputs that also serve as asynchronous
+walking never follows state arcs. Starting from a clock source reports the clock
+pins it reaches and any reached data endpoints, without traversing clock-to-Q
+arcs. Clock-gate clock pins are reported and traversal continues through their
+explicit clock-pass arcs to downstream clock pins; enable and test-enable
+capture pins remain traversal boundaries. A clean clock pin's fanin contains
+its clock-source startpoint, preserving equality with ``getLaunchClocks()``.
+A clock used as data similarly appears as a ``clock`` startpoint.
+Write inputs that also serve as asynchronous
 read addresses are reported as captures and also traversed through their read
 arcs. Asynchronous read-only addresses/enables are pass-through pins.
 
