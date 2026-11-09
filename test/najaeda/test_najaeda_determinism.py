@@ -401,6 +401,20 @@ module top(input clk, data, en, test, value, output reg q, output data_result);
 endmodule
 """)
 
+    def test_systemverilog_clock_gate_preserves_wrapper(self):
+        self.check_determinism("sv", """
+module phase_cell(input source, request, output result);
+  reg held;
+  always_latch if (!source) held <= request;
+  assign result = source & held;
+endmodule
+module top(input clk, en, value, output reg q);
+  wire gated;
+  phase_cell control(clk, en, gated);
+  always @(posedge gated) q <= value;
+endmodule
+""")
+
     def test_vhdl_clock_gate_context(self):
         self.check_determinism("vhd_intent", """
 library ieee; use ieee.std_logic_1164.all;

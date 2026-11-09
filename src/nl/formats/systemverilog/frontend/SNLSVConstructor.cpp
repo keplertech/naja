@@ -1580,6 +1580,10 @@ class SNLSVConstructorImpl {
           gateSymbol = nullptr;
         };
         clockGateHooks.beforeRemove = unbindGate;
+        clockGateHooks.afterClone = [&](const NLObject* source, NLObject* clone) {
+          if (liveASTLink_)
+            if (const auto* symbol = liveASTLink_->getSymbol(source)) liveASTLink_->bind(clone, *symbol);
+        };
         SNLClockGating::infer(clockGateRoots, clockGateHooks);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         maybeWriteSVPerfReportSnapshot();

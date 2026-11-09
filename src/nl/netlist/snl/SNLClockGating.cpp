@@ -11,6 +11,8 @@
 #include <unordered_set>
 #include "NLDB0.h"
 #include "NLClock.h"
+#include "NLReset.h"
+#include "NLLibrary.h"
 #include "SNLAttributes.h"
 #include "SNLBitNet.h"
 #include "SNLBitTerm.h"
@@ -130,8 +132,8 @@ std::vector<Pattern> patterns(SNLDesign* design) {
   return result;
 }
 
-// A complete scalar wrapper can be replaced per parent instance. This avoids
-// changing a shared gate model that is also instantiated on a data path.
+// A complete scalar wrapper can be specialized per parent instance without
+// changing a shared model that is also instantiated on a data path.
 struct Wrapper {
   SNLBitTerm* clock {nullptr};
   SNLBitTerm* enable {nullptr};
@@ -455,6 +457,86 @@ SNLInstance* replace(SNLInstance* previous, Net clk, Net en, Net test, Net outpu
   if (hooks.afterReplace) hooks.afterReplace(final);
   return final;
 }
+
+void fuse(const Pattern& pattern, const SNLClockGating::Hooks& hooks) {
+  replace(pattern.gate, pattern.clock, pattern.enable, nullptr, pattern.output, hooks);
+  if (hooks.beforeRemove) hooks.beforeRemove(pattern.latch);
+  pattern.latch->destroy();
+}
+
+SNLDesign* specialize(SNLDesign* original, const SNLClockGating::Hooks& hooks) {
+  const auto base = (original->isUnnamed() ? "model_" + std::to_string(original->getID()) :
+    original->getName().getString()) + "__clock_gate";
+  auto name = base;
+  for (size_t suffix = 1; original->getLibrary()->getSNLDesign(NLName(name)); ++suffix)
+    name = base + "_" + std::to_string(suffix);
+  auto* clone = original->clone(NLName(name));
+  std::unordered_map<const NLObject*, NLObject*> objects;
+  auto copied = [&](const NLObject* from, NLObject* to) {
+    objects.emplace(from, to);
+    if (hooks.afterClone) hooks.afterClone(from, to);
+  };
+  copied(original, clone);
+  for (auto* term : original->getTerms()) {
+    auto* copy = clone->getTerm(term->getID());
+    copied(term, copy);
+    auto bits = copy->getBits();
+    auto bit = bits.begin();
+    for (auto* source : term->getBits()) {
+      if (source != term) copied(source, *bit);
+      ++bit;
+    }
+  }
+  for (auto* net : original->getNets()) {
+    auto* copy = clone->getNet(net->getID());
+    copied(net, copy);
+    auto bits = copy->getBits();
+    auto bit = bits.begin();
+    for (auto* source : net->getBits()) {
+      if (source != net) copied(source, *bit);
+      ++bit;
+    }
+  }
+  for (auto* instance : original->getInstances()) {
+    auto* copy = clone->getInstance(instance->getID());
+    copy->setOrderID(instance->getOrderID());
+    copied(instance, copy);
+    for (auto* term : instance->getInstTerms()) {
+      auto* pin = copy->getInstTerm(term->getBitTerm());
+      SNLAttributes::cloneAttributes(term, pin);
+      if (auto* infos = term->getRTLInfos()) SNLRTLInfos::create(pin)->cloneInfos(*infos);
+      copied(term, pin);
+    }
+  }
+  // SNLDesign::clone copies circuit and RTL metadata, but declarations owned by
+  // the design need their sources and master clocks rebound to the clone.
+  auto sources = [&](const auto& declarations) {
+    std::vector<NLObject*> result;
+    for (auto* source : declarations) result.push_back(objects.at(source));
+    return result;
+  };
+  std::unordered_map<NLClock*, NLClock*> clocks;
+  for (auto* clock : original->getClocks()) {
+    NLClock* copy = nullptr;
+    if (clock->getKind() == NLClock::Kind::Primary) {
+      copy = NLClock::createPrimary(clone, clock->getName(), clock->getPeriod(),
+        clock->getTimeUnit(), sources(clock->getSources()));
+      copy->setWaveform(clock->getRiseAt(), clock->getFallAt());
+    } else {
+      copy = NLClock::createGenerated(clone, clock->getName(), clocks.at(clock->getMaster()),
+        objects.at(clock->getMasterSource()), clock->getDivideBy(), clock->getMultiplyBy(),
+        clock->isInverted(), sources(clock->getSources()));
+    }
+    clocks.emplace(clock, copy);
+    copied(clock, copy);
+  }
+  for (auto* reset : original->getResets()) {
+    auto* copy = NLReset::create(clone, reset->getName(), sources(reset->getSources()),
+      reset->getActiveLevel(), reset->getAssertion(), reset->getDeassertion());
+    copied(reset, copy);
+  }
+  return clone;
+}
 }
 
 size_t SNLClockGating::infer(const std::vector<SNLDesign*>& roots, const Hooks& hooks) {
@@ -477,15 +559,25 @@ size_t SNLClockGating::infer(const std::vector<SNLDesign*>& roots, const Hooks& 
             changed |= inference.incomplete.insert(instance->getModel()).second;
   }
   inference.classify();
-  struct Replacement { SNLInstance* instance; Net clock; Net enable; Net test; Net output; };
-  std::vector<Replacement> wrappers;
+  struct Specialization { SNLDesign* model; std::vector<SNLInstance*> instances; };
+  std::vector<Specialization> specializations;
   std::vector<Pattern> selected;
   for (auto* design : inference.models) {
     const auto& candidates = inference.candidates.at(design);
-    bool wrapped = false;
+    bool allEligible = !inference.incomplete.contains(design);
     if (candidates.size() == 1) {
+      for (auto occurrence : inference.uses.at(design))
+        allEligible &= inference.eligible(candidates.front(), occurrence);
+      if (allEligible) {
+        selected.push_back(candidates.front());
+        continue;
+      }
+      // Generic circuit cloning does not reconstruct arbitrary timing-model
+      // decorations. Keep such shared models intact rather than lose metadata.
+      if (SNLDesignModeling::hasModeling(design)) continue;
       const auto pins = wrapper(design, candidates.front());
       if (pins.clock) {
+        Specialization plan {design, {}};
         std::vector<SNLInstance*> order;
         std::unordered_map<SNLInstance*, bool> eligible;
         for (auto occurrence : inference.uses.at(design)) {
@@ -502,13 +594,14 @@ size_t SNLClockGating::infer(const std::vector<SNLDesign*>& roots, const Hooks& 
         for (auto* instance : order) if (eligible.at(instance)) {
           auto net = [&](SNLBitTerm* pin) { return pin ? instance->getInstTerm(pin)->getNet() : nullptr; };
           if (net(pins.clock) && net(pins.enable) && net(pins.output) && (!pins.test || net(pins.test))) {
-            wrappers.push_back({instance, net(pins.clock), net(pins.enable), net(pins.test), net(pins.output)});
-            wrapped = true;
+            plan.instances.push_back(instance);
           }
         }
+        if (!plan.instances.empty()) specializations.push_back(std::move(plan));
       }
+      continue;
     }
-    if (wrapped || inference.incomplete.contains(design)) continue;
+    if (inference.incomplete.contains(design)) continue;
     for (const auto& pattern : candidates) {
       bool eligible = true;
       for (auto occurrence : inference.uses.at(design))
@@ -516,13 +609,12 @@ size_t SNLClockGating::infer(const std::vector<SNLDesign*>& roots, const Hooks& 
       if (eligible) selected.push_back(pattern);
     }
   }
-  for (const auto& plan : wrappers)
-    replace(plan.instance, plan.clock, plan.enable, plan.test, plan.output, hooks);
-  for (const auto& pattern : selected) {
-    replace(pattern.gate, pattern.clock, pattern.enable, nullptr, pattern.output, hooks);
-    if (hooks.beforeRemove) hooks.beforeRemove(pattern.latch);
-    pattern.latch->destroy();
+  for (const auto& plan : specializations) {
+    auto* clone = specialize(plan.model, hooks);
+    fuse(patterns(clone).front(), hooks);
+    for (auto* instance : plan.instances) instance->setModel(clone);
   }
-  return selected.size() + wrappers.size();
+  for (const auto& pattern : selected) fuse(pattern, hooks);
+  return selected.size() + specializations.size();
 }
 }

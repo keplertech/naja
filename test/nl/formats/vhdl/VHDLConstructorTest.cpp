@@ -8011,8 +8011,14 @@ end;
   auto* data = top->getInstance(NLName("data_use"));
   ASSERT_NE(nullptr, clock);
   ASSERT_NE(nullptr, data);
-  EXPECT_TRUE(NLDB0::isClockGate(clock->getModel()));
-  EXPECT_FALSE(NLDB0::isClockGate(data->getModel()));
+  EXPECT_FALSE(clock->getModel()->isPrimitive());
+  EXPECT_FALSE(data->getModel()->isPrimitive());
+  EXPECT_NE(clock->getModel(), data->getModel());
+  EXPECT_TRUE(std::any_of(clock->getModel()->getInstances().begin(), clock->getModel()->getInstances().end(),
+    [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
+  EXPECT_FALSE(std::any_of(data->getModel()->getInstances().begin(), data->getModel()->getInstances().end(),
+    [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
+  EXPECT_NE(nullptr, clock->getModel()->getScalarNet(NLName("held"))->getProperty("VHDLIntentRecord"));
   EXPECT_NE(nullptr, clock->getRTLInfos());
   EXPECT_NE(nullptr, clock->getProperty("VHDLIntentRecord"));
 }

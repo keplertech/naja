@@ -56,6 +56,42 @@ endmodule
 """
 
 class SNLDBTest(unittest.TestCase):
+  def test_clock_gate_wrapper_does_not_create_an_extra_root(self):
+    source = '''module phase_cell(input source, request, output result);
+      reg held;
+      always_latch if (!source) held <= request;
+      assign result = source & held;
+    endmodule
+    module sample(input clk, en, d, output reg q);
+      wire gated;
+      phase_cell control(clk, en, gated);
+      always @(posedge gated) q <= d;
+    endmodule'''
+    with tempfile.TemporaryDirectory() as directory:
+      path = os.path.join(directory, "sample.sv")
+      flist = os.path.join(directory, "sources.f")
+      with open(path, "w") as stream:
+        stream.write(source)
+      with open(flist, "w") as stream:
+        stream.write(f'--top sample\n"{path}"\n')
+      for use_flist in (False, True):
+        for keep_ast in (False, True):
+          with self.subTest(flist=use_flist, keep_ast=keep_ast):
+            naja.NLUniverse.get().destroy()
+            universe = naja.NLUniverse.create()
+            db = naja.NLDB.create(universe)
+            kwargs = {"flist": flist} if use_flist else {}
+            top = db.loadSystemVerilog([] if use_flist else [path],
+                keep_ast_link=keep_ast, diagnostics_report_path=None, **kwargs)
+            self.assertEqual("sample", top.getName())
+            self.assertEqual(top, universe.getTopDesign())
+            self.assertEqual(top, db.getTopDesign())
+            wrapper = top.getLibrary().getSNLDesign("phase_cell")
+            self.assertIsNotNone(wrapper)
+            self.assertEqual(wrapper, top.getInstance("control").getModel())
+            self.assertFalse(wrapper.isPrimitive())
+            self.assertEqual(1, sum(i.getModel().isClockGate() for i in wrapper.getInstances()))
+
   def test_frontend_options_validation(self):
     db = naja.NLDB.create(naja.NLUniverse.get())
     for value in ([], {1: []}, {"slang": "--relax-enum-conversions"}, {"slang": [1]}):

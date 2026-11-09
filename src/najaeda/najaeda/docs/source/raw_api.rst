@@ -2219,3 +2219,12 @@ clock-use evidence from declared clocks or Clock-role input pins. Latch enables
 alone do not establish clock use. Ambiguous drivers, observable held state and
 mixed clock/data consumers leave the original circuit unchanged. Classification
 is checked per hierarchy occurrence before modifying shared models.
+
+Inference retains wrapper hierarchy. The canonical primitive is a child of the
+wrapper model, and wrapper instance and port identities remain intact. When a
+wrapper has both clock and data uses, qualifying instances share a specialized
+model whose deterministic name ends in ``__clock_gate`` (with a numeric suffix
+when needed); data instances retain the original model. Model source metadata,
+clock/reset declarations and retained frontend source links are preserved in
+the specialization. Shared models with additional timing-model decorations are
+left intact when those decorations cannot be cloned faithfully.

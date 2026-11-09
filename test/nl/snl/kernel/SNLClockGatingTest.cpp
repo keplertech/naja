@@ -6,6 +6,7 @@
 #include "NLDB0.h"
 #include "NLLibrary.h"
 #include "NLClock.h"
+#include "NLReset.h"
 #include "SNLClockGating.h"
 #include "SNLDesign.h"
 #include "SNLDesignModeling.h"
@@ -16,6 +17,7 @@
 #include "SNLInstance.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLInfos.h"
+#include "SNLAttributes.h"
 
 using namespace naja::NL;
 
@@ -87,6 +89,12 @@ class SNLClockGatingTest : public ::testing::Test {
     instance->setTermNet(wrapper->getScalarTerm(NLName("result")), output);
     return instance;
   }
+  SNLInstance* fusedGate(SNLDesign* model) {
+    for (auto* instance : model->getInstances())
+      if (NLDB0::isClockGate(instance->getModel())) return instance;
+    ADD_FAILURE() << "Missing fused gate";
+    return nullptr;
+  }
   void sink(SNLBitNet* clock, const char* name = "flop") {
     auto* instance = SNLInstance::create(top, NLDB0::getDFF(), NLName(name));
     instance->setTermNet(NLDB0::getDFFClock(), clock);
@@ -122,13 +130,14 @@ TEST_F(SNLClockGatingTest, canonicalContractAndTiming) {
   EXPECT_EQ(1u, M::getClockRelatedOutputs(NLDB0::getClockGateClock()).size());
 }
 
-TEST_F(SNLClockGatingTest, sharedWrapperOnlyClockOccurrenceIsReplaced) {
+TEST_F(SNLClockGatingTest, sharedWrapperOnlyClockOccurrenceIsSpecialized) {
   auto* model = wrapper();
   auto* clock = port(top, "clock", SNLTerm::Direction::Input)->getNet();
   auto* data = port(top, "data", SNLTerm::Direction::Input)->getNet();
   auto* output = net(top, "gated");
   auto* clockInstance = instantiate(model, "clock_use", clock, output);
   const auto id = clockInstance->getID();
+  SNLAttributes::addAttribute(clockInstance, SNLAttribute(NLName("keep"), SNLAttributeValue("true")));
   auto* metadata = SNLRTLInfos::create(clockInstance);
   metadata->setSourceLoc({NLName("synthetic.sv"), 3, 3, 1, 8});
   metadata->setInfo(NLName("origin_tag"), "synthetic");
@@ -149,10 +158,15 @@ TEST_F(SNLClockGatingTest, sharedWrapperOnlyClockOccurrenceIsReplaced) {
   EXPECT_EQ(std::vector<SNLSourceReference>{reference}, inferred->getRTLInfos()->getSourceOrigins());
   ASSERT_TRUE(inferred->getRTLInfos()->hasSourceLoc());
   EXPECT_EQ(3u, inferred->getRTLInfos()->getSourceLoc()->line);
-  EXPECT_TRUE(NLDB0::isClockGate(inferred->getModel()));
+  EXPECT_EQ(clockInstance, inferred);
+  EXPECT_EQ(1u, SNLAttributes::getAttributes(inferred).size());
+  EXPECT_FALSE(inferred->getModel()->isPrimitive());
+  EXPECT_NE(model, inferred->getModel());
+  EXPECT_NE(nullptr, fusedGate(inferred->getModel()));
+  EXPECT_NE(nullptr, model->getInstance(NLName("storage")));
   EXPECT_EQ(model, top->getInstance(NLName("data_use"))->getModel());
-  EXPECT_EQ(clock, inferred->getInstTerm(NLDB0::getClockGateClock())->getNet());
-  EXPECT_EQ(output, inferred->getInstTerm(NLDB0::getClockGateOutput())->getNet());
+  EXPECT_EQ(clock, inferred->getInstTerm(inferred->getModel()->getScalarTerm(NLName("source")))->getNet());
+  EXPECT_EQ(output, inferred->getInstTerm(inferred->getModel()->getScalarTerm(NLName("result")))->getNet());
   EXPECT_EQ(0u, SNLClockGating::infer(top));
 }
 
@@ -224,9 +238,10 @@ TEST_F(SNLClockGatingTest, cascadedGatesAreRecognizedTogether) {
   instantiate(model, "first", clock, middle);
   instantiate(model, "second", middle, output);
   sink(output);
-  EXPECT_EQ(2u, SNLClockGating::infer(top));
-  EXPECT_TRUE(NLDB0::isClockGate(top->getInstance(NLName("first"))->getModel()));
-  EXPECT_TRUE(NLDB0::isClockGate(top->getInstance(NLName("second"))->getModel()));
+  EXPECT_EQ(1u, SNLClockGating::infer(top));
+  EXPECT_EQ(model, top->getInstance(NLName("first"))->getModel());
+  EXPECT_EQ(model, top->getInstance(NLName("second"))->getModel());
+  EXPECT_NE(nullptr, fusedGate(model));
   EXPECT_EQ(0u, SNLClockGating::infer(top));
 }
 
@@ -272,7 +287,8 @@ TEST_F(SNLClockGatingTest, candidateInLaterRootIsStillRecognized) {
   instantiate(model, "clock_use", clock, output);
   sink(output);
   EXPECT_EQ(1u, SNLClockGating::infer(std::vector<SNLDesign*>{firstRoot, top}));
-  EXPECT_TRUE(NLDB0::isClockGate(top->getInstance(NLName("clock_use"))->getModel()));
+  EXPECT_EQ(model, top->getInstance(NLName("clock_use"))->getModel());
+  EXPECT_NE(nullptr, fusedGate(model));
 }
 
 TEST_F(SNLClockGatingTest, sharedOwnerWithClockAndDataContextsRemainsStructural) {
@@ -327,7 +343,91 @@ TEST_F(SNLClockGatingTest, twoInputWrapperTiesTestEnableLow) {
   sink(output);
   EXPECT_EQ(1u, SNLClockGating::infer(top));
   instance = top->getInstance(NLName("clock_use"));
-  EXPECT_TRUE(NLDB0::isClockGate(instance->getModel()));
-  EXPECT_EQ(enable, instance->getInstTerm(NLDB0::getClockGateEnable())->getNet());
-  EXPECT_TRUE(instance->getInstTerm(NLDB0::getClockGateTestEnable())->getNet()->isAssign0());
+  EXPECT_EQ(model, instance->getModel());
+  auto* primitive = fusedGate(model);
+  ASSERT_NE(nullptr, primitive);
+  EXPECT_EQ(enable, instance->getInstTerm(model->getScalarTerm(NLName("request")))->getNet());
+  EXPECT_EQ(model->getScalarTerm(NLName("request"))->getNet(),
+    primitive->getInstTerm(NLDB0::getClockGateEnable())->getNet());
+  EXPECT_TRUE(primitive->getInstTerm(NLDB0::getClockGateTestEnable())->getNet()->isAssign0());
+}
+
+TEST_F(SNLClockGatingTest, qualifiedInstancesShareOneSpecializedWrapper) {
+  auto* model = wrapper();
+  auto* clock = port(top, "clock", SNLTerm::Direction::Input)->getNet();
+  auto* firstNet = net(top, "first_net");
+  auto* secondNet = net(top, "second_net");
+  auto* first = instantiate(model, "first", clock, firstNet);
+  auto* second = instantiate(model, "second", clock, secondNet);
+  auto* data = instantiate(model, "data_use", port(top, "data", SNLTerm::Direction::Input)->getNet(),
+    port(top, "result", SNLTerm::Direction::Output)->getNet());
+  sink(firstNet, "first_flop");
+  sink(secondNet, "second_flop");
+  auto* firstPin = first->getInstTerm(model->getScalarTerm(NLName("source")));
+  SNLDesign::create(library, NLName("gate_wrapper__clock_gate"));
+  EXPECT_EQ(1u, SNLClockGating::infer(top));
+  auto* specialized = first->getModel();
+  EXPECT_EQ(NLName("gate_wrapper__clock_gate_1"), specialized->getName());
+  EXPECT_EQ(specialized, second->getModel());
+  EXPECT_NE(model, specialized);
+  EXPECT_EQ(model, data->getModel());
+  EXPECT_EQ(2u, specialized->getSlaveInstances().size());
+  EXPECT_EQ(1u, model->getSlaveInstances().size());
+  EXPECT_EQ(first, top->getInstance(NLName("first")));
+  EXPECT_EQ(firstPin, first->getInstTerm(specialized->getScalarTerm(NLName("source"))));
+  EXPECT_EQ(clock, firstPin->getNet());
+  EXPECT_NE(nullptr, fusedGate(specialized));
+  EXPECT_NE(nullptr, model->getInstance(NLName("storage")));
+  EXPECT_EQ(0u, SNLClockGating::infer(top));
+}
+
+TEST_F(SNLClockGatingTest, specializedWrapperPreservesClockResetAndSourceMetadata) {
+  auto* model = wrapper();
+  auto* primary = NLClock::createPrimary(model, NLName("source"), 12, "ns",
+    {model->getScalarTerm(NLName("source"))});
+  primary->setWaveform(1, 5);
+  NLClock::createGenerated(model, NLName("output"), primary,
+    model->getScalarTerm(NLName("source")), 2, 1, true,
+    {model->getScalarTerm(NLName("result"))});
+  NLReset::create(model, NLName("reset"), {model->getScalarTerm(NLName("request"))},
+    SNLDesignModeling::SNLActiveLevel::Low);
+  auto* storage = model->getInstance(NLName("storage"));
+  auto* dataPin = storage->getInstTerm(NLDB0::getDLatchData());
+  SNLAttributes::addAttribute(dataPin, SNLAttribute(NLName("tag"), SNLAttributeValue("preserved")));
+  SNLRTLInfos::create(dataPin)->setInfo(NLName("source_tag"), "preserved");
+  // Keep a primitive pin with metadata after fusion, rather than only the
+  // latch pin that will be removed in the specialized model.
+  auto* inverter = *model->getInstances().begin();
+  auto* pin = *inverter->getInstTerms().begin();
+  SNLAttributes::addAttribute(pin, SNLAttribute(NLName("tag"), SNLAttributeValue("preserved")));
+  SNLRTLInfos::create(pin)->setInfo(NLName("source_tag"), "preserved");
+  auto pinID = pin->getBitTerm()->getID();
+  auto inverterID = inverter->getID();
+  auto* clock = port(top, "clock", SNLTerm::Direction::Input)->getNet();
+  auto* output = net(top, "gated");
+  auto* instance = instantiate(model, "clock_use", clock, output);
+  instantiate(model, "data_use", port(top, "data", SNLTerm::Direction::Input)->getNet(),
+    port(top, "result", SNLTerm::Direction::Output)->getNet());
+  sink(output);
+  EXPECT_EQ(1u, SNLClockGating::infer(top));
+  auto* clone = instance->getModel();
+  ASSERT_NE(model, clone);
+  ASSERT_EQ(2u, clone->getClocks().size());
+  for (auto* declaration : clone->getClocks()) {
+    EXPECT_EQ(clone, declaration->getDesign());
+    EXPECT_EQ(12 * (declaration->getKind() == NLClock::Kind::Primary ? 1 : 2), declaration->getPeriod());
+    for (auto* source : declaration->getSources())
+      EXPECT_EQ(clone, static_cast<SNLBitTerm*>(source)->getDesign());
+    if (declaration->getKind() == NLClock::Kind::Generated) {
+      EXPECT_EQ(clone, declaration->getMaster()->getDesign());
+      EXPECT_EQ(1, declaration->getMaster()->getRiseAt());
+      EXPECT_EQ(5, declaration->getMaster()->getFallAt());
+    }
+  }
+  ASSERT_EQ(1u, clone->getResets().size());
+  EXPECT_EQ(clone, (*clone->getResets().begin())->getDesign());
+  auto* copied = clone->getInstance(inverterID)->getInstTermByFlatID(pinID);
+  EXPECT_EQ(1u, SNLAttributes::getAttributes(copied).size());
+  ASSERT_NE(nullptr, copied->getRTLInfos());
+  EXPECT_EQ("preserved", copied->getRTLInfos()->getInfo(NLName("source_tag")));
 }

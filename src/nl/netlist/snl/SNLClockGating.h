@@ -9,6 +9,7 @@
 namespace naja::NL {
 class SNLDesign;
 class SNLInstance;
+class NLObject;
 
 /// Conservative, language-neutral post-elaboration clock-gate inference.
 /// Roots are analyzed together. No clock declarations are manufactured.
@@ -18,7 +19,9 @@ class SNLClockGating {
       std::function<void(SNLInstance*)> beforeReplace;
       std::function<void(SNLInstance*)> afterReplace;
       std::function<void(SNLInstance*)> beforeRemove;
+      std::function<void(const NLObject*, NLObject*)> afterClone;
     };
+    /// Return the number of latch/AND pairs fused in model definitions.
     static size_t infer(const std::vector<SNLDesign*>& roots, const Hooks& hooks = {});
     static size_t infer(SNLDesign* root, const Hooks& hooks = {}) {
       return infer(std::vector<SNLDesign*>{root}, hooks);

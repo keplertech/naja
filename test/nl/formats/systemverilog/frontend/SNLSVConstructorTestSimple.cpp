@@ -42307,10 +42307,16 @@ endmodule
   auto* data = top->getInstance(NLName("data_use"));
   ASSERT_NE(nullptr, clock);
   ASSERT_NE(nullptr, data);
-  EXPECT_TRUE(NLDB0::isClockGate(clock->getModel()));
-  EXPECT_FALSE(NLDB0::isClockGate(data->getModel()));
+  EXPECT_FALSE(clock->getModel()->isPrimitive());
+  EXPECT_FALSE(data->getModel()->isPrimitive());
+  EXPECT_NE(clock->getModel(), data->getModel());
+  size_t clockGates = 0, dataGates = 0;
+  for (auto* instance : clock->getModel()->getInstances()) clockGates += NLDB0::isClockGate(instance->getModel());
+  for (auto* instance : data->getModel()->getInstances()) dataGates += NLDB0::isClockGate(instance->getModel());
+  EXPECT_EQ(1u, clockGates);
+  EXPECT_EQ(0u, dataGates);
   EXPECT_EQ(4u, clock->getInstTerms().size());
-  EXPECT_FALSE(SNLAttributes::getAttributes(clock).empty());
+  EXPECT_EQ(NLName("clock_use"), clock->getName());
   ASSERT_NE(nullptr, clock->getRTLInfos());
   const auto* link = SNLSVLiveASTLinkRegistry::get(library_->getDB());
   ASSERT_NE(nullptr, link);
@@ -42318,4 +42324,39 @@ endmodule
   ASSERT_NE(nullptr, symbol);
   const auto& objects = link->getObjects(symbol);
   EXPECT_NE(objects.end(), std::find(objects.begin(), objects.end(), clock));
+  auto* originalNet = data->getModel()->getScalarNet(NLName("held"));
+  auto* clonedNet = clock->getModel()->getScalarNet(NLName("held"));
+  ASSERT_NE(nullptr, originalNet);
+  ASSERT_NE(nullptr, clonedNet);
+  ASSERT_NE(nullptr, link->getSymbol(originalNet));
+  EXPECT_EQ(link->getSymbol(originalNet), link->getSymbol(clonedNet));
+}
+
+TEST_F(SNLSVConstructorTestSimple, clockGateInferencePreservesWrapperAndTop) {
+  const auto path = writeSVTestFile("clock_gate_root", R"(
+module phase_cell(input source, request, output result);
+  reg held;
+  always_latch if (!source) held <= request;
+  assign result = source & held;
+endmodule
+module sample(input clk, en, d, output reg q);
+  wire gated;
+  phase_cell control(clk, en, gated);
+  always @(posedge gated) q <= d;
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  SNLSVConstructor::ConstructOptions options;
+  options.keepASTLink = true;
+  constructor.construct(path, options);
+  auto* top = library_->getSNLDesign(NLName("sample"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_EQ(top, SNLUtils::findTop(library_));
+  EXPECT_FALSE(top->getInstance(NLName("control"))->getModel()->isPrimitive());
+  auto* wrapper = library_->getSNLDesign(NLName("phase_cell"));
+  ASSERT_NE(nullptr, wrapper);
+  EXPECT_EQ(wrapper, top->getInstance(NLName("control"))->getModel());
+  EXPECT_EQ(1u, wrapper->getSlaveInstances().size());
+  EXPECT_TRUE(std::any_of(wrapper->getInstances().begin(), wrapper->getInstances().end(),
+    [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
 }

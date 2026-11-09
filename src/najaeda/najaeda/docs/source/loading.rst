@@ -1146,6 +1146,12 @@ high; it never truncates a pulse in response to a high-phase enable change.
 Its identity, connections and derived modeling survive NajaIF round trips.
 See :doc:`raw_api` for model inspection and the four-state contract.
 
+Inference preserves wrapper instances, ports and hierarchy paths. When all uses
+of a model qualify, the latch and AND are fused inside that model. With mixed
+clock/data uses, qualifying instances use a specialized wrapper model while data
+instances retain the original model. Instance identities and source links remain
+intact; specialization names and creation order are deterministic.
+
 VHDL can express the source latch as a single ``if`` without ``else`` in a
 sensitivity-list or ``process(all)`` process. This subset accepts uninitialized
 scalar ``std_logic`` / ``std_ulogic`` signal targets with plain assignments;
