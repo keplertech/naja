@@ -829,6 +829,105 @@ TEST_F(SNLVRLDumperTestParameters, testSequentialModelDefaultsAndInitOverrides) 
   }
 }
 
+TEST_F(SNLVRLDumperTestParameters, clockGateFourStateTransitionsAndFeedback) {
+  auto* model = NLDB0::getOrCreateClockGate();
+  auto* instance = SNLInstance::create(top_, model, NLName("gate"));
+  for (auto* term : model->getBitTerms()) {
+    auto* net = SNLScalarNet::create(top_, term->getName());
+    SNLScalarTerm::create(top_, term->getDirection(), term->getName())->setNet(net);
+    instance->getInstTerm(term)->setNet(net);
+  }
+  const auto directory = std::filesystem::path(SNL_VRL_DUMPER_TEST_PATH) / "clock_gate_contract";
+  std::filesystem::create_directories(directory);
+  SNLVRLDumper dumper;
+  dumper.setSingleFile(true);
+  dumper.dumpDesign(top_, directory);
+  const auto primitive = directory / "naja_primitives.v";
+  EXPECT_NE(std::string::npos, readTextFile(primitive).find("module naja_clock_gate("));
+  const auto quote = [](const std::filesystem::path& path) {
+    std::string result = "'";
+    for (char c : path.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+    return result + "'";
+  };
+  if (!std::system("command -v verilator >/dev/null 2>&1")) {
+    const auto feedback = directory / "feedback.v";
+    std::ofstream file(feedback);
+    file << R"(module feedback(input clk,data,force_enable,output value);
+wire gated;
+naja_clock_gate cg(.CLK(clk),.EN(force_enable | ~value),.TEST_EN(1'b0),.GCLK(gated));
+naja_dlatch storage(.E(gated),.D(data),.Q(value));
+endmodule
+module unstable(input enable,output value);
+naja_dlatch storage(.E(enable),.D(~value),.Q(value));
+endmodule
+)";
+    file.close();
+    const auto log = directory / "lint.log";
+    const auto lint = "verilator --lint-only --sv --top-module feedback " + quote(feedback) + " " +
+      quote(primitive) + " > " + quote(log) + " 2>&1";
+    EXPECT_EQ(0, std::system(lint.c_str())) << readTextFile(log);
+    const auto negative = "verilator --lint-only --sv --top-module unstable " + quote(feedback) + " " +
+      quote(primitive) + " > " + quote(log) + " 2>&1";
+    EXPECT_NE(0, std::system(negative.c_str()));
+    EXPECT_NE(std::string::npos, readTextFile(log).find("UNOPTFLAT"));
+  }
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1"))
+    GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+  const auto tb = directory / "tb.sv";
+  std::ofstream file(tb);
+  file << R"(module reference_gate(input clk,en,test_en,output gclk);
+ reg held;
+ always @* if (clk==1'b0) held=en|test_en;
+ assign gclk=clk&held;
+endmodule
+module tb;
+ reg clk,en,test_en;
+ wire actual,expected;
+ top a(clk,en,test_en,actual);
+ reference_gate b(clk,en,test_en,expected);
+ integer actual_edges=0, expected_edges=0, checks=0;
+ always @(posedge actual) actual_edges=actual_edges+1;
+ always @(posedge expected) expected_edges=expected_edges+1;
+ function state(input integer v);
+  case(v) 0:state=0;1:state=1;2:state=1'bx;3:state=1'bz;endcase
+ endfunction
+ task drive(input integer c,e,t,mode);
+ begin
+  case(mode)
+   0:begin clk=state(c);en=state(e);test_en=state(t);end
+   1:begin en=state(e);test_en=state(t);#0;clk=state(c);end
+   2:begin clk=state(c);#0;en=state(e);test_en=state(t);end
+   3:begin clk<=state(c);en<=state(e);test_en<=state(t);end
+  endcase
+  #1;
+  checks=checks+1;
+  if(actual!==expected || actual_edges!=expected_edges)
+   $fatal(1,"mismatch clk=%b en=%b test=%b expected=%b actual=%b edges=%0d/%0d",clk,en,test_en,expected,actual,expected_edges,actual_edges);
+ end
+ endtask
+ integer seed,mode,previous,next;
+ initial begin
+  for(mode=0;mode<4;mode=mode+1)
+   for(seed=0;seed<4;seed=seed+1)
+    for(previous=0;previous<64;previous=previous+1)
+     for(next=0;next<64;next=next+1) begin
+      drive(0,seed,0,0);
+      drive(previous&3,(previous>>2)&3,(previous>>4)&3,mode);
+      drive(next&3,(next>>2)&3,(next>>4)&3,mode);
+     end
+  $display("CLOCK_GATE_CHECKS=%0d",checks);$finish;
+ end
+endmodule
+)";
+  file.close();
+  const auto executable = directory / "simulation.vvp";
+  const auto compile = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tb) +
+    " " + quote(directory / "top.v") + " " + quote(primitive);
+  ASSERT_EQ(0, std::system(compile.c_str()));
+  EXPECT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+}
+
 TEST_F(SNLVRLDumperTestParameters, testTableSelectInstanceDump) {
   ASSERT_NE(nullptr, createTableSelectInstance());
 

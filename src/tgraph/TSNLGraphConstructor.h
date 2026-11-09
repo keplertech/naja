@@ -69,7 +69,7 @@ class TSNLEdgeProxy final: public TEdgeProxy {
 /// identity for all sources of a declaration. Declarations must outlive the graph.
 class TSNLGraphConstructor {
   public:
-    /// Analysis association over existing terminals, not a replacement cell.
+    /// Association for decomposed or canonical clock gates.
     struct ClockGate {
       TGraph::NodeId clock;       //AND clock input.
       TGraph::NodeId enable;      //Latch data input.
@@ -77,6 +77,9 @@ class TSNLGraphConstructor {
       TGraph::NodeId latchGate;   //Latch transparency control, inverse of clock.
       TGraph::NodeId output;      //AND output.
       TGraph::EdgeId clockPassEdge;
+      // Canonical clock gates keep the held state internal; those node IDs are
+      // invalid. TEST_EN is an additional independently captured control.
+      TGraph::NodeId testEnable {TGraph::kInvalidNode};
     };
     enum class CoverageReason {
       Memory, InOut, Blackbox, UnsupportedLatch, MultipleDrivers,

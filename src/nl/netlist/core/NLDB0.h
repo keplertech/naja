@@ -37,7 +37,7 @@ class NLDB0 {
   friend class NLUniverse;
   public:
     // Snapshot compatibility version for canonical primitive library identities.
-    static constexpr unsigned LibraryIDVersion = 3;
+    static constexpr unsigned LibraryIDVersion = 4;
 
     enum class MemoryResetMode {
       None,
@@ -336,6 +336,14 @@ class NLDB0 {
     static SNLScalarTerm* getDFFClock();
     static SNLScalarTerm* getDFFData();
     static SNLScalarTerm* getDFFOutput();
+    /// Low-phase enable capture, GCLK = CLK & held(EN | TEST_EN).
+    /// Initially unknown state; independent of clock-domain classification.
+    static SNLDesign* getOrCreateClockGate();
+    static bool isClockGate(const SNLDesign* design);
+    static SNLScalarTerm* getClockGateClock();
+    static SNLScalarTerm* getClockGateEnable();
+    static SNLScalarTerm* getClockGateTestEnable();
+    static SNLScalarTerm* getClockGateOutput();
     /// \brief Plain transparent-high D latch.
     /// Pins: E (enable), D (data), Q (output).
     static SNLDesign* getDLatch();

@@ -70,6 +70,7 @@ namespace {
 
     // One ID per GateType; designID carries fan-in or fan-out.
     // Add fixed families above this final enumerator.
+    ClockGateLibraryID,
     GateLibraryIDBase
   };
 
@@ -683,6 +684,39 @@ namespace {
     SNLDesignModeling::setTermRole(dffOutput, SNLDesignModeling::SNLTermRole::DataOutput);
     setDB0SequentialModel(
       dff, dffClock, SNLDesignModeling::SequentialModel::Kind::FlipFlop);
+  }
+
+  void createClockGatePrimitive(naja::NL::NLLibrary* library) {
+    using namespace naja::NL;
+    using M = SNLDesignModeling;
+    auto* design = SNLDesign::create(library, ScalarPrimitiveDesignID,
+      SNLDesign::Type::Primitive, NLName("naja_clock_gate"));
+    auto* clk = SNLScalarTerm::create(design, Term0ID, SNLTerm::Direction::Input, NLName("CLK"));
+    auto* en = SNLScalarTerm::create(design, Term1ID, SNLTerm::Direction::Input, NLName("EN"));
+    auto* test = SNLScalarTerm::create(design, Term2ID, SNLTerm::Direction::Input, NLName("TEST_EN"));
+    auto* out = SNLScalarTerm::create(design, Term3ID, SNLTerm::Direction::Output, NLName("GCLK"));
+    M::setTermRole(clk, M::SNLTermRole::Clock, M::SNLActiveLevel::Low);
+    M::setTermRole(en, M::SNLTermRole::Enable);
+    M::setTermRole(test, M::SNLTermRole::ScanEnable);
+    M::setTermRole(out, M::SNLTermRole::DataOutput);
+    M::addInputsToClockArcs({en, test}, clk);
+    M::addClockToOutputsArcs(clk, {out});
+    M::SequentialModel model;
+    model.kind = M::SequentialModel::Kind::Latch;
+    auto c = model.clockedOn.addTerm(clk);
+    model.clockedOn.root = model.clockedOn.addOperation(M::BooleanExpression::Operator::Not, {c});
+    M::SequentialState state;
+    auto e = state.nextState.addTerm(en);
+    auto t = state.nextState.addTerm(test);
+    state.nextState.root = state.nextState.addOperation(M::BooleanExpression::Operator::Or, {e, t});
+    model.states.push_back(std::move(state));
+    M::SequentialOutput output;
+    output.term = out;
+    c = output.function.addTerm(clk);
+    auto held = output.function.addState(0);
+    output.function.root = output.function.addOperation(M::BooleanExpression::Operator::And, {c, held});
+    model.outputs.push_back(std::move(output));
+    M::setSequentialModel(design, model);
   }
 
   void createDLatchPrimitive(naja::NL::NLLibrary* rootLibrary) {
@@ -1415,6 +1449,9 @@ NLDB* NLDB0::create(NLUniverse* universe) {
   auto dffssneLibrary =
     NLLibrary::create(rootLibrary, DFFSSNELibraryID, NLLibrary::Type::Primitives, NLName(DFFSSNEName));
 
+  auto* clockGateLibrary = NLLibrary::create(rootLibrary, ClockGateLibraryID,
+    NLLibrary::Type::Primitives, NLName("naja_clock_gate"));
+  createClockGatePrimitive(clockGateLibrary);
   createAssignPrimitive(assignLibrary);
   createFAPrimitive(rootLibrary);
   createMux2Primitive(mux2Library, 1);
@@ -2784,6 +2821,32 @@ SNLScalarTerm* NLDB0::getDFFOutput() {
   return nullptr;
 }
 
+SNLDesign* NLDB0::getOrCreateClockGate() {
+  auto* library = getPrimitiveLibrary(ClockGateLibraryID);
+  return library ? library->getSNLDesign(ScalarPrimitiveDesignID) : nullptr;
+}
+
+bool NLDB0::isClockGate(const SNLDesign* design) {
+  return design && design == getOrCreateClockGate();
+}
+
+SNLScalarTerm* NLDB0::getClockGateClock() {
+  auto* model = getOrCreateClockGate();
+  return model ? model->getScalarTerm(NLName("CLK")) : nullptr;
+}
+SNLScalarTerm* NLDB0::getClockGateEnable() {
+  auto* model = getOrCreateClockGate();
+  return model ? model->getScalarTerm(NLName("EN")) : nullptr;
+}
+SNLScalarTerm* NLDB0::getClockGateTestEnable() {
+  auto* model = getOrCreateClockGate();
+  return model ? model->getScalarTerm(NLName("TEST_EN")) : nullptr;
+}
+SNLScalarTerm* NLDB0::getClockGateOutput() {
+  auto* model = getOrCreateClockGate();
+  return model ? model->getScalarTerm(NLName("GCLK")) : nullptr;
+}
+
 SNLDesign* NLDB0::getDLatch() {
   auto* dlatchLibrary = getPrimitiveLibrary(DLatchLibraryID);
   if (dlatchLibrary) {
@@ -3528,6 +3591,8 @@ SNLDesign* NLDB0::getOrCreatePrimitive(
           getBooleanParameter(parameters, "ARITHMETIC")});
     case MemoryLibraryID:
       return getOrCreateMemory(memorySignatureFromParameters(parameters));
+    case ClockGateLibraryID:
+      return designID == ScalarPrimitiveDesignID ? getOrCreateClockGate() : nullptr;
     case DLatchLibraryID:
       return getOrCreateDLatch(designID);
     case DFFLibraryID:

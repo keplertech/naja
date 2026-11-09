@@ -42282,3 +42282,40 @@ endmodule
     ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
   }
 }
+
+TEST_F(SNLSVConstructorTestSimple, clockGateInferencePreservesDataUseAndLiveAST) {
+  const auto path = writeSVTestFile("clock_gate_context", R"(
+module phase_cell(input source, request, test, output result);
+  reg held;
+  always_latch if (!source) held <= request | test;
+  assign result = source & held;
+endmodule
+module clock_gate_context(input clk, data, en, test, value,
+                          output reg q, output data_result);
+  wire gated;
+  (* keep = "true" *) phase_cell clock_use(clk, en, test, gated);
+  phase_cell data_use(data, en, test, data_result);
+  always @(posedge gated) q <= value;
+endmodule
+)");
+  SNLSVConstructor::ConstructOptions options;
+  options.keepASTLink = true;
+  SNLSVConstructor(library_).construct(path, options);
+  auto* top = library_->getSNLDesign(NLName("clock_gate_context"));
+  ASSERT_NE(nullptr, top);
+  auto* clock = top->getInstance(NLName("clock_use"));
+  auto* data = top->getInstance(NLName("data_use"));
+  ASSERT_NE(nullptr, clock);
+  ASSERT_NE(nullptr, data);
+  EXPECT_TRUE(NLDB0::isClockGate(clock->getModel()));
+  EXPECT_FALSE(NLDB0::isClockGate(data->getModel()));
+  EXPECT_EQ(4u, clock->getInstTerms().size());
+  EXPECT_FALSE(SNLAttributes::getAttributes(clock).empty());
+  ASSERT_NE(nullptr, clock->getRTLInfos());
+  const auto* link = SNLSVLiveASTLinkRegistry::get(library_->getDB());
+  ASSERT_NE(nullptr, link);
+  const auto* symbol = link->getSymbol(clock);
+  ASSERT_NE(nullptr, symbol);
+  const auto& objects = link->getObjects(symbol);
+  EXPECT_NE(objects.end(), std::find(objects.begin(), objects.end(), clock));
+}

@@ -24,6 +24,7 @@
 #include <fstream>
 #include "SNLRTLPrimitives.h"
 #include "SNLUtils.h"
+#include "SNLClockGating.h"
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 
@@ -5557,17 +5558,49 @@ class RTLConstructor {
     processReads_ = &processReads;
     combinational_ = true;
     sensitivity_ = process.allSensitivity ? nullptr : &sensitivity;
-    statements(process.statements, state);
+    // A single guarded signal-assignment group expresses a transparent latch.
+    // Start with the unknown-initialized scalar std_logic subset; bit defaults,
+    // explicit initialization and persistent local variables need other models.
+    const vhdl::SequentialStatement* latchGuard = nullptr;
+    if (process.statements.size() == 1 && process.variables.empty()) {
+      const auto& guard = process.statements.front();
+      if (guard.kind == vhdl::SequentialStatement::Kind::If && guard.alternative.empty() &&
+          !guard.statements.empty() && std::all_of(guard.statements.begin(), guard.statements.end(),
+            [&](const auto& statement) {
+              if (statement.kind != vhdl::SequentialStatement::Kind::Assignment ||
+                  statement.assignment.kind != vhdl::AssignmentKind::Signal ||
+                  !statement.assignment.indices.empty() || statement.assignment.selector) return false;
+              const auto name = key(statement.assignment.target);
+              const auto found = objects_.find(name);
+              if (found == objects_.end()) return false;
+              const auto& type = found->second.value.shape;
+              return type.ranges.empty() && type.size() == 1 &&
+                (type.types == std::vector<std::string>{"std_logic"} ||
+                 type.types == std::vector<std::string>{"std_ulogic"}) &&
+                !initialValues_.contains(found->second.value.bits.front());
+            })) latchGuard = &guard;
+    }
+    SNLBitNet* latchEnable = nullptr;
+    if (latchGuard) {
+      latchEnable = conditionValue(expression(*latchGuard->condition, state)).bits.front();
+      statements(latchGuard->statements, state);
+    } else statements(process.statements, state);
     sensitivity_ = nullptr;
     combinational_ = false;
     processReads_ = nullptr;
-    checkCombinationalSelfReads(state, processReads);
+    if (!latchGuard) checkCombinationalSelfReads(state, processReads);
     for (const auto& [name, written] : state.written) {
       const auto& values = state.scheduled.at(name);
       const auto& targets = objects_.at(name).value.bits;
       for (size_t i = 0; i < written.size(); ++i) if (written[i]) {
         if (!values[i]) fail("incomplete combinational assignment would infer a latch: " + name);
-        drive(targets[i], values[i]);
+        if (latchGuard) {
+          if (!drivers_.insert(targets[i]).second) fail("multiple drivers for latched signal");
+          auto* latch = origin(SNLInstance::create(design_, NLDB0::getDLatch()));
+          latch->setTermNet(NLDB0::getDLatchEnable(), latchEnable);
+          latch->setTermNet(NLDB0::getDLatchData(), values[i]);
+          latch->setTermNet(NLDB0::getDLatchOutput(), targets[i]);
+        } else drive(targets[i], values[i]);
       }
     }
     removeProcessDeclarations(process);
@@ -6145,6 +6178,17 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
   try {
     auto* design = build(library, selected, {});
     if (noRoot) fail("cannot infer a unique RTL top entity; specify an explicit top");
+    std::optional<VHDLIntentValue> gateIntent;
+    SNLClockGating::Hooks clockGateHooks;
+    clockGateHooks.beforeReplace = [&](SNLInstance* instance) {
+      gateIntent.reset();
+      if (const auto* record = VHDLIntent::get(instance)) gateIntent = *record;
+    };
+    clockGateHooks.afterReplace = [&](SNLInstance* instance) {
+      if (gateIntent) VHDLIntent::attach(instance, intentSession, std::move(*gateIntent));
+      gateIntent.reset();
+    };
+    SNLClockGating::infer(design, clockGateHooks);
     return design;
   } catch (...) {
     for (auto* design : created) design->destroy();

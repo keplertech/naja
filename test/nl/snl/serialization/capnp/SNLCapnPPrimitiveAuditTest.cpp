@@ -45,7 +45,8 @@ void PrintTo(const PrimitiveCase& primitive, std::ostream* out) {
 }
 
 std::vector<PrimitiveCase> primitiveCases(bool wide = true) {
-  std::vector<PrimitiveCase> cases{{"assign", NLDB0::getAssign}, {"fa", NLDB0::getFA}};
+  std::vector<PrimitiveCase> cases{{"assign", NLDB0::getAssign}, {"fa", NLDB0::getFA},
+    {"clock_gate", NLDB0::getOrCreateClockGate}};
   const std::vector<std::pair<std::string, SNLDesign*(*)(size_t)>> sized{
     {"mux", NLDB0::getOrCreateMux2}, {"latch", NLDB0::getOrCreateDLatch},
     {"dff", NLDB0::getOrCreateDFF}, {"dffn", NLDB0::getOrCreateDFFN},

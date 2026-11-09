@@ -185,7 +185,8 @@ uint64_t getParameterTruthTableBits(
 
 bool isDB0SequentialPrimitive(const naja::NL::SNLDesign* design) {
   return design &&
-         (naja::NL::NLDB0::isDLatch(design) ||
+         (naja::NL::NLDB0::isClockGate(design) ||
+          naja::NL::NLDB0::isDLatch(design) ||
           naja::NL::NLDB0::isDFF(design) ||
           naja::NL::NLDB0::isDFFN(design) ||
           naja::NL::NLDB0::isDFFRN(design) ||
@@ -205,6 +206,9 @@ bool isDB0SequentialPrimitive(const naja::NL::SNLDesign* design) {
 }
 
 naja::NL::SNLScalarTerm* getDB0SequentialClockTerm(const naja::NL::SNLDesign* design) {
+  if (naja::NL::NLDB0::isClockGate(design)) {
+    return naja::NL::NLDB0::getClockGateClock();
+  }
   if (naja::NL::NLDB0::isDLatch(design)) {
     return design->getScalarTerm(naja::NL::NLName("E"));
   }

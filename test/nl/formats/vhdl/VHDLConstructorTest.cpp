@@ -7980,3 +7980,59 @@ TEST_F(VHDLConstructorTest, ScheduledOverwritePreservesStorageAndOrigins) {
     }
   }
 }
+
+TEST_F(VHDLConstructorTest, ClockGateInferencePreservesDataUseAndIntent) {
+  VHDLConstructor::ConstructOptions options;
+  options.keepASTLink = true;
+  auto* top = VHDLConstructor(library_, options).construct(R"(
+library ieee; use ieee.std_logic_1164.all;
+entity phase_cell is port(source, request, test : in std_logic; result : out std_logic); end;
+architecture rtl of phase_cell is signal held : std_logic; begin
+  process(source, request, test) begin
+    if source = '0' then held <= request or test; end if;
+  end process;
+  result <= source and held;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity storage_cell is port(clk, d : in std_logic; q : out std_logic); end;
+architecture rtl of storage_cell is begin
+  process(clk) begin if rising_edge(clk) then q <= d; end if; end process;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is port(clk, data, en, test, value : in std_logic; q, data_result : out std_logic); end;
+architecture rtl of top is signal gated : std_logic; begin
+  clock_use: entity work.phase_cell port map(clk, en, test, gated);
+  data_use: entity work.phase_cell port map(data, en, test, data_result);
+  storage_use: entity work.storage_cell port map(gated, value, q);
+end;
+)", "top");
+  ASSERT_NE(nullptr, top);
+  auto* clock = top->getInstance(NLName("clock_use"));
+  auto* data = top->getInstance(NLName("data_use"));
+  ASSERT_NE(nullptr, clock);
+  ASSERT_NE(nullptr, data);
+  EXPECT_TRUE(NLDB0::isClockGate(clock->getModel()));
+  EXPECT_FALSE(NLDB0::isClockGate(data->getModel()));
+  EXPECT_NE(nullptr, clock->getRTLInfos());
+  EXPECT_NE(nullptr, clock->getProperty("VHDLIntentRecord"));
+}
+
+TEST_F(VHDLConstructorTest, GuardedLatchesRejectUnsupportedInitializationAndSensitivity) {
+  for (const auto& source : {
+    R"(entity top is port(e,d : in bit; q : out bit); end;
+       architecture rtl of top is begin
+       process(e,d) begin if e = '1' then q <= d; end if; end process; end;)",
+    R"(library ieee; use ieee.std_logic_1164.all;
+       entity top is port(e,d : in std_logic; q : out std_logic); end;
+       architecture rtl of top is signal held : std_logic := '0'; begin
+       process(e,d) begin if e = '1' then held <= d; end if; end process;
+       q <= held; end;)",
+    R"(library ieee; use ieee.std_logic_1164.all;
+       entity top is port(e,d : in std_logic; q : out std_logic); end;
+       architecture rtl of top is begin
+       process(e) begin if e = '1' then q <= d; end if; end process; end;)"
+  }) {
+    auto* library = NLLibrary::create(library_->getDB());
+    EXPECT_THROW(VHDLConstructor(library).construct(source), NLException);
+  }
+}

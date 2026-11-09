@@ -1837,6 +1837,16 @@ bool SNLVRLDumper::dumpInstance(
         " on instance " + instance->getString());
     }
   }
+  if (NLDB0::isClockGate(instance->getModel())) {
+    emitNajaPrimitiveModels_ = true;
+    const auto name = instance->isUnnamed() ? createInstanceName(instance, naming)
+      : instance->getName().getString();
+    dumpAttributes(instance, o, AttributeDumpSite::Instance);
+    o << "naja_clock_gate " << dumpName(name);
+    dumpInstanceInterface(instance, o, naming);
+    o << ";\n";
+    return true;
+  }
   if (NLDB0::isMux2(instance->getModel())) {
     emitNajaMux2Model_ = true;
     emitNajaPrimitiveModels_ = true;
@@ -3060,6 +3070,20 @@ void SNLVRLDumper::dumpNajaPrimitiveFile(const std::filesystem::path& path) {
   dumpNajaDFFModel(outFile);
   outFile << '\n';
   dumpNajaDLatchModel(outFile);
+  outFile << R"(
+// The enable state changes only in the low phase, when GCLK is zero.
+// Scheduling GCLK on CLK events preserves that joint clock-gate contract.
+/* verilator lint_off LATCH */
+module naja_clock_gate(input CLK, input EN, input TEST_EN, output reg GCLK);
+  reg enabled;
+  always @* begin
+    if (!CLK) enabled = EN | TEST_EN;
+  end
+  initial GCLK = CLK & enabled;
+  always @(CLK) GCLK = CLK & enabled;
+endmodule
+/* verilator lint_on LATCH */
+)";
   outFile << '\n';
   dumpNajaDFFNModel(outFile);
   outFile << '\n';

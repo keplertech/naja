@@ -30,6 +30,7 @@ set(SNL_SOURCES
   snl/SNLDesign.cpp
   snl/SNLSharedPath.cpp snl/SNLPath.cpp
   snl/SNLParameter.cpp snl/SNLInstParameter.cpp
+  snl/SNLClockGating.cpp
   snl/SNLUtils.cpp
   snl/SNLOccurrence.cpp
   snl/SNLEquipotential.cpp
@@ -83,6 +84,7 @@ set(HEADERS
   snl/SNLInstance.h snl/SNLInstTerm.h
   snl/SNLSharedPath.h snl/SNLPath.h
   snl/SNLParameter.h snl/SNLInstParameter.h
+  snl/SNLClockGating.h
   snl/SNLUtils.h
   snl/SNLOccurrence.h
   snl/SNLEquipotential.h

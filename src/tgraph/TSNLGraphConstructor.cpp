@@ -113,6 +113,7 @@ struct Transparent {
   bool inverted;
 };
 struct Candidates {
+  std::vector<TSNLGraphConstructor::ClockGate> canonicalGates;
   std::vector<Latch> latches;
   std::vector<AndGate> conjunctions;
   std::vector<Transparent> transparent;
@@ -152,6 +153,10 @@ class LeafArcsBuilder {
       }
       for (const auto& capture : captures_) graph_.createCaptureEdge(capture.first, capture.second);
       auto driver = [&](TGraph::NodeId id) { return graph_.getNode(id)->getProxy()->getDriverNode(id); };
+      for (auto& gate : candidates.canonicalGates) {
+        gate.output = driver(gate.output);
+        gate.clockPassEdge = ids[gate.clockPassEdge];
+      }
       for (auto& latch : candidates.latches) latch.output = driver(latch.output);
       for (auto& transparent : candidates.transparent) transparent.output = driver(transparent.output);
       for (auto& gate : candidates.conjunctions) {
@@ -440,6 +445,24 @@ void buildMemory(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& 
 void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& path, SNLInstance* instance, Candidates& candidates, Coverage& coverage) {
   auto* model = instance->getModel();
   const SNLOccurrence occurrence(path, instance);
+  if (NLDB0::isClockGate(model)) {
+    auto pin = [&](SNLBitTerm* term, PinRole role) {
+      auto id = nodes.at(instance->getInstTerm(term));
+      graph.getNode(id)->setCellKind(CellKind::Combinational);
+      graph.getNode(id)->setPinRole(role);
+      return id;
+    };
+    auto clock = pin(NLDB0::getClockGateClock(), PinRole::Clock);
+    auto enable = pin(NLDB0::getClockGateEnable(), PinRole::Enable);
+    auto test = pin(NLDB0::getClockGateTestEnable(), PinRole::Enable);
+    auto output = pin(NLDB0::getClockGateOutput(), PinRole::DataOutput);
+    auto pass = graph.createEdge(clock, output,
+      new TSNLEdgeProxy(TSNLEdgeProxy::Kind::ClockPass, occurrence));
+    graph.getEdge(pass)->setKind(TEdge::Kind::ClockPass);
+    candidates.canonicalGates.push_back({clock, enable, TGraph::kInvalidNode,
+      TGraph::kInvalidNode, output, pass, test});
+    return;
+  }
   if (Model::hasMemoryInterface(model)) {
     buildMemory(graph, nodes, path, instance);
     return;
@@ -885,6 +908,8 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
   for (size_t i = 0; i < leaves.size(); ++i) {
     auto& local = leafCandidates[i];
     leaves[i]->publish(local);
+    candidates.canonicalGates.insert(candidates.canonicalGates.end(),
+      local.canonicalGates.begin(), local.canonicalGates.end());
     candidates.latches.insert(candidates.latches.end(), local.latches.begin(), local.latches.end());
     candidates.conjunctions.insert(candidates.conjunctions.end(), local.conjunctions.begin(), local.conjunctions.end());
     candidates.transparent.insert(candidates.transparent.end(), local.transparent.begin(), local.transparent.end());
@@ -925,12 +950,15 @@ void TSNLGraphConstructor::construct(const naja::DNL::DNLFull& dnl) {
   }
   connections.publish(*graph, coverage, opaque, stats);
   auto gates = recognizeClockGates(*graph, candidates, coverage);
+  gates.insert(gates.end(), candidates.canonicalGates.begin(), candidates.canonicalGates.end());
   for (const auto& gate : gates) {
     for (auto id : graph->getNode(gate.output)->getInEdges()) {
       graph->getEdge(id)->setKind(id == gate.clockPassEdge ? TEdge::Kind::ClockPass : TEdge::Kind::DataOnly);
     }
     static_cast<TSNLEdgeProxy*>(graph->getEdge(gate.clockPassEdge)->getProxy())->kind_ = TSNLEdgeProxy::Kind::ClockPass;
     graph->createCaptureEdge(gate.clock, gate.enable, TCaptureEdge::Kind::ClockGateControl);
+    if (gate.testEnable != TGraph::kInvalidNode)
+      graph->createCaptureEdge(gate.clock, gate.testEnable, TCaptureEdge::Kind::ClockGateControl);
   }
   CoverageCounts counts;
   for (const auto& entry : coverage.entries) ++counts[entry.reason];

@@ -386,6 +386,45 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 else:
                     self.assert_artifacts_equal(baseline, original)
 
+    def test_systemverilog_clock_gate_context(self):
+        self.check_determinism("sv", """
+module phase_cell(input source, request, test, output result);
+  reg held;
+  always_latch if (!source) held <= request | test;
+  assign result = source & held;
+endmodule
+module top(input clk, data, en, test, value, output reg q, output data_result);
+  wire gated;
+  phase_cell clock_use(clk, en, test, gated);
+  phase_cell data_use(data, en, test, data_result);
+  always @(posedge gated) q <= value;
+endmodule
+""")
+
+    def test_vhdl_clock_gate_context(self):
+        self.check_determinism("vhd_intent", """
+library ieee; use ieee.std_logic_1164.all;
+entity phase_cell is port(source, request, test : in std_logic; result : out std_logic); end;
+architecture rtl of phase_cell is signal held : std_logic; begin
+  process(source, request, test) begin
+    if source = '0' then held <= request or test; end if;
+  end process;
+  result <= source and held;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity storage_cell is port(clk, d : in std_logic; q : out std_logic); end;
+architecture rtl of storage_cell is begin
+  process(clk) begin if rising_edge(clk) then q <= d; end if; end process;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is port(clk, data, en, test, value : in std_logic; q, data_result : out std_logic); end;
+architecture rtl of top is signal gated : std_logic; begin
+  clock_use: entity work.phase_cell port map(clk, en, test, gated);
+  data_use: entity work.phase_cell port map(data, en, test, data_result);
+  storage_use: entity work.storage_cell port map(gated, value, q);
+end;
+""")
+
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 

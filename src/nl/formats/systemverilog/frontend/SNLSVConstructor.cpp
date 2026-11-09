@@ -55,6 +55,7 @@
 #include "SNLInstance.h"
 #include "SNLInstTerm.h"
 #include "SNLUtils.h"
+#include "SNLClockGating.h"
 #include "SNLParameter.h"
 #include "SNLRTLInfos.h"
 #include "SNLRTLPrimitives.h"
@@ -198,6 +199,18 @@ void SNLSVLiveASTLink::bind(NLObject* object, const slang::ast::Symbol& symbol) 
   if (std::find(objects.begin(), objects.end(), object) == objects.end()) {
     objects.push_back(object);
   }
+}
+
+void SNLSVLiveASTLink::unbind(NLObject* object) {
+  const auto found = symbolByObject_.find(object);
+  if (found == symbolByObject_.end()) return;
+  const auto symbols = objectsBySymbol_.find(found->second);
+  if (symbols != objectsBySymbol_.end()) {
+    auto& objects = symbols->second;
+    objects.erase(std::remove(objects.begin(), objects.end(), object), objects.end());
+    if (objects.empty()) objectsBySymbol_.erase(symbols);
+  }
+  symbolByObject_.erase(found);
 }
 
 const slang::ast::Symbol* SNLSVLiveASTLink::getSymbol(const NLObject* object) const {
@@ -1546,6 +1559,28 @@ class SNLSVConstructorImpl {
           SNLUtils::mergeRepeatedMuxSelections(design);
           warnUndrivenInlinedCallNets(design);
         }
+        std::vector<SNLDesign*> clockGateRoots;
+        for (const auto* top : root.topInstances) {
+          auto found = bodyToDesign_.find(&top->body);
+          if (found != bodyToDesign_.end()) clockGateRoots.push_back(found->second);
+        }
+        const slang::ast::Symbol* gateSymbol = nullptr;
+        SNLClockGating::Hooks clockGateHooks;
+        const auto unbindGate = [&](SNLInstance* instance) {
+          if (!liveASTLink_) return;
+          liveASTLink_->unbind(instance);
+          for (auto* term : instance->getInstTerms()) liveASTLink_->unbind(term);
+        };
+        clockGateHooks.beforeReplace = [&](SNLInstance* instance) {
+          gateSymbol = liveASTLink_ ? liveASTLink_->getSymbol(instance) : nullptr;
+          unbindGate(instance);
+        };
+        clockGateHooks.afterReplace = [&](SNLInstance* instance) {
+          if (liveASTLink_ && gateSymbol) liveASTLink_->bind(instance, *gateSymbol);
+          gateSymbol = nullptr;
+        };
+        clockGateHooks.beforeRemove = unbindGate;
+        SNLClockGating::infer(clockGateRoots, clockGateHooks);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         maybeWriteSVPerfReportSnapshot();
 #endif
