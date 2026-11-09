@@ -26,7 +26,7 @@ MANIFEST = "naja-pulp-source.json"
 DEFAULT_CACHE = ROOT / "build/pulp-benchmark-sources"
 # Keep this small enough for pull requests; the complete survey is opt-in.
 SMOKE = ("cv32e40p.default", "cvfpu.fp32_fma", "ibex.minimal", "spi_host.default",
-         "nvdla.top", "snitch_cluster.minimal")
+         "nvdla.top", "snitch_cluster.minimal", "ara.default")
 # Case-specific Slang compatibility settings for the pinned source suite.
 SLANG_ARGS = {
     "nvdla.top": ["--timescale=1ns/1ps"],

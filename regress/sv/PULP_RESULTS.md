@@ -5,6 +5,41 @@ SPDX-License-Identifier: Apache-2.0
 
 # PULP EDA benchmark frontend survey
 
+## Static output-port slice connectivity follow-up (2026-11-09)
+
+The nightly `ara.default` lint failure reports two `MULTIDRIVEN` warnings on
+an output connection. A constant indexed part-select of a packed array was
+lowered as a vector-select read, connecting the child output to the selector's
+output instead of the parent bus slice.
+
+Static indexed selections now preserve packed element widths and declaration
+direction. Output and inout selections resolve assignment destinations before
+read lowering, and negative constant indices retain their signed value.
+Synthetic regressions check direct live connectivity for flat and nested packed
+arrays, both indexed directions, ascending declarations, nonzero and negative
+bounds, and inout connections. Generated netlists are simulated exhaustively
+for all 4,096 binary input patterns plus X/Z data. Cross-process coverage retains
+live-state, Verilog, DOT and NajaIF snapshot/reload comparisons.
+
+CMake validation passes all 1,357 SystemVerilog frontend tests and the 33-case
+cross-process determinism suite. The packed-slice synthetic regression also
+passes CI's Verilator 5.046 image; all 11 synthetic variants pass local Verilator
+5.052 lint with the runner's existing ASCRANGE exemption. No new warning
+suppression is added. REUSE passes. Bazel validation is blocked by the local
+Xcode toolchain's undeclared `SDKSettings.json` input.
+
+The prepared nightly Ara input loads in 240.73 s, the efficiency audit takes
+20.72 s and dumping takes 6.94 s in the local Release build. The 103,157,519-byte
+dump connects the child output directly to the parent slice; the erroneous
+multiply and vector-select instances are gone. Full lint of that dump reaches
+the 600-second limit without diagnostics under both local Verilator 5.052 and
+the Verilator 5.046 Docker image. This establishes the corrected connectivity,
+not an end-to-end passing benchmark; Linux CI completion remains unverified.
+Ara is now included in the regular complete-check selection, so PRs and pushes
+run its independent load/dump/lint job as well as scheduled runs. The stage
+limits and failure policy are unchanged; the nightly survey does not duplicate
+this regular case.
+
 ## Ara automatic-function lowering follow-up (2026-10-29)
 
 The pinned `ara.default` benchmark now **passes loading and structural Verilog

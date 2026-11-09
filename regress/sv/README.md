@@ -691,11 +691,11 @@ Every consumer checks the restored native runtime before running a benchmark.
 There is no workflow `max-parallel` cap; GitHub schedules jobs according to the
 account's available runner concurrency.
 
-Regular runs fan out into **12 independent verification jobs**: six complete
+Regular runs fan out into **13 independent verification jobs**: seven complete
 smoke checks, four larger-design elaboration checks, C910 strict lint, and ITA
 functional validation. A nightly run at 02:23 UTC or manual `survey=true` adds
-16 further complete-check jobs, covering **all 23 release variants** together
-with the seven regular full checks. That produces **28 independent verification
+15 further complete-check jobs, covering **all 23 release variants** together
+with the eight regular full checks. That produces **28 independent verification
 jobs**, including the four elaboration checks and ITA. Each additional survey
 variant has its own 600-second limit per load/dump and per lint, matching C910.
 Frontend matrix jobs have a 30-minute overall limit to allow both stages,
@@ -703,8 +703,10 @@ setup, container cleanup, and artifact publication. Known failures fail only the
 Matrix fail-fast is disabled, so other variants finish and retain reports.
 No complete-check case is duplicated between regular and survey jobs.
 The regular smoke set includes `nvdla.top` alongside CV32E40P, FP32 FMA,
-minimal Ibex, SPI host, and `snitch_cluster.minimal`. The Snitch cluster check
-loads, dumps, and lints the complete design on every regular run.
+minimal Ibex, SPI host, `snitch_cluster.minimal`, and `ara.default`. The Snitch
+cluster and Ara checks load, dump, and lint the complete design on every regular
+run. Ara retains the same strict lint and 600-second stage limits as the survey;
+a lint failure or timeout fails its independent regression job.
 NVDLA uses `frontend_options={"slang": ["--timescale=1ns/1ps"]}` for
 modules without an explicit time scale; source time scales still take precedence.
 The runner records this fallback in each case's `summary.json`.
