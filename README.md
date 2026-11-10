@@ -57,7 +57,7 @@ integrate around Naja's C++ netlist engine:
 </p>
 
 <details>
-<summary>View interactive diagram (desktop browser recommended; may not render in the GitHub iPhone app)</summary>
+<summary>View interactive diagram — desktop browser</summary>
 
 **GitHub iPhone app:** If this diagram does not render, use the PNG above or open this page in a desktop browser.
 
@@ -75,7 +75,7 @@ config:
     clusterBorder: '#cbd5e1'
 ---
 flowchart LR
-    sv["`**SystemVerilog**`"] ==> slang(["`**slang**<br>SystemVerilog Frontend`"])
+    sv["`**SystemVerilog**`"] ==> slang(["`**slang**<br>SystemVerilog Frontend<br>(third-party)`"])
     vhdl["`**VHDL**`"] ==> naja-vhdl["`**naja-vhdl**<br> VHDL Frontend (Beta)`"]
     verilog["`**gate-level verilog**`"] ==> naja-verilog["`**naja-verilog**<br>gate verilog Parser`"]
     naja-verilog ==> naja["`**naja C++ · netlist engine**<br><br>hierarchy · buses<br>bit-level nets &amp; terms · connectivity<br>Primitive Functional Models`"]
