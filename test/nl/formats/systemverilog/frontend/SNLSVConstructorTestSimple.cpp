@@ -40187,6 +40187,183 @@ endmodule
      "arbitrary runtime expression is not representable"});
 }
 
+TEST_F(SNLSVConstructorTestSimple, parseConstantInitialArraysWithStaticBranches) {
+  SNLSVConstructor constructor(library_);
+  const auto source = writeSVTestFile("constant_initial_arrays", R"(
+module constant_initial_arrays #(parameter MODE = "undefined")
+  (input logic [2:0] address, output logic [6:0] q, r);
+  logic [6:0] ascending [2:6], descending [6:2];
+  initial begin
+    for (int i = 2; i <= 6; i++) begin
+      case (MODE)
+        "random": begin ascending[i] = $urandom(); descending[i] = $urandom(); end
+        default: begin
+          ascending[i] = i == 4 ? 7'b10xz011 : 7'(i + 9);
+          descending[i] = 7'(i + 17);
+        end
+      endcase
+    end
+  end
+  assign q = ascending[address];
+  assign r = descending[address];
+endmodule
+)");
+  EXPECT_NO_THROW(constructor.construct(source));
+  auto* top = library_->getSNLDesign(NLName("constant_initial_arrays"));
+  ASSERT_NE(nullptr, top);
+  const auto dump = dumpTopAndGetVerilogPath(top, "constant_initial_arrays_dump");
+  const auto text = readTextFile(dump);
+  EXPECT_NE(std::string::npos, text.find("10xz011"));
+  if (std::system("command -v iverilog >/dev/null 2>&1") == 0 &&
+      std::system("command -v vvp >/dev/null 2>&1") == 0) {
+    const auto tb = dump.parent_path() / "tb.sv";
+    std::ofstream(tb) << R"(
+module tb;
+  reg [2:0] address;
+  wire [6:0] q, r;
+  constant_initial_arrays dut(address, q, r);
+  initial begin
+    for (int i = 2; i <= 6; i++) begin
+      address = i;
+      #1;
+      if (q !== (i == 4 ? 7'b10xz011 : 7'(i + 9))) $fatal(1, "ascending value");
+      if (r !== 7'(i + 17)) $fatal(1, "descending value");
+    end
+    $finish;
+  end
+endmodule
+)";
+    const auto executable = dump.parent_path() / "simulation";
+    auto quote = [](const auto& path) { return "\"" + path.string() + "\""; };
+    const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " +
+      quote(tb) + " " + quote(dump) + " " +
+      quote(dump.parent_path() / "naja_primitives.v") + " && vvp " + quote(executable);
+    EXPECT_EQ(0, std::system(command.c_str()));
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseInitialArrayWithRuntimeWriterRejected) {
+  SNLSVConstructor constructor(library_);
+  const auto source = writeSVTestFile("initial_array_runtime_writer", R"(
+module initial_array_runtime_writer(input logic clk, input logic [2:0] address,
+                                    input logic [6:0] d, output logic [6:0] q);
+  logic [6:0] table_data [8];
+  initial for (int i = 0; i < 8; i++) table_data[i] = 'x;
+  always @(posedge clk) table_data[address] <= d;
+  assign q = table_data[address];
+endmodule
+)");
+  EXPECT_THROW(constructor.construct(source), SNLSVConstructorException);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseRuntimeInitialArraysRejected) {
+  size_t index = 0;
+  for (const auto& value : {"$urandom()", "d"}) {
+    SNLSVConstructor constructor(library_);
+    const auto name = "runtime_initial_arrays_" + std::to_string(index++);
+    const auto source = writeSVTestFile("runtime_initial_arrays", std::string(R"(
+module )") + name + R"((input logic [6:0] d, input logic [2:0] address,
+                               output logic [6:0] q);
+  logic [6:0] data [8];
+  initial for (int i = 0; i < 8; i++) data[i] = )" + value + R"(;
+  assign q = data[address];
+endmodule
+)");
+    EXPECT_THROW(constructor.construct(source), SNLSVConstructorException);
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseConstantArrayAdditionalWritersRejected) {
+  size_t index = 0;
+  for (const auto& writer : {
+         "always @(posedge clk) {data[0], data[1]} <= {d, d};",
+         "function void store(); data[0] = d; endfunction\n"
+         "always @(posedge clk) store();"}) {
+    SNLSVConstructor constructor(library_);
+    const auto name = "constant_array_additional_writer_" + std::to_string(index++);
+    const auto source = writeSVTestFile(name,
+      "module " + name + R"((input logic clk, input logic [6:0] d, output logic [6:0] q);
+  logic [6:0] data [2];
+  initial for (int i = 0; i < 2; i++) data[i] = 7'd13;
+  assign q = data[0];
+)" + writer + "\nendmodule\n");
+    expectUnsupportedConstruct(constructor, source, {"Unsupported initial block"});
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseMemoryPreservedBySharedAsyncReset) {
+  SNLSVConstructor constructor(library_);
+  const auto source = writeSVTestFile("memory_preserved_by_reset", R"(
+module memory_preserved_by_reset(input logic clk, rst_n, req, we,
+  input logic [2:0] address, input logic [11:0] d, input logic [1:0] mask,
+  output logic [11:0] q);
+  logic [11:0] storage [8];
+  logic [2:0] saved_address;
+  logic [11:0] result;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) saved_address <= '0;
+    else begin
+      result <= storage[req && !we ? address : saved_address];
+      if (req) begin
+        if (we) begin
+          for (int k = 0; k < 2; k++)
+            if (mask[k]) storage[address][k*6+:6] <= d[k*6+:6];
+          if (mask == 2'b11) storage[address][2:0] <= d[11:9];
+        end else saved_address <= address;
+      end
+    end
+  end
+  assign q = result;
+endmodule
+)");
+  EXPECT_NO_THROW(constructor.construct(source));
+  auto* top = library_->getSNLDesign(NLName("memory_preserved_by_reset"));
+  ASSERT_NE(nullptr, top);
+  auto* memory = findOnlyPrimitiveInstance(top, NLDB0::isMemory);
+  ASSERT_NE(nullptr, memory);
+  EXPECT_EQ(NLDB0::MemoryResetMode::None, NLDB0::getMemorySignature(memory).resetMode);
+  EXPECT_TRUE(NLDB0::getMemorySignature(memory).independentWriteClocks);
+  if (std::system("command -v iverilog >/dev/null 2>&1") == 0 &&
+      std::system("command -v vvp >/dev/null 2>&1") == 0) {
+    const auto dump = dumpTopAndGetVerilogPath(top, "memory_preserved_by_reset_dump");
+    const auto tb = dump.parent_path() / "tb.sv";
+    std::ofstream(tb) << R"(
+module tb;
+  reg clk = 0, rst_n = 1, req = 0, we = 0;
+  reg [2:0] address = 3;
+  reg [11:0] d;
+  reg [1:0] mask;
+  wire [11:0] q;
+  memory_preserved_by_reset dut(clk, rst_n, req, we, address, d, mask, q);
+  task tick; #1; clk = 1; #1; clk = 0; #1; endtask
+  initial begin
+    rst_n = 0; tick;
+    rst_n = 1; req = 1; we = 1; mask = 1; d = 12'habc; tick;
+    mask = 2; d = 12'h450; tick;
+    we = 0; tick;
+    if (q !== 12'h47c) $fatal(1, "masked write");
+    we = 1; mask = 3; d = 12'h19a; tick;
+    we = 0; tick;
+    if (q !== 12'h198) $fatal(1, "source-order bit priority");
+    rst_n = 0; we = 1; mask = 3; d = 12'hfff; tick;
+    if (q !== 12'h198) $fatal(1, "unreset read register");
+    rst_n = 1; we = 0; tick;
+    if (q !== 12'h198) $fatal(1, "memory preserved across reset");
+    req = 0; address = 6; tick;
+    if (q !== 12'h198) $fatal(1, "held read address");
+    $finish;
+  end
+endmodule
+)";
+    const auto executable = dump.parent_path() / "simulation";
+    auto quote = [](const auto& path) { return "\"" + path.string() + "\""; };
+    const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " +
+      quote(tb) + " " + quote(dump) + " " +
+      quote(dump.parent_path() / "naja_primitives.v") + " && vvp " + quote(executable);
+    EXPECT_EQ(0, std::system(command.c_str()));
+  }
+}
+
 TEST_F(SNLSVConstructorTestSimple, parseInitialRegisterInitWithoutRegisterUseUnsupported) {
   SNLSVConstructor constructor(library_);
   auto svPath = writeSVTestFile(

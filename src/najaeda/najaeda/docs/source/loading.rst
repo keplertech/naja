@@ -237,6 +237,9 @@ data, and bit mask. Constant packed bit/part selections and statically unrolled
 masked-write loops are supported. Positive and negative clock edges are
 supported; negative edges use an inverted write-clock signal. No raw storage
 array or flops with multiple clocks are created.
+Unreset memories with nonblocking packed-slice writes in a single process also
+use masked ports, all connected to the same clock, avoiding full-word
+read/modify/write logic for each slice.
 
 Memory inference also applies to constant-index writes and statically unrolled
 loops. Reading an inferred array as a whole, including through an output port,
@@ -249,11 +252,21 @@ continue to use ordinary registers.
 
 Read ports are asynchronous; registered reads and read enables remain ordinary
 flops around the memory. Nonblocking reads on a write edge observe the old data.
+In a shared asynchronous-reset process, the reset branch may reset surrounding
+registers while preserving memory contents. When that branch does not write the
+memory, its normal write guards inhibit writes during reset and the memory
+primitive retains its contents.
 Multiple writes within one process preserve source-order priority per bit;
 untouched bits are masked, rather than written back from an earlier read.
 Simultaneous writes from different processes to the same address and overlapping
 bits are unspecified, as in the source RTL. No cross-process priority is added.
 The ``multi_clock_memory_collision`` diagnostic states this limitation.
+
+Initial-only unpacked arrays can be initialized by statically evaluable
+``initial`` blocks, including bounded loops and constant ``if``/``case``
+branches. Their values become constant storage, preserving declaration bounds
+and four-state ``X``/``Z`` values. Runtime inputs, random initialization and
+arrays with additional writers are not handled by this constant-storage path.
 
 This inference supports fixed, one-dimensional unpacked memories whose lowest
 index is zero, with at least one runtime write address. Initialization supports

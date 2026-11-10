@@ -29,6 +29,47 @@ class SNLDesignModelingTest0: public ::testing::Test {
     }
 };
 
+TEST_F(SNLDesignModelingTest0, canonicalMemoryTermRolesMatchInterface) {
+  NLUniverse::create();
+  using Modeling = SNLDesignModeling;
+  using Role = Modeling::SNLTermRole;
+  for (auto mode : {NLDB0::MemoryResetMode::None, NLDB0::MemoryResetMode::AsyncLow,
+                    NLDB0::MemoryResetMode::AsyncHigh, NLDB0::MemoryResetMode::SyncLow,
+                    NLDB0::MemoryResetMode::SyncHigh}) {
+    for (bool independent : {false, true}) {
+      if (independent && mode != NLDB0::MemoryResetMode::None) continue;
+      for (size_t writes : {0u, 3u}) {
+        if (!writes && (independent || mode != NLDB0::MemoryResetMode::None)) continue;
+        auto* memory = NLDB0::getOrCreateMemory({7, 5, 3, 2, writes, mode, independent});
+        const auto interface = Modeling::getMemoryInterface(memory);
+        auto check = [](const auto& terms, Role role) {
+          for (const auto* term : terms) EXPECT_EQ(role, Modeling::getTermRole(term));
+        };
+        if (interface.clock) EXPECT_EQ(Role::Clock, Modeling::getTermRole(interface.clock));
+        if (interface.reset) {
+          auto role = Role::Other;
+          if (mode == NLDB0::MemoryResetMode::AsyncLow || mode == NLDB0::MemoryResetMode::AsyncHigh)
+            role = Role::AsyncReset;
+          if (mode == NLDB0::MemoryResetMode::SyncLow || mode == NLDB0::MemoryResetMode::SyncHigh)
+            role = Role::SyncReset;
+          EXPECT_EQ(role, Modeling::getTermRole(interface.reset));
+        }
+        for (const auto& port : interface.readPorts) {
+          check(port.address, Role::MemoryReadAddress);
+          check(port.data, Role::MemoryReadData);
+        }
+        for (const auto& port : interface.writePorts) {
+          check(port.address, Role::MemoryWriteAddress);
+          check(port.data, Role::MemoryWriteData);
+          check(port.mask, Role::MemoryWriteEnable);
+          check(port.enables, Role::MemoryWriteEnable);
+          if (port.clock) EXPECT_EQ(Role::Clock, Modeling::getTermRole(port.clock));
+        }
+      }
+    }
+  }
+}
+
 TEST_F(SNLDesignModelingTest0, testCombinatorial) {
   //Create primitives
   NLUniverse::create();

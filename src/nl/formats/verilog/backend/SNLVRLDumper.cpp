@@ -93,6 +93,22 @@ char getAssignConstantBitValue(const naja::NL::SNLBitNet* bit) {
   }
 }
 
+std::string formatBinaryConstant(const std::string& digits) {
+  constexpr size_t chunkWidth = 32768;
+  if (digits.size() <= chunkWidth) return std::to_string(digits.size()) + "'b" + digits;
+  if (digits.find_first_not_of(digits.front()) == std::string::npos)
+    return "{" + std::to_string(digits.size()) + "{1'b" + digits.front() + "}}";
+  // Keep numeric literals below simulator implementation limits while
+  // retaining the complete width and MSB-first order in concatenations.
+  std::string result = "{";
+  for (size_t offset = 0; offset < digits.size(); offset += chunkWidth) {
+    if (offset) result += ", ";
+    const auto count = std::min(chunkWidth, digits.size() - offset);
+    result += std::to_string(count) + "'b" + digits.substr(offset, count);
+  }
+  return result + "}";
+}
+
 void dumpConstantRange(ContiguousNetBits& bits, bool& firstElement, bool& concatenation, std::string& o) {
   if (not bits.empty()) {
     if (not firstElement) {
@@ -105,7 +121,9 @@ void dumpConstantRange(ContiguousNetBits& bits, bool& firstElement, bool& concat
     for (auto bit: bits) {
       constantStr += getAssignConstantBitValue(bit);
     }
-    if (constantStr.size() < 4 ||
+    if (constantStr.size() > 32768) {
+      o += formatBinaryConstant(constantStr);
+    } else if (constantStr.size() < 4 ||
         constantStr.find_first_of("xz") != std::string::npos) {
       //binary
       o += std::to_string(bits.size()) + "'b";
@@ -482,7 +500,7 @@ std::string getAssignConstantString(const std::vector<const naja::NL::SNLBitNet*
   for (auto bit: bits) {
     bitString += getAssignConstantBitValue(bit);
   }
-  return std::to_string(bits.size()) + "'b" + bitString;
+  return formatBinaryConstant(bitString);
 }
 
 enum class AssignInputMode {

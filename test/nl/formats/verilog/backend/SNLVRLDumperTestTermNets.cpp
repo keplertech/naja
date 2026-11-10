@@ -20,6 +20,7 @@
 #include "SNLBusNet.h"
 #include "SNLBusNetBit.h"
 #include "SNLInstTerm.h"
+#include "SNLInstance.h"
 
 using namespace naja::NL;
 
@@ -44,6 +45,40 @@ class SNLVRLDumperTestTermNets: public ::testing::Test {
   protected:
     SNLDesign*  top_;
 };
+
+TEST_F(SNLVRLDumperTestTermNets, wideFourStateConstantsUseBoundedLiterals) {
+  constexpr size_t width = 70001;
+  auto* uniform = SNLBusNet::create(top_, width - 1, 0, NLName("uniform"));
+  uniform->setType(SNLNet::Type::AssignX);
+  auto* mixed = SNLBusNet::create(top_, width - 1, 0, NLName("mixed"));
+  const SNLNet::Type types[] = {SNLNet::Type::Assign0, SNLNet::Type::Assign1,
+                              SNLNet::Type::AssignX, SNLNet::Type::AssignZ};
+  for (size_t bit = 0; bit < width; ++bit) mixed->getBit(bit)->setType(types[bit % 4]);
+  auto* consumer = SNLDesign::create(top_->getLibrary(), NLName("consumer"));
+  auto* a = SNLBusTerm::create(consumer, SNLTerm::Direction::Input, width - 1, 0, NLName("a"));
+  auto* b = SNLBusTerm::create(consumer, SNLTerm::Direction::Input, width - 1, 0, NLName("b"));
+  auto* instance = SNLInstance::create(top_, consumer, NLName("consume"));
+  instance->setTermNet(a, uniform);
+  instance->setTermNet(b, mixed);
+  const auto directory = std::filesystem::path(SNL_VRL_DUMPER_TEST_PATH) / "wide_constants";
+  std::filesystem::create_directories(directory);
+  SNLVRLDumper dumper;
+  dumper.setTopFileName("top.v");
+  dumper.setSingleFile(true);
+  dumper.dumpDesign(top_, directory);
+  const auto path = directory / "top.v";
+  std::ifstream input(path);
+  std::stringstream buffer;
+  buffer << input.rdbuf();
+  const auto text = buffer.str();
+  EXPECT_NE(std::string::npos, text.find("{70001{1'bx}}"));
+  EXPECT_NE(std::string::npos, text.find("32768'b"));
+  EXPECT_EQ(std::string::npos, text.find("70001'b"));
+  if (std::system("command -v verilator >/dev/null 2>&1") == 0) {
+    const auto command = "verilator --lint-only -Wno-fatal --top-module top \"" + path.string() + "\"";
+    EXPECT_EQ(0, std::system(command.c_str()));
+  }
+}
 
 TEST_F(SNLVRLDumperTestTermNets, testFeedthru0) {
   ASSERT_TRUE(top_);

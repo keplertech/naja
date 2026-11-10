@@ -85,13 +85,34 @@ module storage(input logic clk_a, clk_b, we_a, we_b,
     r <= second[addr_b];
   end
 endmodule
+module retained(input logic clk, rst_n, enable, input logic [1:0] address,
+                input logic [4:0] d, output logic [4:0] q);
+  logic [4:0] storage [4], lookup [3:0];
+  logic [1:0] saved_address;
+  initial for (int k = 0; k < 4; k++) begin
+    case (2)
+      2: lookup[k] = k == 1 ? 5'b10xz0 : 5'(k + 7);
+      default: lookup[k] = 'x;
+    endcase
+  end
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) saved_address <= 0;
+    else begin
+      saved_address <= address;
+      for (int bit_index = 0; bit_index < 5; bit_index++)
+        if (enable && d[bit_index]) storage[address][bit_index] <= 1'b1;
+      q <= storage[saved_address] ^ lookup[address];
+    end
+  end
+endmodule
 module top(input logic [9:0] a, b, input logic [1:0] op,
            input logic clk_a, clk_b, rst, enable,
            output wire [9:0] y, z, output wire [1:0] flag,
-           output wire [4:0] q, r, s, output wire [2:0] mem_q, mem_r);
+           output wire [4:0] q, r, s, preserved_q, output wire [2:0] mem_q, mem_r);
   stateful regs(clk_a, rst, enable, a[4:0], b[4:0], q, r, s);
   storage mems(clk_a, clk_b, enable, rst, op, op,
                a[2:0], b[2:0], mem_q, mem_r);
+  retained kept(clk_a, rst, enable, op, b[4:0], preserved_q);
   for (genvar g = 0; g < 2; g++) begin: lanes
     leaf u(a[g*5+:5], b[g*5+:5], op, y[g*5+:5], z[g*5+:5], flag[g]);
   end

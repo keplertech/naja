@@ -178,7 +178,26 @@ class PulpBenchmarksTest(unittest.TestCase):
                                        "--elaboration-only", "--slang-arg=--allow-use-before-declare", "--slang-arg=--relax-enum-conversions"]), \
              patch.object(pulp, "worker") as worker:
             self.assertEqual(0, pulp.main())
-            worker.assert_called_once_with("top", Path(tmp).resolve(), False, {"slang": ["--allow-use-before-declare", "--relax-enum-conversions"]})
+            worker.assert_called_once_with("top", Path(tmp).resolve(), False,
+                {"slang": ["--allow-use-before-declare", "--relax-enum-conversions"]}, "filelist.f")
+
+    def test_behavioral_source_filelist_reaches_worker_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'design/variants/default'
+            source.mkdir(parents=True)
+            (source / 'filelist.f').write_text('synthesis_stub.sv\n')
+            behavioral = root / 'behavioral.f'
+            behavioral.write_text('/behavioral/ram.sv\n')
+            artifacts = root / 'output'
+            with patch.object(pulp, 'run_command', return_value=subprocess.CompletedProcess([], 1)) as run:
+                result = pulp.run_target(root, 'design.default', 'top', artifacts, root, 1,
+                                         source_filelist=behavioral)
+            command = run.call_args.args[0]
+            self.assertEqual(str(behavioral.resolve()), command[command.index('--worker-flist') + 1])
+            self.assertEqual(behavioral.read_text(), (artifacts / 'filelist.f').read_text())
+            self.assertEqual('synthesis_stub.sv\n', (source / 'filelist.f').read_text())
+            self.assertEqual('failed', result['status'])
 
     def test_lint_failure_is_not_a_load_dump_pass(self):
         with tempfile.TemporaryDirectory() as tmp:

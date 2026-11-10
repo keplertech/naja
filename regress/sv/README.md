@@ -786,12 +786,21 @@ Hierarchical builds use one build job to avoid a Verilator 5.052 recursive
 makefile regeneration race; `--jobs` controls the original-RTL build.
 Flat and hierarchical generated models use separate build directories.
 
-All downloaded sources are commit-pinned and SHA-256 checked. The original
-simulation replaces the synthesis SRAM stub with the matching upstream
-behavioral SRAM. The generated simulation attaches that same model to its
-otherwise empty SRAM leaf, checking the pinned variant's exact port shape;
-the raw dump is preserved. This validates the surrounding logic with an
-external memory model, not Naja lowering of SRAM behavior.
+All downloaded sources are commit-pinned and SHA-256 checked. The runner
+replaces the synthesis SRAM stub with the matching upstream behavioral SRAM
+**before Naja elaboration**. The same implementation is used for original RTL
+simulation. The prepared package remains unchanged; `elaboration.f` records
+the behavioral inputs used for lowering. Generated simulation uses the Naja
+dump and its emitted `naja_primitives.v`, including `naja_mem`, without an
+external SRAM model or post-dump memory replacement. The runner rejects a
+dump that retains an SRAM blackbox or contains no Naja memory instance.
+
+The frontend preserves the SRAM contents when the shared asynchronous-reset
+branch resets only its surrounding read-address registers. Nonblocking byte
+writes use the existing masked memory ports with a shared clock. The
+initial-only scratch array is evaluated as constant storage, including its
+default X values; random/runtime initialization remains unsupported. The
+previous external-memory simulation result does not validate this lowering.
 
 Both simulations apply a **1 ps propagation delay to the latch-based weight
 buffer's read port**. Verilator 5.052 otherwise exposes a transient previous

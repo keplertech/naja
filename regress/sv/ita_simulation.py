@@ -97,23 +97,34 @@ def model_weight_read_delay(source, delay_ps):
     return source[:match.start()] + header + ");" + prefix + body + source[match.end():]
 
 
-def attach_memory(netlist):
-    # This adapter is specific to the source-pinned ita.default variant.
-    # Reject shape changes instead of silently simulating the wrong memory.
-    pattern = r"module tc_sram_blackbox\(.*?endmodule //tc_sram_blackbox"
-    matches = list(re.finditer(pattern, netlist, re.S))
-    if len(matches) != 1:
-        raise ValueError("Expected exactly one ITA SRAM blackbox declaration")
-    declaration = matches[0].group()
-    expected = ("input clk_i", "input rst_ni", "input [1:0] req_i", "input [1:0] we_i",
-                "input [15:0] addr_i", "input [831:0] wdata_i", "input [103:0] be_i",
-                "output [831:0] rdata_o")
-    if not all(port in declaration for port in expected) or declaration.count(";") != 1:
-        raise ValueError("ITA SRAM blackbox shape/body changed")
-    model = ("ita_sim_sram #(.NumWords(256), .DataWidth(416), .ByteWidth(8), "
-             ".NumPorts(2), .Latency(1)) model (.*);\n")
-    return netlist[:matches[0].start()] + declaration.replace(
-        "endmodule", model + "endmodule", 1) + netlist[matches[0].end():]
+def behavioral_filelist(source, memory):
+    """Restore the pinned SRAM implementation before RTL simulation and lowering."""
+    lines = []
+    replacements = 0
+    for line in (source / "filelist.f").read_text().splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("+incdir+"):
+            line = "+incdir+" + str((source / line[8:]).resolve())
+        elif not line.startswith("+"):
+            if Path(line).name == "tc_sram_stubs.sv":
+                line = str(memory.resolve())
+                replacements += 1
+            else:
+                line = str((source / line).resolve())
+        lines.append(line)
+    if replacements != 1:
+        raise ValueError("Expected exactly one ITA SRAM stub source")
+    return lines
+
+
+def validate_lowered_memory(netlist):
+    if "tc_sram_blackbox" in netlist or "ita_sim_sram" in netlist:
+        raise ValueError("ITA SRAM must be lowered from behavioral RTL, without blackboxes")
+    memories = re.findall(r"\bmodule\s+tc_sram(?:__elab\d+)?\s*\(.*?\bendmodule\b",
+                          netlist, re.S)
+    if not memories or any(not re.search(r"\bnaja_mem\s*#\s*\(", body) for body in memories):
+        raise ValueError("ITA behavioral SRAM did not produce a Naja memory primitive")
 
 
 def output_trace(log):
@@ -196,6 +207,7 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     summary = dict(ita_revision=ITA_REV, memory_revision=MEM_REV, seed=args.seed,
+                   memory_flow="behavioral_rtl_to_naja_mem",
                    stalls=not args.no_stalls, weight_read_delay_ps=args.weight_read_delay_ps,
                    parallel_simulations=args.parallel_simulations, compiler_jobs=args.jobs,
                    status="running", results={})
@@ -229,14 +241,11 @@ def main():
                                      upstream / "simvectors"))
         clocks = [upstream / f"src/tb/{name}.sv" for name in ("rst_gen", "clk_rst_gen")]
         original = out / "original.f"
+        rtl_lines = behavioral_filelist(source, memory)
+        elaboration = out / "elaboration.f"
+        elaboration.write_text("\n".join(rtl_lines) + "\n")
         lines = []
-        for line in (source / "filelist.f").read_text().splitlines():
-            if not line.strip():
-                continue
-            if line.startswith("+incdir+"):
-                line = "+incdir+" + str((source / line[8:]).resolve())
-            elif not line.startswith("+"):
-                line = str(memory if line.endswith("tc_sram_stubs.sv") else (source / line).resolve())
+        for line in rtl_lines:
             if line.endswith("/ita_register_file_1w_multi_port_read_we.sv"):
                 buffer = out / "weight_buffer.sv"
                 buffer.write_text(model_weight_read_delay(Path(line).read_text(), args.weight_read_delay_ps))
@@ -244,19 +253,20 @@ def main():
             lines.append(line)
         original.write_text("\n".join(lines + list(map(str, clocks)) + [str(tb)]) + "\n")
         dump = pulp.run_target(package, "ita.default", "ita", out / "dump",
-                               args.najaeda_path.resolve(), args.timeout)
+                               args.najaeda_path.resolve(), args.timeout,
+                               source_filelist=elaboration)
         summary["results"]["dump"] = dump
         save()
         lists = {"original": original}
         if dump["status"] == "passed":
             netlist = out / "generated.v"
+            raw_netlist = (out / "dump/netlist.v").read_text()
+            validate_lowered_memory(raw_netlist)
             netlist.write_text(model_weight_read_delay(
-                attach_memory((out / "dump/netlist.v").read_text()), args.weight_read_delay_ps))
-            mem_model = out / "memory.sv"
-            mem_model.write_text(memory.read_text().replace("module tc_sram #(", "module ita_sim_sram #("))
+                raw_netlist, args.weight_read_delay_ps))
             generated = out / "generated.f"
             files = [package / "ita/dependencies/common_cells/src/cf_math_pkg.sv",
-                     package / "ita/main/src/ita_package.sv", mem_model, netlist,
+                     package / "ita/main/src/ita_package.sv", netlist,
                      out / "dump/naja_primitives.v",
                      *clocks, tb]
             generated.write_text("\n".join(map(str, files)) + "\n")

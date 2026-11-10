@@ -5,6 +5,34 @@ SPDX-License-Identifier: Apache-2.0
 
 # PULP EDA benchmark frontend survey
 
+## Behavioral SRAM RTL-to-netlist verification (2026-11-10)
+
+ITA functional validation now loads the pinned behavioral `tc_sram` before
+Naja elaboration. The generated simulation uses `naja_mem` from the emitted
+primitive models, without attaching an external SRAM implementation after the
+dump. The source package and its verified manifest remain unchanged.
+
+The frontend supports a shared asynchronous-reset branch that resets surrounding
+registers while preserving memory contents, and uses existing masked memory
+ports for nonblocking packed-slice writes sharing a clock. Initial-only arrays
+are evaluated as constant storage with their bounds and X/Z values preserved;
+runtime/random initialization and additional writers remain strictly checked.
+Canonical memory-role queries avoid rebuilding every port for each bit, and
+large dumped constants use replication or bounded literals accepted by Verilator.
+
+Local macOS CMake Debug validation with Verilator 5.052 passes both golden
+scoreboards and the exact 2,048-transaction phase/data/timestamp comparison
+(vector seed 0, stall seed 1). Both simulations retain the documented 1 ps
+weight-buffer read delay. This checks Naja lowering of the SRAM implementation;
+it remains functional simulation rather than formal equivalence or timing signoff.
+
+Validation also passes 1,364 frontend tests, 112 modeling tests, 87 dumper tests,
+29 runner/report tests, the cross-process determinism contract including snapshot
+round trips, and the Sphinx HTML build. The synthetic regressions cover reset
+retention, masked writes and source-order priority, constant-array bounds and
+four-state values, rejection of runtime initialization and additional writers,
+and large constant serialization.
+
 ## Static output-port slice connectivity follow-up (2026-11-09)
 
 The nightly `ara.default` lint failure reports two `MULTIDRIVEN` warnings on

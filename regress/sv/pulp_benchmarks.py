@@ -121,12 +121,12 @@ def validate_diagnostics(diagnostics):
         raise RuntimeError("Incomplete or unsupported lowering; see diagnostics.log")
 
 
-def worker(top_name, artifacts, dump_netlist, frontend_options=None):
+def worker(top_name, artifacts, dump_netlist, frontend_options=None, flist="filelist.f"):
     from najaeda import netlist
 
     start = time.monotonic()
     top = netlist.load_system_verilog([], config=netlist.SystemVerilogConfig(
-        top=top_name, flist="filelist.f",
+        top=top_name, flist=flist,
         diagnostics_report_path=str(artifacts / "diagnostics.log"),
         blackbox_unknown_modules=False,
         frontend_options=frontend_options,
@@ -168,7 +168,7 @@ def run_command(command, timeout, **kwargs):
 
 
 def run_target(package, name, top, artifacts, najaeda_path, timeout, lint_runner=None,
-               dump_netlist=True):
+               dump_netlist=True, source_filelist=None):
     artifacts.mkdir(parents=True, exist_ok=True)
     # Never let stale success products from an earlier run satisfy this run.
     for filename in ("design-stats.json", "netlist.v", "najaeda_primitives.v", "naja_primitives.v",
@@ -176,10 +176,11 @@ def run_target(package, name, top, artifacts, najaeda_path, timeout, lint_runner
         (artifacts / filename).unlink(missing_ok=True)
     design, variant = name.split(".")
     source_dir = package / design / "variants" / variant
-    source_list = (source_dir / "filelist.f").read_text()
+    source_filelist = (source_filelist or source_dir / "filelist.f").resolve()
+    source_list = source_filelist.read_text()
     (artifacts / "filelist.f").write_text(source_list)
     command = [sys.executable, str(Path(__file__).resolve()), "--worker", top,
-               "--output", str(artifacts)]
+               "--output", str(artifacts), "--worker-flist", str(source_filelist)]
     slang_args = SLANG_ARGS.get(name, [])
     for arg in slang_args:
         command.append("--slang-arg=" + arg)
@@ -272,11 +273,13 @@ def main():
     parser.add_argument("--elaboration-only", action="store_true",
                         help="Load and validate the design without structural Verilog dumping")
     parser.add_argument("--worker", help=argparse.SUPPRESS)
+    parser.add_argument("--worker-flist", default="filelist.f", help=argparse.SUPPRESS)
     parser.add_argument("--slang-arg", action="append", default=[], help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.worker:
-        worker(args.worker, args.output, not args.elaboration_only, {"slang": args.slang_arg})
+        worker(args.worker, args.output, not args.elaboration_only, {"slang": args.slang_arg},
+               args.worker_flist)
         return 0
     if args.timeout <= 0 or (args.all and args.case) or (args.elaboration_only and args.lint_runner):
         parser.error("--timeout must be positive; --all and --case are mutually exclusive")

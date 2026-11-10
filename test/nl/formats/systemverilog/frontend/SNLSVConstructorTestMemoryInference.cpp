@@ -12043,7 +12043,7 @@ endmodule
   svFile.close();
 
   expectUnsupportedConstruct(
-    constructor, svPath, {"unsupported dynamic sequential assignment LHS"});
+    constructor, svPath, {"unable to resolve inferred memory selector guard"});
 }
 
 TEST_F(SNLSVConstructorTestMemoryInference,

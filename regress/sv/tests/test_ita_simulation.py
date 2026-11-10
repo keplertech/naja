@@ -44,17 +44,34 @@ class ITASimulationTest(unittest.TestCase):
             with self.subTest(log=bad), self.assertRaises(ValueError):
                 ita.validate_simulation(bad)
 
-    def test_memory_adapter_rejects_changed_shape_or_existing_behavior(self):
-        declaration = ('module tc_sram_blackbox(input clk_i, input rst_ni, '
-                       'input [1:0] req_i, input [1:0] we_i, input [15:0] addr_i, '
-                       'input [831:0] wdata_i, input [103:0] be_i, '
-                       'output [831:0] rdata_o);\nendmodule //tc_sram_blackbox')
-        adapted = ita.attach_memory(declaration)
-        self.assertIn('.NumWords(256)', adapted)
-        for bad in (declaration * 2, declaration.replace('[831:0]', '[415:0]'),
-                    declaration.replace('endmodule', "assign rdata_o = '0;\nendmodule")):
+    def test_behavioral_inputs_replace_stub_without_changing_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp).resolve()
+            flist = source / 'filelist.f'
+            original = ('+incdir+include\n+define+SYNTHESIS\nrtl.sv\n'
+                        '../../support/tc_sram_stubs.sv\n')
+            flist.write_text(original)
+            memory = source / 'tc_sram.sv'
+            self.assertEqual([
+                '+incdir+' + str(source / 'include'), '+define+SYNTHESIS',
+                str(source / 'rtl.sv'), str(memory)], ita.behavioral_filelist(source, memory))
+            self.assertEqual(original, flist.read_text())
+            for bad in (original.replace('../../support/tc_sram_stubs.sv\n', ''),
+                        original + '../../support/tc_sram_stubs.sv\n'):
+                flist.write_text(bad)
+                with self.assertRaisesRegex(ValueError, 'exactly one ITA SRAM stub'):
+                    ita.behavioral_filelist(source, memory)
+
+    def test_generated_memory_must_be_lowered_and_have_no_external_model(self):
+        lowered = 'module tc_sram(); naja_mem #(.WIDTH(24)) storage(); endmodule'
+        ita.validate_lowered_memory(lowered)
+        for bad in ('module tc_sram(); endmodule',
+                    'module tc_sram(); endmodule\nmodule other(); naja_mem #() m(); endmodule',
+                    lowered + '\nmodule tc_sram__elab1(); endmodule',
+                    lowered + '\nmodule tc_sram_blackbox(); endmodule',
+                    lowered + '\nita_sim_sram external_memory();'):
             with self.subTest(netlist=bad), self.assertRaises(ValueError):
-                ita.attach_memory(bad)
+                ita.validate_lowered_memory(bad)
 
     def test_read_delay_preserves_logic_and_rejects_unexpected_models(self):
         name = "ita_register_file_1w_multi_port_read_we"

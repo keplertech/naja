@@ -7113,8 +7113,24 @@ endmodule
       }
 
       if (asyncEvent.expr && resetMode == NLDB0::MemoryResetMode::None) {
-        failureReason = "unsupported asynchronous inferred memory block without matched reset";
-        return false;
+        // A shared reset branch may reset other registers while leaving this
+        // memory untouched. Its writes must be confined to the inactive-reset
+        // branch; the guards retained by whole-statement analysis inhibit
+        // writes during reset without resetting the stored contents.
+        const auto* conditional = current && current->kind == slang::ast::StatementKind::Conditional
+          ? &current->as<slang::ast::ConditionalStatement>() : nullptr;
+        InferredMemory resetInfo;
+        std::vector<InferredMemoryGuard> resetGuards;
+        std::vector<InferredMemoryWriteAction> resetWrites;
+        std::string resetFailure;
+        if (!conditional || conditional->conditions.size() != 1 || !conditional->ifFalse ||
+            !tryConfigureInferredMemoryResetMode(*conditional->conditions[0].expr,
+              asyncEvent.expr, asyncEvent.edge, resetInfo) ||
+            !analyzeDirectSequentialMemoryWriteStatement(conditional->ifTrue, stateSymbol,
+              signature, resetGuards, resetWrites, resetFailure) || !resetWrites.empty()) {
+          failureReason = "unsupported asynchronous inferred memory block without matched reset";
+          return false;
+        }
       }
 
       candidate.stateSymbol = &stateSymbol;
@@ -7127,6 +7143,23 @@ endmodule
       candidate.resetSignalExpr = resetSignalExpr;
       candidate.signature = signature;
       candidate.signature.resetMode = resetMode;
+      if (resetMode == NLDB0::MemoryResetMode::None &&
+          std::any_of(directWriteActions.begin(), directWriteActions.end(),
+            [&](const auto& action) { return action.bitWidth < signature.width; })) {
+        bool nonblocking = true;
+        auto scheduling = slang::ast::makeVisitor(
+          [&](auto& visitor, const slang::ast::AssignmentExpression& assignment) {
+            const slang::ast::ValueSymbol* root = nullptr;
+            if (tryGetRootValueSymbolReference(assignment.left(), root) && root == &stateSymbol &&
+                !assignment.isNonBlocking()) nonblocking = false;
+            visitor.visitDefault(assignment);
+          });
+        stmt->visit(scheduling);
+        // The existing masked-port contract also permits ports sharing a
+        // clock. Preserve per-bit source-order priority without synthesizing
+        // a full-word read/modify/write path for every packed slice.
+        candidate.signature.independentWriteClocks = nonblocking;
+      }
       if (!initBits.empty()) {
         candidate.initBits = std::move(initBits);
       }
@@ -7486,6 +7519,14 @@ endmodule
         if (conditional.ifFalse) collectInitialAssignmentRoots(*conditional.ifFalse, roots);
         return;
       }
+      if (current->kind == slang::ast::StatementKind::Case) {
+        const auto& caseStmt = current->as<slang::ast::CaseStatement>();
+        for (const auto& item : caseStmt.items) {
+          if (item.stmt) collectInitialAssignmentRoots(*item.stmt, roots);
+        }
+        if (caseStmt.defaultCase) collectInitialAssignmentRoots(*caseStmt.defaultCase, roots);
+        return;
+      }
       const Expression* lhs = nullptr;
       AssignAction action;
       const slang::ast::ValueSymbol* root = nullptr;
@@ -7725,7 +7766,8 @@ endmodule
     }
 
     void mergeInitialMemoryBlocks(
-      const std::vector<const slang::ast::ProceduralBlockSymbol*>& initialBlocks) {
+      const std::vector<const slang::ast::ProceduralBlockSymbol*>& initialBlocks,
+      const MemoryWriterCensus& writers) {
       for (const auto* block : initialBlocks) {
         if (!block) continue; // LCOV_EXCL_LINE
         std::unordered_set<const slang::ast::ValueSymbol*> roots;
@@ -7738,6 +7780,10 @@ endmodule
           }
         }
         if (memoryRoots.empty()) continue;
+        // Initial-only arrays are evaluated separately as constant storage.
+        if (std::all_of(memoryRoots.begin(), memoryRoots.end(), [&](const auto* root) {
+              return !inferredMemoryByStateSymbol_.contains(root) && !writers.contains(root);
+            })) continue;
         handledInitialBlocks_.insert(block);
         if (memoryRoots.size() != 1) {
           reportUnsupportedError(
@@ -8043,7 +8089,7 @@ endmodule
           inferredMemorySequentialBlocks_[inferredMemories_[i].seqBlock].push_back(i);
         }
       }
-      mergeInitialMemoryBlocks(initialBlocks);
+      mergeInitialMemoryBlocks(initialBlocks, writerCensus);
     }
 
     void prepareInferredMemories(SNLDesign* design) {
@@ -34092,6 +34138,103 @@ endmodule
       attachDFFInitParameter(inst, collectBits(qNet));
     }
 
+    bool lowerConstantInitialArrays(
+      SNLDesign* design,
+      const InstanceBodySymbol& body,
+      const slang::ast::ProceduralBlockSymbol& block) {
+      std::unordered_set<const slang::ast::ValueSymbol*> roots;
+      collectInitialAssignmentRoots(block.getBody(), roots);
+      if (roots.empty()) return false;
+      for (const auto* root : roots) {
+        if (!root->getType().getCanonicalType().isUnpackedArray() ||
+            (root->kind == SymbolKind::Variable &&
+             root->as<slang::ast::VariableSymbol>().getInitializer())) return false;
+      }
+
+      // Only initial-only storage is constant. Include every other process,
+      // even inactive branches within a process, when checking ownership.
+      bool otherWriter = false;
+      auto checkTarget = [&](const Expression& lhs) {
+        const slang::ast::ValueSymbol* root = nullptr;
+        if (tryGetRootValueSymbolReference(lhs, root) && roots.contains(root)) otherWriter = true;
+        auto references = slang::ast::makeVisitor(
+          [&](auto&, const slang::ast::ValueExpressionBase& value) {
+            if (roots.contains(&value.symbol)) otherWriter = true;
+          });
+        lhs.visit(references);
+      };
+      auto writers = slang::ast::makeVisitor(
+        [&](auto& visitor, const slang::ast::AssignmentExpression& assignment) {
+          checkTarget(assignment.left());
+          visitor.visitDefault(assignment);
+        },
+        [&](auto& visitor, const slang::ast::UnaryExpression& unary) {
+          using Op = slang::ast::UnaryOperator;
+          if (unary.op == Op::Preincrement || unary.op == Op::Postincrement ||
+              unary.op == Op::Predecrement || unary.op == Op::Postdecrement)
+            checkTarget(unary.operand());
+          visitor.visitDefault(unary);
+        },
+        [&](auto& visitor, const slang::ast::CallExpression& call) {
+          // Conservatively reject array arguments, which can be passed by
+          // reference or through output/inout formals to another writer.
+          for (const auto* arg : call.arguments()) {
+            if (arg) {
+              auto references = slang::ast::makeVisitor(
+                [&](auto&, const slang::ast::ValueExpressionBase& value) {
+                  if (roots.contains(&value.symbol)) otherWriter = true;
+                });
+              arg->visit(references);
+            }
+          }
+          visitor.visitDefault(call);
+        });
+      auto checkWriters = [&](const Symbol& sym) {
+        if (&sym == &block) return;
+        if (sym.kind == SymbolKind::ProceduralBlock)
+          sym.as<slang::ast::ProceduralBlockSymbol>().getBody().visit(writers);
+        else if (sym.kind == SymbolKind::ContinuousAssign)
+          sym.as<slang::ast::ContinuousAssignSymbol>().getAssignment().visit(writers);
+        else if (sym.kind == SymbolKind::Subroutine)
+          sym.as<slang::ast::SubroutineSymbol>().getBody().visit(writers);
+        else if (sym.kind == SymbolKind::Instance) {
+          for (const auto* connection : sym.as<InstanceSymbol>().getPortConnections()) {
+            if (!connection || connection->port.kind != SymbolKind::Port ||
+                connection->port.as<slang::ast::PortSymbol>().direction == ArgumentDirection::In)
+              continue;
+            if (const auto* expression = connection->getExpression()) checkTarget(*expression);
+          }
+        }
+      };
+      visitElaboratedNonGenerateMembers(body, checkWriters);
+      if (otherWriter) return false;
+
+      // Slang executes only statically selected case/if branches and bounded
+      // constant loops here. Runtime inputs, timing and random initialization
+      // cannot be evaluated. Do not drive target nets until evaluation and
+      // all target widths have been validated.
+      slang::ast::EvalContext context(block);
+      context.pushEmptyFrame();
+      auto ordered = symbolsInDeclarationOrder(roots);
+      for (const auto* root : ordered) context.createLocal(root);
+      if (block.getBody().eval(context) != Statement::EvalResult::Success) return false;
+      std::vector<std::pair<SNLNet*, std::vector<SNLBitNet*>>> values;
+      for (const auto* root : ordered) {
+        const auto* value = context.findLocal(root);
+        auto* net = getLoweredValueSymbolNet(design, *root);
+        std::vector<SNLBitNet*> bits;
+        if (!value || !net || !resolveUnpackedConstantBits(
+              design, *value, root->getType(), net->getWidth(), bits)) return false;
+        values.emplace_back(net, std::move(bits));
+      }
+      for (const auto& [net, bits] : values) {
+        auto outputs = collectBits(net);
+        for (size_t bit = 0; bit < bits.size(); ++bit)
+          createAssignInstance(design, bits[bit], outputs[bit]);
+      }
+      return true;
+    }
+
     void createSequentialLogic(SNLDesign* design, const InstanceBodySymbol& body) {
       const auto moduleName = design->getName().getString();
       dffInitDigitByOutputBit_.clear();
@@ -34125,6 +34268,10 @@ endmodule
         if (!blockPtr ||
             blockPtr->procedureKind != slang::ast::ProceduralBlockKind::Initial ||
             handledInitialBlocks_.contains(blockPtr)) {
+          continue;
+        }
+        if (lowerConstantInitialArrays(design, body, *blockPtr)) {
+          handledInitialBlocks_.insert(blockPtr);
           continue;
         }
         std::string ignoredFailureReason;

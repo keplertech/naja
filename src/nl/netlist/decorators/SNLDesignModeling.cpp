@@ -2058,6 +2058,37 @@ SNLDesignModeling::SNLTermRole SNLDesignModeling::getTermRole(
     const SNLBitTerm* term) {
   if (!term) return SNLTermRole::Other;
   auto* design = term->getDesign();
+  const auto* property = getProperty(design);
+  if (NLDB0::isMemory(design) &&
+      (!property || !property->getModeling()->hasMemoryInterface_())) {
+    // The canonical DB0 signature already identifies each terminal. Avoid
+    // allocating every memory port for each bit queried by clock inference.
+    const auto signature = NLDB0::getMemorySignature(design);
+    if (!signature.independentWriteClocks && term == NLDB0::getMemoryClock(design))
+      return SNLTermRole::Clock;
+    if (!signature.independentWriteClocks && term == NLDB0::getMemoryReset(design)) {
+      switch (signature.resetMode) {
+        case NLDB0::MemoryResetMode::AsyncLow:
+        case NLDB0::MemoryResetMode::AsyncHigh: return SNLTermRole::AsyncReset;
+        case NLDB0::MemoryResetMode::SyncLow:
+        case NLDB0::MemoryResetMode::SyncHigh: return SNLTermRole::SyncReset;
+        case NLDB0::MemoryResetMode::None: return SNLTermRole::Other;
+      }
+    }
+    if (const auto* bit = dynamic_cast<const SNLBusTermBit*>(term)) {
+      const auto* bus = bit->getBus();
+      if (bus == NLDB0::getMemoryReadAddress(design)) return SNLTermRole::MemoryReadAddress;
+      if (bus == NLDB0::getMemoryReadData(design)) return SNLTermRole::MemoryReadData;
+      if (bus == NLDB0::getMemoryWriteAddress(design)) return SNLTermRole::MemoryWriteAddress;
+      if (bus == NLDB0::getMemoryWriteData(design)) return SNLTermRole::MemoryWriteData;
+      if (bus == NLDB0::getMemoryWriteEnable(design)) return SNLTermRole::MemoryWriteEnable;
+      if (signature.independentWriteClocks) {
+        if (bus == design->getBusTerm(NLName("WCLK"))) return SNLTermRole::Clock;
+        if (bus == design->getBusTerm(NLName("WMASK"))) return SNLTermRole::MemoryWriteEnable;
+      }
+    }
+    return SNLTermRole::Other;
+  }
   if (hasMemoryInterface(design)) {
     return getMemoryTermRole(term, getMemoryInterface(design));
   }
