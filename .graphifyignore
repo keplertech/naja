@@ -31,6 +31,9 @@ src/apps/naja_edit/examples/vexriscv/src/vexriscv.demo.GenFull.v
 # Branding carries no implementation relationships.
 docs/images/Naja-Logo.png
 
+# Rendered architecture diagram duplicates the README's relationships.
+docs/images/ecosystem.png
+
 # Generated cell catalog and dependency release history add little architectural context.
 primitives/asap7.py
 

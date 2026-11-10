@@ -52,72 +52,9 @@ integrate around Naja's C++ netlist engine:
   [`naja-schematic`](https://github.com/keplertech/naja-schematic), and
   [`naja-scope`](https://github.com/keplertech/naja-scope).
 
-```mermaid
----
-config:
-  layout: dagre
-  theme: base
-  themeVariables:
-    fontFamily: ''
-    fontSize: 14px
-    primaryTextColor: '#172033'
-    lineColor: '#64748b'
-    clusterBkg: '#f8fafc'
-    clusterBorder: '#cbd5e1'
----
-flowchart LR
-    sv["`**SystemVerilog**`"] ==> slang(["`**slang**<br>SystemVerilog Frontend`"])
-    vhdl["`**VHDL**`"] ==> naja-vhdl["`**naja-vhdl**<br> VHDL Frontend (Beta)`"]
-    verilog["`**gate-level verilog**`"] ==> naja-verilog["`**naja-verilog**<br>gate verilog Parser`"]
-    naja-verilog ==> naja["`**naja C++ · netlist engine**<br><br>hierarchy · buses<br>bit-level nets &amp; terms · connectivity<br>Primitive Functional Models`"]
-    naja-vhdl =="`**Elaboration**`"==> naja
-    najaif@{ label: "**naja-if**<br>Logical View Interchange Format<br>Cap'n Proto" } <==> naja
-    slang =="`**Elaboration**`"==> naja
-    naja <==> najaeda["`**najaeda**<br>Python API`"]
-    naja ==> kf("`**kepler-formal**<br>Formal Comparison`") & ns("`**naja-schematic**<br>Schematic Viewer`")
-    najaeda ==> scope("`**naja-scope**<br>najaeda MCP server`")
-    kf ==> kfm("`**kepler-formal-mcp**<br>kepler-formal MCP server`")
-    lib["`**Liberty**`"] ==> naja
-    pythonlibs["`**Python libraries**<br>naja representation`"] ==> naja
-
-    sv@{ shape: disk}
-    vhdl@{ shape: disk}
-    verilog@{ shape: disk}
-    naja@{ shape: rounded}
-    najaif@{ shape: disk}
-    lib@{ shape: disk}
-    pythonlibs@{ shape: disk}
-    sv:::input
-    vhdl:::input
-    slang:::frontend
-    naja-verilog:::frontend
-    naja-vhdl:::frontend
-    verilog:::input
-    naja:::core
-    najaif:::input
-    najaeda:::api
-    kf:::tool
-    kfm:::tool
-    ns:::tool
-    scope:::tool
-    lib:::input
-    pythonlibs:::input
-    classDef input fill:#eef2ff,stroke:#6366f1,color:#1e1b4b,stroke-width:2px
-    classDef frontend fill:#fff7ed,stroke:#f97316,color:#431407,stroke-width:2px
-    classDef core fill:#fef2f2,stroke:#ef4444,color:#450a0a,stroke-width:3px
-    classDef api fill:#f0fdfa,stroke:#14b8a6,color:#042f2e,stroke-width:2px
-    classDef tool fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065,stroke-width:2px
-    click slang "https://github.com/MikePopoloski/slang"
-    click naja-verilog "https://github.com/keplertech/naja-verilog"
-    click naja "https://github.com/keplertech/naja"
-    click najaif "https://github.com/keplertech/naja-if"
-    click najaeda "https://pypi.org/project/najaeda/"
-    click kf "https://github.com/keplertech/kepler-formal"
-    click kfm "https://github.com/keplertech/kepler-formal-mcp"
-    click ns "https://github.com/keplertech/naja-schematic"
-    click scope "https://github.com/keplertech/naja-scope"
-
-```
+<p align="center">
+  <img alt="Naja architecture: SystemVerilog, VHDL, gate-level Verilog, Liberty and Python inputs feed the naja netlist engine, which powers najaeda, naja-scope, kepler-formal, kepler-formal-mcp and naja-schematic" src="./docs/images/ecosystem.png" width="800">
+</p>
 
 ## Get Started
 
