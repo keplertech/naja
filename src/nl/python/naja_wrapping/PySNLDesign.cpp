@@ -757,6 +757,7 @@ GetBoolAttributeWithFunction(SNLDesign, isSubtract, NLDB0::isSubtract)
 GetBoolAttributeWithFunction(SNLDesign, isMultiply, NLDB0::isMultiply)
 GetBoolAttributeWithFunction(SNLDesign, isShift, NLDB0::isShift)
 GetBoolAttributeWithFunction(SNLDesign, isDivMod, NLDB0::isDivMod)
+GetBoolAttributeWithFunction(SNLDesign, isClockGate, NLDB0::isClockGate)
 
 static PyObject* PySNLDesign_isShiftRight(PySNLDesign* self) {
   METHOD_HEAD("SNLDesign.isShiftRight()")
@@ -1029,6 +1030,8 @@ PyMethodDef PySNLDesign_Methods[] = {
     "Returns True if this design is an NLDB0 multiply primitive"},
   { "isShift", (PyCFunction)PySNLDesign_isShift, METH_NOARGS,
     "Returns True if this design is an NLDB0 shift primitive"},
+  {"isClockGate", (PyCFunction)PySNLDesign_isClockGate, METH_NOARGS,
+    "Returns True for the canonical low-phase clock-gate primitive"},
   { "isDivMod", (PyCFunction)PySNLDesign_isDivMod, METH_NOARGS,
     "Returns True if this design is an NLDB0 divide/modulo primitive"},
   { "isShiftRight", (PyCFunction)PySNLDesign_isShiftRight, METH_NOARGS,

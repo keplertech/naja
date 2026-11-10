@@ -1128,3 +1128,34 @@ embedded in NajaIF snapshots, so reloading a snapshot does not require the file.
 If an initialization file changes after its design has been cached in a library,
 load into a fresh library rather than reusing the cached design. Existing array
 size and elaboration-step limits continue to apply.
+
+Clock-gate inference
+--------------------
+
+SystemVerilog and VHDL loading share conservative post-elaboration inference
+of the canonical ``naja_clock_gate`` primitive. Inference requires a latch
+transparent in the low phase of the other AND input and evidence that the
+signals belong to a clock network. Clock declarations and actual Clock-role
+input connections provide evidence; signal names and ordinary latch enables
+do not. Mixed data uses, multiple drivers and ambiguous shared occurrences
+retain the original latch and gates. Inferred instances retain their names,
+IDs and source attributes and add ``naja_clock_gate_inference`` for inspection.
+
+The primitive captures ``EN | TEST_EN`` while ``CLK`` is low and holds it while
+high; it never truncates a pulse in response to a high-phase enable change.
+Its identity, connections and derived modeling survive NajaIF round trips.
+See :doc:`raw_api` for model inspection and the four-state contract.
+
+Inference preserves wrapper instances, ports and hierarchy paths. When all uses
+of a model qualify, the latch and AND are fused inside that model. With mixed
+clock/data uses, qualifying instances use a specialized wrapper model while data
+instances retain the original model. Instance identities and source links remain
+intact; specialization names and creation order are deterministic.
+
+VHDL can express the source latch as a single ``if`` without ``else`` in a
+sensitivity-list or ``process(all)`` process. This subset accepts uninitialized
+scalar ``std_logic`` / ``std_ulogic`` signal targets with plain assignments;
+process variables, indexed targets, ``bit`` defaults and explicit latch
+initializers remain unsupported. The guard and all read signals must obey the
+normal sensitivity checks. This preserves the existing hardware value subset;
+it does not introduce a nine-state VHDL simulation model.

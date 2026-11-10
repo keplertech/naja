@@ -49,6 +49,7 @@ struct ConeNode {
   std::vector<size_t> clocks, outputs;
   const char* launch {nullptr};
   const char* stop {nullptr};
+  bool clockPass {false};
 };
 struct ConeResult {
   size_t pin;
@@ -430,6 +431,8 @@ void collectCone(SNLTimingAnalysis& state) {
     if (edge.isDataDisabled()) {
       continue;
     }
+    if (edge.getKind() == TEdge::Kind::ClockPass)
+      state.cone[edge.getSource()].clockPass = true;
     auto* arc = static_cast<const TSNLEdgeProxy*>(edge.getProxy());
     size_t cell = invalid;
     bool logic = false;
@@ -784,8 +787,13 @@ size_t summarizeCone(SNLTimingAnalysis& state, ConeSummaries& cache, size_t root
   };
   // A write-side input may also be an asynchronous read address: report it
   // as a capture and continue along its explicit combinational read arcs.
-  auto stop = [&](size_t id) { return forward && state.cone[id].stop &&
-    std::string(state.cone[id].stop) != "register"; };
+  // Clock-gate clock pins are reported too, but their explicit ClockPass arcs
+  // continue the waveform to downstream clock pins without crossing state.
+  auto stop = [&](size_t id) {
+    const auto& node = state.cone[id];
+    return forward && node.stop && std::string(node.stop) != "register" &&
+      !(std::string(node.stop) == "clock" && node.clockPass);
+  };
   while (!stack.empty()) {
     auto& frame = stack.back();
     const auto& edges = arcs(frame.id);

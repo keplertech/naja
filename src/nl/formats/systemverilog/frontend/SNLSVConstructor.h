@@ -45,6 +45,7 @@ class SNLSVLiveASTLink {
     SNLSVLiveASTLink& operator=(const SNLSVLiveASTLink&) = delete;
 
     void bind(NLObject* object, const slang::ast::Symbol& symbol);
+    void unbind(NLObject* object);
     const slang::ast::Symbol* getSymbol(const NLObject* object) const;
     const Objects& getObjects(const slang::ast::Symbol* symbol) const;
     bool hasSymbol(const slang::ast::Symbol* symbol) const;

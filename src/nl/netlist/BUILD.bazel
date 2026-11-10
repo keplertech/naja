@@ -47,6 +47,7 @@ cc_library(
         "snl/SNLPath.cpp",
         "snl/SNLParameter.cpp",
         "snl/SNLInstParameter.cpp",
+        "snl/SNLClockGating.cpp",
         "snl/SNLUtils.cpp",
         "snl/SNLOccurrence.cpp",
         "snl/SNLEquipotential.cpp",

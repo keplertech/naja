@@ -515,7 +515,9 @@ class TimingAnalysisTests(unittest.TestCase):
                 if not model.isLeaf():
                     pending.append((naja.SNLPath(path, instance), model))
                     continue
-                boundary = (model.hasSequentialModel() or model.hasMemoryInterface()
+                # A clock gate's held enable is internal. GCLK carries the
+                # incoming waveform, rather than exposing a stored Q launch.
+                boundary = ((model.hasSequentialModel() and not model.isClockGate()) or model.hasMemoryInterface()
                             or naja.SNLOccurrence(path, instance) in opaque)
                 for term in instance.getInstTerms():
                     pin = naja.SNLOccurrence(path, term)
@@ -1243,6 +1245,45 @@ class TimingAnalysisTests(unittest.TestCase):
                 self.assertFalse(row["captureClocks"])
         self.assert_cones(top)
         self.assert_cones(top, [r["endpoint"] for r in rows if r["kind"] in ("clock", "clock_gating")])
+
+    def test_canonical_clock_gate_cascade_cones(self):
+        top = self.load('''module sample(input c, en, test_en, d, output reg q);
+            reg first_held, second_held;
+            always_latch if (!c) first_held <= en | test_en;
+            wire first_clock = c & first_held;
+            always_latch if (!first_clock) second_held <= en | test_en;
+            wire second_clock = first_clock & second_held;
+            always @(posedge second_clock) q <= d;
+        endmodule''')
+        gates = [i for i in top.getInstances() if i.getModel().isClockGate()]
+        self.assertEqual(2, len(gates))
+        self.primary(top, "clock", "c")
+        self.analyze()
+        output = self.state_output(top, "q")
+        target = self.state_pin(output, "C")
+        source = naja.SNLOccurrence(top.getScalarTerm("c"))
+        rows = source.getFanoutEndpoints()
+        downstream = next(r for r in rows if r["endpoint"] == target)
+        self.assertEqual("clock", downstream["kind"])
+        self.assertEqual({naja.SNLOccurrence(i) for i in gates}, downstream["cells"])
+        self.assertFalse(downstream["direct"])
+        self.assertEqual((output,), downstream["registerOutputs"])
+        self.assertFalse(any(r["kind"] == "output" for r in rows))
+        for gate in gates:
+            clock = naja.SNLOccurrence(gate.getInstTerm(gate.getModel().getScalarTerm("CLK")))
+            self.assertTrue(any(r["endpoint"] == clock for r in rows))
+            self.assertTrue(any(r["endpoint"] == target for r in clock.getFanoutEndpoints()))
+            waveform = naja.SNLOccurrence(gate.getInstTerm(gate.getModel().getScalarTerm("GCLK")))
+            launches = waveform.getFaninStartpoints()
+            self.assertEqual([source], [r["launchPin"] for r in launches])
+            self.assertTrue(all(r["kind"] == "clock" for r in launches))
+            self.assertTrue(any(r["endpoint"] == target for r in waveform.getFanoutEndpoints()))
+        for name in ("en", "test_en"):
+            controls = naja.SNLOccurrence(top.getScalarTerm(name)).getFanoutEndpoints()
+            self.assertEqual(2, len(controls))
+            self.assertTrue(all(r["kind"] == "clock_gating" for r in controls))
+            self.assertTrue(all(r["captureClocks"] == {top.getClockDomains()[0]} for r in controls))
+        self.assert_cones(top)
 
     def test_structural_invalid_occurrences(self):
         top = self.crossing()

@@ -2561,3 +2561,35 @@ TEST_F(TSNLGraphConstructorTests, ConstantViewDoesNotFoldWritableMemory) {
   auto values = TConstantPropagator::run(constructor, seeds);
   EXPECT_EQ(V::Unknown, values[constructor.getNode(SNLOccurrence(top_->getScalarTerm(NLName("q"))))]);
 }
+
+TEST_F(TSNLGraphConstructorTests, canonicalClockGatePropagatesClockAndCapturesBothControls) {
+  auto* gate = SNLInstance::create(top_, NLDB0::getOrCreateClockGate());
+  auto* clock = port(top_, "clock", SNLTerm::Direction::Input);
+  auto* enable = port(top_, "enable", SNLTerm::Direction::Input);
+  auto* test = port(top_, "test", SNLTerm::Direction::Input);
+  auto* output = port(top_, "output", SNLTerm::Direction::Output);
+  connect(top_, {clock, term(gate, "CLK")});
+  connect(top_, {enable, term(gate, "EN")});
+  connect(top_, {test, term(gate, "TEST_EN")});
+  connect(top_, {output, term(gate, "GCLK")});
+  TSNLGraphConstructor constructor;
+  construct(constructor);
+  ASSERT_EQ(1u, constructor.getClockGates().size());
+  const auto& descriptor = constructor.getClockGates().front();
+  EXPECT_EQ(TGraph::kInvalidNode, descriptor.heldEnable);
+  EXPECT_EQ(TGraph::kInvalidNode, descriptor.latchGate);
+  EXPECT_NE(TGraph::kInvalidNode, descriptor.testEnable);
+  auto& graph = constructor.getGraph();
+  EXPECT_EQ(TGraph::kInvalidEdge, edge(graph, descriptor.enable, descriptor.output));
+  EXPECT_EQ(TGraph::kInvalidEdge, edge(graph, descriptor.testEnable, descriptor.output));
+  ASSERT_EQ(2u, graph.getCaptureEdgesCount());
+  for (size_t i = 0; i < 2; ++i) {
+    EXPECT_EQ(TCaptureEdge::Kind::ClockGateControl, graph.getCaptureEdge(i)->getKind());
+    EXPECT_EQ(descriptor.clock, graph.getCaptureEdge(i)->getSource());
+  }
+  auto domain = graph.createClock("source", nullptr, constructor.getNode(SNLOccurrence(clock)));
+  auto result = TClockPropagator::run(graph);
+  EXPECT_TRUE(result.clockOrigins[descriptor.output].test(domain));
+  EXPECT_TRUE(result.clockOrigins[descriptor.enable].none());
+  EXPECT_TRUE(result.clockOrigins[descriptor.testEnable].none());
+}
