@@ -86,6 +86,56 @@ def render(suites, functional=None):
     return '\n'.join(lines)
 
 
+def render_cvfpu(reports, expected_shards=None):
+    lines = ['## CVFPU FP32 FMA functional validation', '',
+             '| Shard | Result | Pairs | Checked | Skipped | Simulation wall time (s) |',
+             '|---|---|---:|---:|---:|---:|']
+    seen = set()
+    identities = set()
+    indices = set()
+    complete = bool(reports)
+    checked = skipped = 0
+    for label, report in reports:
+        if report is None:
+            complete = False
+            lines.append(f'| {cell(label)} | report unavailable | — | — | — | — |')
+            continue
+        indices.add(report.get('shard_index'))
+        identities.add((report.get('shard_count'), report.get('seeds'),
+                        tuple(report.get('tests', [])), report.get('benchmark_revision'),
+                        json.dumps(report.get('naja_producer'), sort_keys=True)))
+        cases = report.get('cases', [])
+        passed = sum(case['status'] == 'passed' for case in cases)
+        complete &= (report.get('status') == 'passed' and
+                     passed == len(cases) == report.get('expected_cases'))
+        for case in cases:
+            key = (case['test'], case['seed'])
+            if key in seen:
+                complete = False
+            seen.add(key)
+            coverage = case.get('results', {}).get('original', {}).get('coverage', {})
+            checked += coverage.get('checked', 0)
+            skipped += coverage.get('skipped', 0)
+        totals = report.get('totals', {})
+        lines.append(f'| {cell(label)} | {cell(report.get("status", "unknown"))} | '
+                     f'{passed}/{report.get("expected_cases", "?")} | '
+                     f'{number(totals.get("checked"))} | {number(totals.get("skipped"))} | '
+                     f'{seconds(report.get("simulation_seconds"))} |')
+    complete &= len(identities) == 1
+    if expected_shards is not None:
+        complete &= indices == set(range(expected_shards)) and len(reports) == expected_shards
+        if reports and reports[0][1]:
+            first = reports[0][1]
+            expected = {(test, seed) for test in first.get('tests', [])
+                        for seed in range(1, first.get('seeds', 0) + 1)}
+            complete &= seen == expected
+    lines += ['', f'Overall: **{"passed" if complete else "failed / incomplete"}**; '
+              f'{len(seen)} unique pairs; {number(checked)} checked, {number(skipped)} upstream exclusions.', '',
+              'Each pair requires both reference scoreboards and identical RTL/netlist cycle and transaction traces. '
+              'Coverage is limited to the exported FP32 FMA wrapper with zero pipeline registers.', '']
+    return '\n'.join(lines)
+
+
 def read(path):
     return json.loads(path.read_text()) if path.is_file() else None
 
@@ -98,7 +148,7 @@ def collect_artifacts(root):
                 continue
             for suffix in ('summary.json', 'elaboration/summary.json'):
                 path = artifact / suffix
-                if path.is_file():
+                if path.is_file() and not artifact.name.startswith('pulp-summary-cvfpu-'):
                     suites.append((artifact.name, read(path)))
             candidate = artifact / 'ita/summary.json'
             if candidate.is_file():
@@ -113,6 +163,7 @@ def main():
     parser.add_argument('--root', type=Path, default=Path('build/pulp-benchmarks'))
     parser.add_argument('--functional', type=Path)
     parser.add_argument('--aggregate-root', type=Path, help='Directory of separately downloaded job artifacts')
+    parser.add_argument('--cvfpu', type=Path, help='CVFPU shard summary')
     args = parser.parse_args()
     if args.aggregate_root:
         suites, functional = collect_artifacts(args.aggregate_root)
@@ -122,7 +173,14 @@ def main():
         suites = [('Load / dump / lint', read(args.root / 'summary.json')),
                   ('Larger-design elaboration', read(args.root / 'elaboration/summary.json'))]
         functional = read(args.functional) if args.functional else None
-    report = render(suites, functional)
+    if args.cvfpu:
+        report = render_cvfpu([(args.cvfpu.parent.name, read(args.cvfpu))])
+    else:
+        report = render(suites, functional)
+        if args.aggregate_root:
+            reports = [(f'shard {index}', read(args.aggregate_root /
+                       f'pulp-summary-cvfpu-{index}' / 'summary.json')) for index in range(4)]
+            report += '\n' + render_cvfpu(reports, expected_shards=4)
     args.root.mkdir(parents=True, exist_ok=True)
     (args.root / 'report.md').write_text(report)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
