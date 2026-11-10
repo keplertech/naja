@@ -4,7 +4,6 @@
 
 <p align="center">
   <a href="https://pypi.org/project/najaeda/"><img src="https://img.shields.io/pypi/v/najaeda" alt="PyPI"/></a>
-  <a href="https://pypi.org/project/najaeda/"><img src="https://img.shields.io/pypi/pyversions/najaeda" alt="Supported Python versions"/></a>
   <a href="https://github.com/keplertech/naja/actions/workflows/build.yml"><img src="https://github.com/keplertech/naja/actions/workflows/build.yml/badge.svg?branch=main" alt="Ubuntu and macOS Build"/></a>
   <a href="https://pepy.tech/project/najaeda"><img src="https://img.shields.io/pepy/dt/najaeda?color=blue&amp;label=downloads" alt="najaeda total downloads"/></a>
   <a href="https://codecov.io/gh/keplertech/naja"><img src="https://codecov.io/gh/keplertech/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP" alt="Coverage"/></a>
