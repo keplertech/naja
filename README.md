@@ -2,16 +2,21 @@
 <img width="150" alt="Naja Logo" src="./docs/images/Naja-Logo.png"><h1>Naja</h1>
 </div>
 
-[![PyPI](https://img.shields.io/pypi/v/najaeda)](https://pypi.org/project/najaeda)
-[![Open Chapter 1](https://colab.research.google.com/assets/colab-badge.svg)](
-https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb)
-[![Join Matrix Chat →](https://img.shields.io/badge/Matrix-Join%20Chat-success?logo=matrix)](https://matrix.to/#/#naja:fossi-chat.org)
-![Ubuntu Build](https://github.com/keplertech/naja/actions/workflows/ubuntu-build.yml/badge.svg)
-![MacOS Build](https://github.com/keplertech/naja/actions/workflows/macos-build.yml/badge.svg)
-[![codecov](https://codecov.io/gh/keplertech/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP)](https://codecov.io/gh/keplertech/naja)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/keplertech/naja)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![REUSE status](https://api.reuse.software/badge/github.com/keplertech/naja)](https://api.reuse.software/info/github.com/keplertech/naja)
+<p align="center">
+  <a href="https://pypi.org/project/najaeda/"><img src="https://img.shields.io/pypi/v/najaeda" alt="PyPI"/></a>
+  <a href="https://pypi.org/project/najaeda/"><img src="https://img.shields.io/pypi/pyversions/najaeda" alt="Supported Python versions"/></a>
+  <a href="https://github.com/keplertech/naja/actions/workflows/build.yml"><img src="https://github.com/keplertech/naja/actions/workflows/build.yml/badge.svg?branch=main" alt="Ubuntu and macOS Build"/></a>
+  <a href="https://pepy.tech/project/najaeda"><img src="https://img.shields.io/pepy/dt/najaeda?color=blue&amp;label=downloads" alt="najaeda total downloads"/></a>
+  <a href="https://codecov.io/gh/keplertech/naja"><img src="https://codecov.io/gh/keplertech/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP" alt="Coverage"/></a>
+  <a href="https://codspeed.io/keplertech/naja"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"/></a>
+  <a href="https://api.reuse.software/info/github.com/keplertech/naja"><img src="https://api.reuse.software/badge/github.com/keplertech/naja" alt="REUSE status"/></a>
+  <br/>
+  <a href="https://najaeda.readthedocs.io/en/latest/"><img src="https://img.shields.io/badge/Docs-najaeda-0b7285?logo=readthedocs&amp;logoColor=white" alt="najaeda documentation"/></a>
+  <a href="https://colab.research.google.com/github/keplertech/naja/blob/main/tutorials/notebooks/01_getting_started.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open Chapter 1 in Colab"/></a>
+  <a href="https://matrix.to/#/#naja:fossi-chat.org"><img src="https://img.shields.io/badge/Matrix-Join%20Chat-success?logo=matrix" alt="Join Matrix Chat"/></a>
+  <a href="https://www.linkedin.com/company/keplertech-io"><img src="https://img.shields.io/badge/LinkedIn-keplertech.io-0077B5?logo=linkedin" alt="keplertech.io on LinkedIn"/></a>
+</p>
 
 ## What is Naja?
 

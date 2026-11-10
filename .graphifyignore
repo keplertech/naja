@@ -22,6 +22,18 @@ naja_perf.log
 sv_constructor_perf.log
 dump_if
 
+# Large benchmark netlists duplicated in source and tutorial trees.
+tinyrocket.v
+src/najaeda/benchmarks/verilog/*
+src/apps/naja_edit/examples/arm_core/src/arm_core.v
+src/apps/naja_edit/examples/vexriscv/src/vexriscv.demo.GenFull.v
+
+# Branding carries no implementation relationships.
+docs/images/Naja-Logo.png
+
+# Generated cell catalog and dependency release history add little architectural context.
+primitives/asap7.py
+
 # regress: fetched external content
 regress
 
@@ -33,3 +45,7 @@ thirdparty/*
 !thirdparty/naja-verilog
 !thirdparty/slang
 !thirdparty/yosys-liberty
+
+# Keep Slang itself, but omit its bundled dependencies.
+thirdparty/slang/external/
+thirdparty/slang/CHANGELOG.md
