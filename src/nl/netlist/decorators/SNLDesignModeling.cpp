@@ -810,6 +810,99 @@ void insertInArcs(naja::NL::SNLDesignModeling::Arcs& arcs,
   termArcs.insert(term1);
 }
 
+using TermArcs = naja::NL::SNLDesignModeling::TermArcs;
+using GroupedArcs = naja::NL::SNLDesignModeling::GroupedArcs;
+using BitTerm = naja::NL::SNLBitTerm;
+
+bool hasGroupedArc(const GroupedArcs& groups, BitTerm* from, BitTerm* to) {
+  auto it = groups.find(from);
+  if (it == groups.end()) {
+    return false;
+  }
+  for (const auto& group : it->second) {
+    if (group->contains(to)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Arc declarations cannot overlap, so the sorted sets in a query are disjoint.
+// Merge their iterators without materializing or caching their union.
+class CombinatorialArcCollection: public naja::NajaBaseCollection<BitTerm*> {
+ public:
+  using Sets = std::vector<const TermArcs*>;
+  class Iterator: public naja::NajaBaseIterator<BitTerm*> {
+   public:
+    Iterator(const Sets& sets, bool begin): sets_(sets) {
+      for (auto* set : sets_) {
+        positions_.push_back(begin ? set->begin() : set->end());
+      }
+      select();
+    }
+    Iterator(const Iterator&) = default;
+    BitTerm* getElement() const override { return *positions_[selected_]; }
+    void progress() override { ++positions_[selected_]; select(); }
+    bool isValid() const override { return selected_ < sets_.size(); }
+    bool isEqual(const naja::NajaBaseIterator<BitTerm*>* other) const override {
+      auto* it = dynamic_cast<const Iterator*>(other);
+      return it && sets_ == it->sets_ && positions_ == it->positions_;
+    }
+    naja::NajaBaseIterator<BitTerm*>* clone() override { return new Iterator(*this); }
+   private:
+    void select() {
+      selected_ = sets_.size();
+      for (size_t i = 0; i < sets_.size(); ++i) {
+        if (positions_[i] != sets_[i]->end() &&
+            (selected_ == sets_.size() ||
+             BitTerm::InDesignLess()(*positions_[i], *positions_[selected_]))) {
+          selected_ = i;
+        }
+      }
+    }
+    Sets sets_;
+    std::vector<TermArcs::const_iterator> positions_;
+    size_t selected_ {0};
+  };
+  explicit CombinatorialArcCollection(Sets sets): sets_(std::move(sets)) {}
+  naja::NajaBaseCollection<BitTerm*>* clone() const override {
+    return new CombinatorialArcCollection(sets_);
+  }
+  naja::NajaBaseIterator<BitTerm*>* begin() const override { return new Iterator(sets_, true); }
+  naja::NajaBaseIterator<BitTerm*>* end() const override { return new Iterator(sets_, false); }
+  size_t size() const override {
+    size_t result = 0;
+    for (auto* set : sets_) {
+      result += set->size();
+    }
+    return result;
+  }
+  bool empty() const override { return size() == 0; }
+ private:
+  Sets sets_;
+};
+
+naja::NajaCollection<BitTerm*> getCombinatorialArcs(
+    const naja::NL::SNLDesignModeling::Arcs& arcs, const GroupedArcs& groups,
+    BitTerm* term) {
+  CombinatorialArcCollection::Sets sets;
+  if (auto it = arcs.find(term); it != arcs.end()) {
+    sets.push_back(&it->second);
+  }
+  if (auto it = groups.find(term); it != groups.end()) {
+    for (const auto& group : it->second) {
+      sets.push_back(group.get());
+    }
+  }
+  if (sets.empty()) {
+    return {};
+  }
+  if (sets.size() == 1) {
+    return naja::NajaCollection(new naja::NajaSTLCollection(sets.front()));
+  }
+  return naja::NajaCollection(new CombinatorialArcCollection(std::move(sets)));
+}
+
 naja::NL::SNLDesign* verifyInputs(
     const naja::NL::SNLDesignModeling::BitTerms& terms0,
     const std::string& terms0Naming,
@@ -1262,6 +1355,9 @@ void SNLDesignModeling::invalidateTruthTableCache_(
 void SNLDesignModeling::addCombinatorialArc_(SNLBitTerm* input,
                                              SNLBitTerm* output) {
   TimingArcs* arcs = getOrCreateTimingArcs();
+  if (hasGroupedArc(arcs->inputCombinatorialGroups_, input, output)) {
+    throw NLException("Error while inserting in timing arcs");
+  }
   insertInArcs(arcs->inputCombinatorialArcs_, input, output);
   insertInArcs(arcs->outputCombinatorialArcs_, output, input);
 }
@@ -1271,8 +1367,65 @@ void SNLDesignModeling::addCombinatorialArc_(
     SNLBitTerm* output,
     const std::string& parameterValue) {
   TimingArcs* arcs = getOrCreateTimingArcs(parameterValue);
+  if (hasGroupedArc(arcs->inputCombinatorialGroups_, input, output)) {
+    throw NLException("Error while inserting in timing arcs");
+  }
   insertInArcs(arcs->inputCombinatorialArcs_, input, output);
   insertInArcs(arcs->outputCombinatorialArcs_, output, input);
+}
+
+void SNLDesignModeling::addCombinatorialArcs_(const BitTerms& inputs,
+    const BitTerms& outputs, const std::string& parameterValue) {
+  // Keep small declarations sparse. Divide to avoid overflow.
+  if (inputs.size() <= 64 / outputs.size()) {
+    for (auto* input : inputs) {
+      for (auto* output : outputs) {
+        addCombinatorialArc_(input, output, parameterValue);
+      }
+    }
+    return;
+  }
+  auto* arcs = getOrCreateTimingArcs(parameterValue);
+  auto inputGroup = std::make_shared<const TermArcs>(inputs.begin(), inputs.end());
+  auto outputGroup = std::make_shared<const TermArcs>(outputs.begin(), outputs.end());
+  if (inputGroup->size() != inputs.size() || outputGroup->size() != outputs.size()) {
+    throw NLException("Error while inserting in timing arcs");
+  }
+  auto overlaps = [&](const TermArcs& existing) {
+    const auto* smaller = &existing;
+    const auto* larger = outputGroup.get();
+    if (smaller->size() > larger->size()) {
+      std::swap(smaller, larger);
+    }
+    for (auto* term : *smaller) {
+      if (larger->contains(term)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // Shared groups need checking only once, even if many inputs reference them.
+  std::set<const TermArcs*> checked;
+  for (auto* input : *inputGroup) {
+    if (auto it = arcs->inputCombinatorialArcs_.find(input);
+        it != arcs->inputCombinatorialArcs_.end() && overlaps(it->second)) {
+      throw NLException("Error while inserting in timing arcs");
+    }
+    if (auto it = arcs->inputCombinatorialGroups_.find(input);
+        it != arcs->inputCombinatorialGroups_.end()) {
+      for (const auto& group : it->second) {
+        if (checked.insert(group.get()).second && overlaps(*group)) {
+          throw NLException("Error while inserting in timing arcs");
+        }
+      }
+    }
+  }
+  for (auto* input : *inputGroup) {
+    arcs->inputCombinatorialGroups_[input].push_back(outputGroup);
+  }
+  for (auto* output : *outputGroup) {
+    arcs->outputCombinatorialGroups_[output].push_back(inputGroup);
+  }
 }
 
 void SNLDesignModeling::addInputToClockArc_(SNLBitTerm* input,
@@ -1379,19 +1532,36 @@ const SNLDesignModeling::TimingArcs* SNLDesignModeling::getTimingArcs(
 }
 
 NajaCollection<SNLBitTerm*> SNLDesignModeling::getCombinatorialOutputs_(
-    SNLBitTerm* term) const {GET_RELATED_TERMS_IN_ARCS(inputCombinatorialArcs_)}
+    SNLBitTerm* term) const {
+  auto* arcs = getTimingArcs();
+  return getCombinatorialArcs(arcs->inputCombinatorialArcs_, arcs->inputCombinatorialGroups_, term);
+}
 
 NajaCollection<SNLInstTerm*> SNLDesignModeling::getCombinatorialOutputs_(
     SNLInstTerm* iterm) const {
-    GET_RELATED_INSTTERMS_IN_ARCS(inputCombinatorialArcs_)}
+    auto* arcs = getTimingArcs(iterm->getInstance());
+    return getCombinatorialArcs(arcs->inputCombinatorialArcs_,
+        arcs->inputCombinatorialGroups_, iterm->getBitTerm())
+        .getTransformerCollection<SNLInstTerm*>([=](SNLBitTerm* term) {
+          return iterm->getInstance()->getInstTerm(term);
+        });
+}
 
 NajaCollection<SNLBitTerm*> SNLDesignModeling::getCombinatorialInputs_(
     SNLBitTerm* term) const {
-    GET_RELATED_TERMS_IN_ARCS(outputCombinatorialArcs_)}
+    auto* arcs = getTimingArcs();
+    return getCombinatorialArcs(arcs->outputCombinatorialArcs_, arcs->outputCombinatorialGroups_, term);
+}
 
 NajaCollection<SNLInstTerm*> SNLDesignModeling::getCombinatorialInputs_(
     SNLInstTerm* iterm) const {
-    GET_RELATED_INSTTERMS_IN_ARCS(outputCombinatorialArcs_)}
+    auto* arcs = getTimingArcs(iterm->getInstance());
+    return getCombinatorialArcs(arcs->outputCombinatorialArcs_,
+        arcs->outputCombinatorialGroups_, iterm->getBitTerm())
+        .getTransformerCollection<SNLInstTerm*>([=](SNLBitTerm* term) {
+          return iterm->getInstance()->getInstTerm(term);
+        });
+}
 
 NajaCollection<SNLBitTerm*> SNLDesignModeling::getClockRelatedInputs_(
     SNLBitTerm* term) const {GET_RELATED_TERMS_IN_ARCS(clockToInputArcs_)}
@@ -1426,11 +1596,7 @@ void SNLDesignModeling::addCombinatorialArcs(const BitTerms& inputs,
                              "addCombinatorialArcs");
   auto property = getOrCreateProperty(design, Type::NO_PARAMETER);
   auto modeling = property->getModeling();
-  for (auto input : inputs) {
-    for (auto output : outputs) {
-      modeling->addCombinatorialArc_(input, output);
-    }
-  }
+  modeling->addCombinatorialArcs_(inputs, outputs);
 }
 
 void SNLDesignModeling::addCombinatorialArcs(const std::string& parameterValue,
@@ -1440,11 +1606,7 @@ void SNLDesignModeling::addCombinatorialArcs(const std::string& parameterValue,
                              "addCombinatorialArcs");
   auto property = getOrCreateProperty(design, Type::PARAMETERIZED);
   auto modeling = property->getModeling();
-  for (auto input : inputs) {
-    for (auto output : outputs) {
-      modeling->addCombinatorialArc_(input, output, parameterValue);
-    }
-  }
+  modeling->addCombinatorialArcs_(inputs, outputs, parameterValue);
 }
 
 void SNLDesignModeling::addInputsToClockArcs(const BitTerms& inputs,

@@ -102,6 +102,10 @@ std::vector<PrimitiveCase> primitiveCases(bool wide = true) {
     cases.push_back({"masked" + std::to_string(width),
         [=] { return NLDB0::getOrCreateMemory({width, 3, 2, 2, 2, NLDB0::MemoryResetMode::None, true}); }});
   }
+  // Exercise compact groups in the cross-process artifact audit as well.
+  cases.push_back({"grouped_vector_select", [] {
+    return NLDB0::getOrCreateVectorSelect({23, 7, 5, true});
+  }});
   return cases;
 }
 
@@ -316,6 +320,30 @@ TEST_F(SNLCapnPPrimitiveIdentityTest, MemoryOverridePreservesModelAndSharing) {
   top = NLUniverse::get()->getDB(1)->getTopDesign();
   EXPECT_EQ(top->getInstance(NLName("overridden"))->getModel(),
       top->getInstance(NLName("defaulted"))->getModel());
+}
+
+TEST_F(SNLCapnPPrimitiveIdentityTest, WideGroupedTimingReconstructedOnLoad) {
+  auto* top = createTop();
+  const NLDB0::VectorSelectSignature signature{2048, 3072, 37, true};
+  auto* model = NLDB0::getOrCreateVectorSelect(signature);
+  auto* instance = SNLInstance::create(top, model, NLName("select"));
+  auto* bit = NLDB0::getVectorSelectOutput(model)->getBit(1024);
+  EXPECT_EQ(2085, Modeling::getCombinatorialInputs(instance->getInstTerm(bit)).size());
+  auto id = model->getNLID();
+  auto path = std::filesystem::path(SNL_CAPNP_TEST_PATH) / "wide_grouped_timing";
+  SNLCapnP::dump(top->getDB(), path);
+  NLUniverse::get()->destroy();
+  auto* db = SNLCapnP::load(path);
+  instance = db->getTopDesign()->getInstance(NLName("select"));
+  model = instance->getModel();
+  EXPECT_EQ(id, model->getNLID());
+  EXPECT_EQ(signature, NLDB0::getVectorSelectSignature(model));
+  auto inputs = Modeling::getCombinatorialInputs(
+      instance->getInstTerm(NLDB0::getVectorSelectOutput(model)->getBit(1024)));
+  EXPECT_EQ(2085, inputs.size());
+  EXPECT_EQ(2085, std::distance(inputs.begin(), inputs.end()));
+  EXPECT_EQ(3072, Modeling::getCombinatorialOutputs(
+      instance->getInstTerm(NLDB0::getVectorSelectData(model)->getBit(0))).size());
 }
 
 TEST_F(SNLCapnPPrimitiveIdentityTest, CompoundModelsInstantiatedInReverseOrder) {

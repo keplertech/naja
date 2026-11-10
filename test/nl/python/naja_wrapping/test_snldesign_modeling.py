@@ -58,6 +58,30 @@ class SNLDesignModelingTest(unittest.TestCase):
     self.assertTrue(self.primitives.isPrimitives())
     self.assertFalse(self.primitives.isStandard())
 
+  def testGroupedCombinatorialArcs(self):
+    model = naja.SNLDesign.createPrimitive(self.primitives, "grouped")
+    inputs = naja.SNLBusTerm.create(model, naja.SNLTerm.Direction.Input, 15, 0, "I")
+    outputs = naja.SNLBusTerm.create(model, naja.SNLTerm.Direction.Output, 31, 0, "O")
+    input_bits = [inputs.getBusTermBit(i) for i in range(16)]
+    output_bits = [outputs.getBusTermBit(i) for i in range(32)]
+    naja.SNLDesign.addCombinatorialArcs(input_bits[::-1], output_bits[1::2])
+    naja.SNLDesign.addCombinatorialArcs(input_bits, output_bits[0])
+    naja.SNLDesign.addCombinatorialArcs(input_bits, output_bits[2::2])
+    owner = naja.SNLDesign.create(self.designs, "owner")
+    instance = naja.SNLInstance.create(owner, model, "u")
+    for bit in input_bits:
+      self.assertEqual(output_bits, list(model.getCombinatorialOutputs(bit)))
+      self.assertEqual([instance.getInstTerm(t) for t in output_bits],
+                       list(instance.getCombinatorialOutputs(instance.getInstTerm(bit))))
+    for bit in output_bits:
+      self.assertEqual(input_bits, list(model.getCombinatorialInputs(bit)))
+      self.assertEqual([instance.getInstTerm(t) for t in input_bits],
+                       list(instance.getCombinatorialInputs(instance.getInstTerm(bit))))
+    with self.assertRaises(RuntimeError):
+      naja.SNLDesign.addCombinatorialArcs(input_bits, output_bits[1::2])
+    with self.assertRaises(RuntimeError):
+      naja.SNLDesign.addCombinatorialArcs(input_bits[0], output_bits[1])
+
   def testTermRoleDecoration(self):
     reg = naja.SNLDesign.createPrimitive(self.primitives, "REG")
     clock = naja.SNLScalarTerm.create(
