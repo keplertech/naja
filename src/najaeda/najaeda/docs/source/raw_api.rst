@@ -490,6 +490,13 @@ Use the raw API when defining a primitive library in Python.  The high-level
 :mod:`najaeda.netlist` API loads and consumes primitive libraries, while the
 raw objects expose the definition-time timing decorators.
 
+``SNLDesign.addCombinatorialArcs(inputs, outputs)`` declares every input/output
+pair. Large declarations are stored as compact shared groups, including for
+parameter-selected timing. Queries on designs and instances enumerate the same
+dependencies in stable term-ID order without expanding the whole timing graph.
+Duplicate arc declarations still raise ``RuntimeError``. Canonical DB0 primitives
+reconstruct their timing groups when a NajaIF snapshot is loaded.
+
 Primitive designs are hierarchy leaves.  Their interface, parameters, and
 timing metadata can be defined directly, but they cannot contain instances.
 Accordingly, ``SNLInstance.create(owner, model, name)`` raises

@@ -742,6 +742,16 @@ module top(input logic signed [79:0] index,
 endmodule
 """)
 
+    def test_systemverilog_grouped_timing_dependencies(self):
+        self.check_determinism("sv_timing", """
+module top(input logic [47:0] data, input logic [5:0] offset,
+           input logic [11:0] factor, output logic [11:0] result);
+  logic [11:0] selected;
+  assign selected = data[offset +: 12];
+  assign result = selected * factor;
+endmodule
+""")
+
     def test_systemverilog_selected_sequential_arithmetic(self):
         self.check_determinism("sv", """
 module top(input logic clk, rst, enable,

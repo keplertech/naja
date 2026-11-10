@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
+
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
 using ::testing::ElementsAre;
@@ -18,6 +20,8 @@ using ::testing::UnorderedElementsAre;
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 #include "SNLInstTerm.h"
+#include "SNLInstParameter.h"
+#include "SNLParameter.h"
 using namespace naja::NL;
 
 class SNLDesignModelingTest0: public ::testing::Test {
@@ -28,6 +32,91 @@ class SNLDesignModelingTest0: public ::testing::Test {
       }
     }
 };
+
+TEST_F(SNLDesignModelingTest0, GroupedCombinatorialArcsPreserveOrderingAndParameters) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* prims = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* designs = NLLibrary::create(db);
+  auto* top = SNLDesign::create(designs, NLName("top"));
+  auto* model = SNLDesign::create(prims, SNLDesign::Type::Primitive, NLName("grouped"));
+  auto* input = SNLBusTerm::create(model, SNLTerm::Direction::Input, 31, 0, NLName("I"));
+  auto* output = SNLBusTerm::create(model, SNLTerm::Direction::Output, 63, 0, NLName("O"));
+  auto* unused = SNLScalarTerm::create(model, SNLTerm::Direction::Input, NLName("unused"));
+  auto* parameter = SNLParameter::create(model, NLName("MODE"), SNLParameter::Type::String, "ALL");
+  SNLDesignModeling::setParameter(model, "MODE", "ALL");
+  SNLDesignModeling::BitTerms inputs, odd, even;
+  for (auto* bit : input->getBits()) {
+    inputs.push_front(bit);
+  }
+  for (int bit = 1; bit < 64; ++bit) {
+    (bit % 2 ? odd : even).push_back(output->getBit(bit));
+  }
+  // Interleave two compact declarations and a sparse one in ID order.
+  SNLDesignModeling::addCombinatorialArcs(inputs, odd);
+  SNLDesignModeling::addCombinatorialArcs(inputs, {output->getBit(0)});
+  SNLDesignModeling::addCombinatorialArcs(inputs, even);
+  SNLDesignModeling::addCombinatorialArcs("PART", inputs, odd);
+  std::vector<SNLBitTerm*> expectedOutputs(output->getBits().begin(), output->getBits().end());
+  std::vector<SNLBitTerm*> expectedInputs(input->getBits().begin(), input->getBits().end());
+  std::sort(expectedOutputs.begin(), expectedOutputs.end(), SNLBitTerm::InDesignLess());
+  std::sort(expectedInputs.begin(), expectedInputs.end(), SNLBitTerm::InDesignLess());
+  auto* instance = SNLInstance::create(top, model, NLName("full"));
+  for (auto* bit : input->getBits()) {
+    auto outputs = SNLDesignModeling::getCombinatorialOutputs(bit);
+    EXPECT_EQ(64, outputs.size());
+    EXPECT_FALSE(outputs.empty());
+    auto copy = outputs.getSubCollection([](SNLBitTerm*) { return true; });
+    auto it = copy.begin();
+    auto next = it;
+    ++next;
+    EXPECT_NE(it, next);
+    EXPECT_EQ(expectedOutputs, std::vector(outputs.begin(), outputs.end()));
+    std::vector<SNLBitTerm*> actual;
+    for (auto* term : SNLDesignModeling::getCombinatorialOutputs(instance->getInstTerm(bit))) {
+      actual.push_back(term->getBitTerm());
+    }
+    EXPECT_EQ(expectedOutputs, actual);
+  }
+  for (auto* bit : output->getBits()) {
+    auto inputs = SNLDesignModeling::getCombinatorialInputs(bit);
+    EXPECT_EQ(expectedInputs, std::vector(inputs.begin(), inputs.end()));
+    EXPECT_EQ(32, SNLDesignModeling::getCombinatorialInputs(instance->getInstTerm(bit)).size());
+  }
+  auto* partial = SNLInstance::create(top, model, NLName("partial"));
+  SNLInstParameter::create(partial, parameter, "PART");
+  EXPECT_EQ(odd.size(), SNLDesignModeling::getCombinatorialOutputs(partial->getInstTerm(input->getBit(0))).size());
+  EXPECT_TRUE(SNLDesignModeling::getCombinatorialInputs(partial->getInstTerm(output->getBit(0))).empty());
+  EXPECT_TRUE(SNLDesignModeling::getCombinatorialOutputs(unused).empty());
+  EXPECT_TRUE(SNLDesignModeling::getCombinatorialOutputs(output->getBit(0)).empty());
+  EXPECT_TRUE(SNLDesignModeling::getCombinatorialInputs(input->getBit(0)).empty());
+  // Reject duplicates within and across grouped/sparse declarations.
+  EXPECT_THROW(SNLDesignModeling::addCombinatorialArcs(inputs, odd), NLException);
+  EXPECT_THROW(SNLDesignModeling::addCombinatorialArcs(inputs, {output->getBit(0), output->getBit(2), output->getBit(4)}), NLException);
+  EXPECT_THROW(SNLDesignModeling::addCombinatorialArcs({input->getBit(0)}, {output->getBit(1)}), NLException);
+  EXPECT_THROW(SNLDesignModeling::addCombinatorialArcs({unused, unused}, odd), NLException);
+  auto duplicateOutputs = odd;
+  duplicateOutputs.push_back(odd.front());
+  EXPECT_THROW(SNLDesignModeling::addCombinatorialArcs(inputs, duplicateOutputs), NLException);
+}
+
+TEST_F(SNLDesignModelingTest0, WideCombinatorialGroupCanBeQueriedWithoutExpansion) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* library = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* model = SNLDesign::create(library, SNLDesign::Type::Primitive);
+  auto* input = SNLBusTerm::create(model, SNLTerm::Direction::Input, 8191, 0);
+  auto* output = SNLBusTerm::create(model, SNLTerm::Direction::Output, 16383, 0);
+  SNLDesignModeling::addCombinatorialArcs(
+      {input->getBits().begin(), input->getBits().end()},
+      {output->getBits().begin(), output->getBits().end()});
+  for (int bit : {0, 4095, 8191}) {
+    auto outputs = SNLDesignModeling::getCombinatorialOutputs(input->getBit(bit));
+    EXPECT_EQ(16384, outputs.size());
+    EXPECT_EQ(16384, std::distance(outputs.begin(), outputs.end()));
+  }
+  EXPECT_EQ(8192, SNLDesignModeling::getCombinatorialInputs(output->getBit(0)).size());
+}
 
 TEST_F(SNLDesignModelingTest0, testCombinatorial) {
   //Create primitives

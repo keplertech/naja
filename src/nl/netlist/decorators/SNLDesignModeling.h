@@ -9,6 +9,7 @@
 #include <list>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -43,9 +44,14 @@ class SNLDesignModeling {
     };
     using TermArcs = std::set<SNLBitTerm*, SNLBitTerm::InDesignLess>;
     using Arcs = std::map<SNLBitTerm*, TermArcs, SNLBitTerm::InDesignLess>;
+    // Each shared set describes one side of a complete bipartite arc group.
+    using GroupedArcs = std::map<SNLBitTerm*,
+        std::vector<std::shared_ptr<const TermArcs>>, SNLBitTerm::InDesignLess>;
     struct TimingArcs {
       Arcs inputCombinatorialArcs_  {};
       Arcs outputCombinatorialArcs_ {};
+      GroupedArcs inputCombinatorialGroups_ {};
+      GroupedArcs outputCombinatorialGroups_ {};
       Arcs inputToClockArcs_        {};
       Arcs clockToInputArcs_        {};
       Arcs outputToClockArcs_       {};
@@ -164,6 +170,8 @@ class SNLDesignModeling {
     //In case the Timing Modeling of a design depends on a parameter
     //Following method must be called prior to others
     static void setParameter(SNLDesign* design, const std::string& name, const std::string& defaultValue);
+    // Large Cartesian products are retained as groups, without allocating an
+    // entry for every pair. Queries enumerate the same ordered dependencies.
     static void addCombinatorialArcs(const BitTerms& inputs, const BitTerms& outputs);
     static void addCombinatorialArcs(const std::string& parameterValue, const BitTerms& inputs, const BitTerms& outputs);
     static void addInputsToClockArcs(const BitTerms& inputs, SNLBitTerm* clock);
@@ -285,6 +293,8 @@ class SNLDesignModeling {
     
     void addCombinatorialArc_(SNLBitTerm* input, SNLBitTerm* output);
     void addCombinatorialArc_(SNLBitTerm* input, SNLBitTerm* output, const std::string& parameterValue);
+    void addCombinatorialArcs_(const BitTerms& inputs, const BitTerms& outputs,
+        const std::string& parameterValue = std::string());
     void addInputToClockArc_(SNLBitTerm* input, SNLBitTerm* clock);
     void addClockToOutputArc_(SNLBitTerm* clock, SNLBitTerm* output);
     const TimingArcs* getTimingArcs(const SNLInstance* instance=nullptr) const;
