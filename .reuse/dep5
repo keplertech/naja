@@ -19,6 +19,11 @@ Files: CLAUDE.md AGENTS.md
 Copyright: 2026 The Naja Authors.
 License: Apache-2.0
 
+Files: docs/images/ecosystem.png
+Source: https://github.com/keplertech/.github/blob/main/profile/ecosystem.png
+Copyright: 2026 KeplerTech <https://keplertech.io>
+License: Apache-2.0
+
 Files: .bcr/*
 Copyright: 2026 The Naja Authors.
 License: Apache-2.0
