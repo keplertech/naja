@@ -414,7 +414,7 @@ jobs:
           VERILATOR_REV: 08bbef72acdc8f3ec5b27e3275e75475bc974e2b
         run: |
           sudo apt-get update
-          sudo apt-get install -yq autoconf flex bison help2man
+          sudo apt-get install -yq autoconf flex bison libfl-dev help2man
           git init "$RUNNER_TEMP/cvfpu-verilator-src"
           git -C "$RUNNER_TEMP/cvfpu-verilator-src" remote add origin https://github.com/verilator/verilator.git
           git -C "$RUNNER_TEMP/cvfpu-verilator-src" fetch --depth 1 origin "$VERILATOR_REV"
