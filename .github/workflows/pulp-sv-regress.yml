@@ -13,6 +13,8 @@ on:
       - 'regress/sv/pulp_benchmarks.py'
       - 'regress/sv/tests/test_pulp*.py'
       - 'regress/sv/pulp_report.py'
+      - 'regress/sv/cvfpu_simulation.py'
+      - 'regress/sv/tests/test_cvfpu_simulation.py'
       - 'regress/sv/ita_simulation.py'
       - 'regress/sv/tests/test_ita_simulation.py'
       - 'test/nl/formats/systemverilog/benchmarks/najaeda_primitives.v'
@@ -25,6 +27,10 @@ on:
     - cron: '23 2 * * *'
   workflow_dispatch:
     inputs:
+      cvfpu_full:
+        description: 'Run all 300 CVFPU pairs (otherwise 12 smoke pairs)'
+        type: boolean
+        default: true
       survey:
         description: 'Survey all 23 variants (known failures fail their individual jobs)'
         type: boolean
@@ -43,6 +49,7 @@ jobs:
     name: PULP case plan
     outputs:
       cases: ${{ steps.matrix.outputs.cases }}
+      cvfpu-seeds: ${{ steps.cvfpu.outputs.seeds }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -73,6 +80,16 @@ jobs:
           with tarfile.open(archive, 'w:gz') as output:
               output.add(package, arcname=pulp.PACKAGE)
           PYCODE
+      - name: Select CVFPU simulation coverage
+        id: cvfpu
+        env:
+          FULL: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.cvfpu_full) }}
+        run: |
+          if [[ "$FULL" == true ]]; then
+            echo 'seeds=50' >> "$GITHUB_OUTPUT"
+          else
+            echo 'seeds=2' >> "$GITHUB_OUTPUT"
+          fi
       - name: Select independent cases
         id: matrix
         env:
@@ -114,6 +131,7 @@ jobs:
       - run: |
           python3 -m unittest discover -s regress/sv/tests -p 'test_pulp*.py'
           python3 -m unittest discover -s regress/sv/tests -p test_ita_simulation.py
+          python3 -m unittest discover -s regress/sv/tests -p test_cvfpu_simulation.py
 
   build-naja:
     runs-on: ubuntu-24.04
@@ -380,8 +398,166 @@ jobs:
             !build/pulp-benchmarks/ita/*.tar.gz
           retention-days: 7
 
+  build-cvfpu-verilator:
+    runs-on: ubuntu-24.04
+    name: Build pinned CVFPU Verilator
+    timeout-minutes: 30
+    steps:
+      - uses: actions/cache@v6
+        id: verilator
+        with:
+          path: ${{ runner.temp }}/cvfpu-verilator
+          key: cvfpu-verilator-ubuntu24-x64-08bbef72acdc8f3ec5b27e3275e75475bc974e2b-v1
+      - name: Build pinned Verilator 5.053
+        if: steps.verilator.outputs.cache-hit != 'true'
+        env:
+          VERILATOR_REV: 08bbef72acdc8f3ec5b27e3275e75475bc974e2b
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yq autoconf flex bison libfl-dev help2man
+          git init "$RUNNER_TEMP/cvfpu-verilator-src"
+          git -C "$RUNNER_TEMP/cvfpu-verilator-src" remote add origin https://github.com/verilator/verilator.git
+          git -C "$RUNNER_TEMP/cvfpu-verilator-src" fetch --depth 1 origin "$VERILATOR_REV"
+          git -C "$RUNNER_TEMP/cvfpu-verilator-src" checkout --detach FETCH_HEAD
+          cd "$RUNNER_TEMP/cvfpu-verilator-src"
+          autoconf
+          ./configure --prefix="$RUNNER_TEMP/cvfpu-verilator"
+          make -j"$(nproc)"
+          make install
+      - name: Package pinned compiler
+        run: |
+          "$RUNNER_TEMP/cvfpu-verilator/bin/verilator" --version
+          tar -czf "$RUNNER_TEMP/cvfpu-verilator.tar.gz" -C "$RUNNER_TEMP" cvfpu-verilator
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cvfpu-verilator
+          path: ${{ runner.temp }}/cvfpu-verilator.tar.gz
+          retention-days: 1
+
+  build-cvfpu-simulators:
+    needs: [plan, build-naja, build-cvfpu-verilator]
+    runs-on: ubuntu-24.04
+    name: Build shared CVFPU simulators
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install simulation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yq libboost-dev libcapnp-dev libtbb-dev libfl2 libmpfr-dev libgmp-dev pkg-config
+          python3 -m venv "$RUNNER_TEMP/cvfpu-tools"
+          "$RUNNER_TEMP/cvfpu-tools/bin/pip" install z3-solver==4.13.3.0
+          echo "$RUNNER_TEMP/cvfpu-tools/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v8
+        with:
+          name: pulp-prepared-rtl
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: pulp-naja-runtime
+          path: ${{ runner.temp }}/pulp-naja-runtime
+      - uses: actions/download-artifact@v8
+        with:
+          name: cvfpu-verilator
+          path: ${{ runner.temp }}
+      - uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/cvfpu-inputs
+          key: cvfpu-inputs-v1-${{ hashFiles('regress/sv/cvfpu_simulation.py') }}
+      - name: Build original RTL and Naja netlist simulators once
+        run: |
+          mkdir -p build/test/najaeda
+          tar -xzf "$RUNNER_TEMP/pulp-naja-runtime/pulp-naja-runtime.tar.gz" -C build/test/najaeda
+          tar -xzf "$RUNNER_TEMP/cvfpu-verilator.tar.gz" -C "$RUNNER_TEMP"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/build/test/najaeda/najaeda:${LD_LIBRARY_PATH:-}"
+          python3 - <<'PYCODE'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'regress/sv')
+          import pulp_benchmarks as pulp
+          pulp.unpack(Path(os.environ['RUNNER_TEMP']) / 'pulp-benchmarks.tar.gz', Path('build/cvfpu-rtl'))
+          PYCODE
+          package="$(find build/cvfpu-rtl -mindepth 1 -maxdepth 1 -type d)"
+          python3 regress/sv/cvfpu_simulation.py --phase build \
+            --package "$package" --inputs "$RUNNER_TEMP/cvfpu-inputs" \
+            --verilator "$RUNNER_TEMP/cvfpu-verilator/bin/verilator" \
+            --output build/cvfpu-simulation --jobs "$(nproc)"
+          tar -czf "$RUNNER_TEMP/cvfpu-simulators.tar.gz" -C build/cvfpu-simulation \
+            build-summary.json original-obj/Vtop generated-obj/Vtop
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cvfpu-simulators
+          path: ${{ runner.temp }}/cvfpu-simulators.tar.gz
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cvfpu-build-diagnostics
+          path: |
+            build/cvfpu-simulation/*.json
+            build/cvfpu-simulation/*.log
+            build/cvfpu-simulation/dump
+          retention-days: 7
+
+  cvfpu:
+    needs: [plan, build-cvfpu-simulators]
+    runs-on: ubuntu-24.04
+    name: CVFPU simulation shard ${{ matrix.shard }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install solver and reference-model runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yq libmpfr6 libgmp10
+          python3 -m venv "$RUNNER_TEMP/cvfpu-tools"
+          "$RUNNER_TEMP/cvfpu-tools/bin/pip" install z3-solver==4.13.3.0
+          echo "$RUNNER_TEMP/cvfpu-tools/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v8
+        with:
+          name: cvfpu-simulators
+          path: ${{ runner.temp }}
+      - name: Run two concurrent pairs on this shard
+        env:
+          SEEDS: ${{ needs.plan.outputs.cvfpu-seeds }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p build/cvfpu-simulation
+          tar -xzf "$RUNNER_TEMP/cvfpu-simulators.tar.gz" -C build/cvfpu-simulation
+          python3 regress/sv/cvfpu_simulation.py --phase run \
+            --output build/cvfpu-simulation --workers 2 \
+            --shard-index "$SHARD" --shard-count 4 --seeds "$SEEDS"
+      - name: Publish CVFPU shard summary
+        if: always()
+        run: python3 regress/sv/pulp_report.py --cvfpu build/cvfpu-simulation/summary.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pulp-summary-cvfpu-${{ matrix.shard }}
+          path: build/cvfpu-simulation/summary.json
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cvfpu-simulation-${{ matrix.shard }}
+          path: |
+            build/cvfpu-simulation/summary.json
+            build/cvfpu-simulation/*-seed*/*.log
+          retention-days: 7
+
   report:
-    needs: [frontend, verification]
+    needs: [frontend, verification, cvfpu]
     if: always()
     runs-on: ubuntu-24.04
     name: Combined PULP results

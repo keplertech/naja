@@ -903,3 +903,91 @@ can overlap and must not be added. Necessary large mux networks alone do not
 trigger a warning. Non-mux consumers are conservatively considered live roots.
 The same audit is available as `top.get_lowering_efficiency_report()`; pass
 `warn_threshold=None` for a silent report or a positive integer to tune warnings.
+
+### CVFPU FP32 FMA functional simulation
+
+`cvfpu_simulation.py` runs the pinned PULP CVFPU UVM environment against both
+the prepared RTL and the Naja structural dump. It requires both upstream
+scoreboards to pass, positive reference-model coverage, and exact agreement of
+DUT input/output transactions, exception flags, tags, ready/valid/reset/flush
+signals and timestamps. Its bind monitor samples before the active clock edge;
+it does not alter the DUT. The report records checked and skipped vectors for
+each test/seed and the Naja producer identity.
+
+The target is `cvfpu.fp32_fma`, whose exported wrapper uses FP32 arithmetic and
+`NumPipeRegs=0`. This checks the elaborated arithmetic and interface behavior;
+it does not establish coverage of registered FMA configurations or the full FPU.
+The upstream seven arithmetic operations, six available test classes, and
+documented reference-model exclusions are retained. The default is 50 seeds
+per class with ten requested transactions, for 300 paired testcases. A testcase
+with no vectors left for reference checking fails.
+
+Use Python 3.12+ matching the built Naja extension, Git, a C++ toolchain,
+MPFR/GMP development libraries discoverable through `pkg-config`, Verilator
+`08bbef72acdc8f3ec5b27e3275e75475bc974e2b` (5.053 development), and Z3 4.13.3.
+The upstream PULP installer is `flows/tools/install-verilator.sh` in its source
+checkout (`tools/install-verilator.sh` in its prepared simulation export).
+For example:
+
+```sh
+python3 regress/sv/cvfpu_simulation.py \
+  --package /path/to/prepared/pulp-benchmarks \
+  --najaeda-path build/test/najaeda \
+  --verilator /path/to/pinned/verilator --z3 /path/to/z3
+```
+
+`--seeds 1` runs one seed per class; repeatable `--test` selects individual
+classes. `--timeout` bounds each build and simulation separately (default
+1,200 seconds), and `--jobs` sets the compiler budget. Both builds run
+sequentially in separate directories.
+
+The runner downloads commit-pinned verification sources into `--inputs`
+(default `build/cvfpu-sources`) and stages their committed contents under the
+output directory. It verifies the PULP source archive and Accellera UVM 1.1d
+archive checksums and applies the pinned public PULP testbench patches. Updating
+the shared PULP `REVISION` also requires updating this runner's source archive
+checksum. On macOS, staged UVM allocation includes use `stdlib.h` in place of
+Linux's `malloc.h`. DUT RTL and Naja primitives receive no simulation patch.
+
+Artifacts default to `build/cvfpu-simulation/`: `summary.json`, strict lowering
+diagnostics, original/generated filelists, raw dump and primitive models, build
+logs, and separate per-test/seed simulation logs. Retain source/license notices
+in local caches; exclude `sources/`, source archives and `*-obj/` compiled
+simulator build trees from diagnostic artifacts. The short-lived simulator
+transfer artifact contains only the two executables and build manifest. This runner is independent of
+`ita_simulation.py` and does not require its SRAM changes.
+
+#### GitHub Actions coverage and parallel execution
+
+The PULP workflow builds the pinned CVFPU compiler and both simulators once,
+then shares the simulator executables and build manifest with four Ubuntu
+24.04 matrix jobs. Each shard runs two pairs concurrently, with a separate
+working directory and logs for every test/seed. RTL and netlist executions
+within a pair remain sequential. The shard timeout is 120 minutes.
+
+Pull requests and pushes to `main` use two seeds for each class: 12 pairs,
+three per shard. Nightly runs and default manual runs use all 50 seeds:
+300 pairs, 75 per shard. A manual run can disable `cvfpu_full` to select the
+smoke suite. Summaries record per-case timings, total simulation wall time,
+worker count and shard identity. The combined report checks that all four
+shards cover the selected matrix exactly once, with matching producer and
+coverage settings.
+
+To reproduce the artifact handoff locally:
+
+```sh
+python3 regress/sv/cvfpu_simulation.py --phase build \
+  --package /path/to/prepared/pulp-benchmarks \
+  --najaeda-path build/test/najaeda \
+  --verilator /path/to/pinned/verilator --z3 /path/to/z3
+# Transfer build-summary.json and both *-obj/Vtop executables together,
+# preserving their relative paths and executable permissions.
+python3 regress/sv/cvfpu_simulation.py --phase run \
+  --workers 2 --shard-index 0 --shard-count 4 --seeds 50 --z3 /path/to/z3
+```
+
+Run the second command for shard indices 0 through 3 in separate output
+directories restored from the same build artifact. Run-only jobs need the
+pinned solver and MPFR/GMP runtime libraries; they do not require Naja, the
+verification sources, or Verilator. `--phase all` (the default) retains the
+single-command local workflow; `--workers` also applies there.

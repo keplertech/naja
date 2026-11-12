@@ -8,7 +8,7 @@ import json
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pulp_report import render, collect_artifacts
+from pulp_report import render, collect_artifacts, render_cvfpu
 
 
 class PulpReportTest(unittest.TestCase):
@@ -60,6 +60,29 @@ class PulpReportTest(unittest.TestCase):
         self.assertIn('Overall: **failed**', report)
         self.assertIn('comparison: **passed**', report)
         self.assertIn('2,048', report)
+
+    def test_cvfpu_aggregate_rejects_missing_duplicate_and_failed_cases(self):
+        reports = []
+        for index in range(4):
+            report = dict(status='passed', shard_index=index, shard_count=4, seeds=4,
+                          tests=['test'], expected_cases=1,
+                          cases=[dict(test='test', seed=index + 1, status='passed', results={})])
+            reports.append((str(index), report))
+        self.assertIn('Overall: **passed**', render_cvfpu(reports, expected_shards=4))
+        self.assertIn('failed / incomplete', render_cvfpu(reports[:-1], expected_shards=4))
+        reports[-1][1]['cases'][0]['seed'] = 1
+        self.assertIn('failed / incomplete', render_cvfpu(reports, expected_shards=4))
+        reports[-1][1]['cases'][0]['seed'] = 4
+        reports[-1][1]['status'] = 'failed'
+        self.assertIn('failed / incomplete', render_cvfpu(reports, expected_shards=4))
+
+    def test_cvfpu_artifacts_are_not_treated_as_frontend_suites(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'pulp-summary-cvfpu-0'
+            artifact.mkdir()
+            (artifact / 'summary.json').write_text(json.dumps(dict(results={}, status='passed')))
+            self.assertEqual(([], None), collect_artifacts(root))
 
 
 if __name__ == '__main__':
