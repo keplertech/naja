@@ -5,6 +5,97 @@ SPDX-License-Identifier: Apache-2.0
 
 # SystemVerilog External Regress
 
+## Serial Link upstream functional validation (local experiment)
+
+See [the local results and reset-lowering finding](SERIAL_LINK_SIMULATION.md):
+the documented driver fast-path matrix passes 16/16 RTL cases, while the dump
+passes only the idle case. Functional equivalence is not established.
+
+`serial_link_simulation.py` runs the pinned PULP benchmark's `tb_axi_slink`
+environment. It completes all 16 original RTL cases before elaborating or
+simulating the Naja netlist. The benchmark revision is shared with
+`pulp_benchmarks.py`; Serial Link is pinned to
+`164d327b6ebe72c8d72c93e9d7c7169fa41d9b16` and the six verification dependencies
+are checked against its benchmark `Bender.lock`. Bender and Git must be on PATH.
+Initialize `deps/serial_link` in a checkout of that benchmark revision and pass
+the checkout as `--recipes`. Inputs are public upstream sources; staged source
+copies, patches, logs, traces, generated models and binaries stay under `build/`.
+
+Use the benchmark-pinned Verilator commit
+`ea338be98e1e838d3518809ce8899f85a009963c`. The runner records the Z3 version;
+the local experiment uses Z3 4.13.3. For example, with a
+locally built Naja Python package:
+
+```bash
+python3 regress/sv/serial_link_simulation.py \
+  --recipes build/inputs/recipes \
+  --najaeda-path build/package \
+  --verilator "$PWD/build/inputs/verilator/bin/verilator" \
+  --z3 /path/to/z3 \
+  --constant-delay-fast-path \
+  --output build/serial-link-simulation --workers 8 --timeout 3600
+```
+
+Use a fresh output directory initially. `--rtl-only` establishes a
+baseline without requiring Naja. `--reuse-rtl` checks the saved source/binary
+hashes and revalidates all completed RTL logs, running any previously unstarted
+cases before netlist work. It rejects modified inputs and incomplete/failed
+existing logs. Each simulator/elaboration invocation has a wall-clock bound covering
+its children; the testbench also has a one-second simulation-time watchdog.
+`summary.json` records revisions, tools, commands, elapsed times, channel counts,
+and trace hashes. Full accepted transactions remain in the per-case logs.
+
+The optional `--constant-delay-fast-path` avoids a severe local solver cost in
+the upstream AXI driver's `rand_wait`: when `min == max`, assign that sole legal
+delay directly and retain its success assertion. For unequal bounds the original
+constraint randomization remains intact. Both RTL and netlist use the same
+adapted driver. This preserves legal delay values and cycle counts for fixed
+waits but changes RNG advancement, so it does **not** reproduce the unadapted
+driver's exact seeded traffic stream. The option is recorded in `summary.json`,
+and the precise source adaptation is retained in `axi-fixed-delay.patch`.
+Omit the option for the exact upstream driver; those write-heavy runs can take
+tens of minutes or longer per case on the local machine.
+
+Coverage is the upstream one-channel/eight-lane DDR configuration, two endpoints
+with 50 ns and 54 ns system clocks and a 200 ns register clock, and seed 1.
+The four independent read/write counts each take values 0 or 100, including the
+idle case. Upstream random bursts, backpressure, exclusive accesses, APB setup,
+isolation, clock gates, resets and both `axi_chan_compare` checkers remain active.
+The pinned testbench passes `run(NumWrites, NumReads)` to a pinned master API
+declared as `run(n_reads, n_writes)`: the plusarg labels therefore describe the
+opposite operation in this revision. The runner preserves these supplied tests
+and checks their actual traffic counts. The complete matrix covers both
+interpretations equally. A zero maximum burst length means up to 256 beats,
+not single-beat traffic; W/R coverage counts completed bursts via `last` and
+records every individual accepted beat.
+The benchmark's receive-clock inversion and simulation-completion patches are
+applied to both models. There are no added timing delays or ITA changes.
+
+The elaborated boundary includes `slink_isolate`, its clock/reset controls and
+both AXI isolation blocks. A concrete wrapper uses the testbench's **3-bit IDs**;
+the synthesis benchmark's `serial_link_synth` uses 4-bit IDs and is a different
+configuration. The generated netlist replaces both endpoint instances while
+retaining the same upstream drivers and checkers. Behavioral verification
+memories are outside this elaboration boundary. Inferred NLDB0 memories retain
+their behavioral models; no memory-to-flop transformation is invoked. Small
+packed register arrays follow the frontend's ordinary lowering.
+
+Success requires upstream `TEST PASSED`, normal completion, no assertion/checker
+errors, and exactly the requested AW/AR/B transactions and W/R `last` beats at
+all four external AXI interfaces. Every accepted AW/W/B/AR/R packed payload and
+its exact handshake timestamp is compared between RTL and netlist, preserving
+order within every interface/channel stream. This includes address attributes,
+IDs, data, strobes, user bits, responses and burst termination. Ordering of
+log messages from independent clocks is ignored; transaction times are not.
+
+Exclusions: four-channel traffic, calibration/channel-allocation testbenches,
+additional seeds and configurations, explicit mid-traffic reset campaigns,
+atomic operations (disabled upstream), analog/electrical behavior, four-state
+X/Z equivalence, physical timing and formal proof. This is functional timed
+simulation with Verilator. Shared CI integration is deferred to avoid overlap
+with the independent CVFPU work; this runner imports only the existing PULP
+runner and adds no CVFPU sources or changes.
+
 This regress checks out pinned external RTL repositories, loads them into Naja,
 and runs structural, Verilog generation, lint, or simulation checks.
 
