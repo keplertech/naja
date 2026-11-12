@@ -4248,7 +4248,7 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestMemoryInference,
-  parseDirectSequentialMemoryAsyncResetConditionMismatchFallback) {
+  parseDirectSequentialMemoryAsyncResetConditionMismatchRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "direct_sequential_memory_async_reset_condition_mismatch_fallback";
@@ -4289,14 +4289,7 @@ endmodule
 )";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top = library_->getSNLDesign(
-    NLName("direct_sequential_memory_async_reset_condition_mismatch_fallback"));
-  ASSERT_NE(nullptr, top);
-  for (auto inst : top->getInstances()) {
-    EXPECT_FALSE(NLDB0::isMemory(inst->getModel()));
-  }
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(
