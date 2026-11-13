@@ -42291,7 +42291,8 @@ TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
       for (bool negativeClock : {false, true}) {
         for (const auto& mode : {std::string("direct"), std::string("enabled"),
                                 std::string("explicit_hold"), std::string("partial"),
-                                std::string("ascending"), std::string("partial_reset")}) {
+                                std::string("ascending"), std::string("partial_reset"),
+                                std::string("assigned"), std::string("assigned_struct")}) {
           const auto name = "async_constant_" + value + (activeLow ? "_low" : "_high") +
             (negativeClock ? "_neg_" : "_pos_") + mode;
           SCOPED_TRACE(name);
@@ -42301,11 +42302,19 @@ TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
             mode == "ascending" ? "[0:2]" : "[2:0]";
           const std::string resetTarget = mode == "partial_reset" ? "q[2:1]" : target;
           const std::string resetValue = mode == "partial_reset" ? "2'b" + value.substr(0, 2) : "3'b" + value;
+          const std::string resetDeclarations = mode == "assigned_struct" ?
+            "typedef struct packed { logic [2:0] value; logic tag; } item_t;\n"
+            "item_t [1:0] items; wire [2:0] reset_value;\n"
+            "assign reset_value=items[1].value;\n"
+            "assign items={3'b" + value + ",1'b0,3'b011,1'b1};\n" :
+            mode == "assigned" ? "wire [2:0] reset_value; assign reset_value=" + resetValue + ";\n" : "";
           const auto source = "module " + name +
             "(input logic clk,rst,enable, input logic [2:0] data, output logic " + shape + " q);\n"
+            + resetDeclarations +
             "always_ff @(" + (negativeClock ? std::string("negedge") : "posedge") +
             " clk or " + (activeLow ? "negedge" : "posedge") + " rst) begin\n"
-            "if (" + (activeLow ? "!rst" : "rst") + ") " + resetTarget + " <= " + resetValue + ";\n"
+            "if (" + (activeLow ? "!rst" : "rst") + ") " + resetTarget + " <= " +
+            (resetDeclarations.empty() ? resetValue : "reset_value") + ";\n"
             "else " + (enabled ? "if (enable) " : "") + target + " <= data;\n" +
             (mode == "explicit_hold" ? "else q <= q;\n" : "") + "end endmodule\n";
           const auto path = writeSVTestFile(name, source);
@@ -42370,4 +42379,28 @@ endmodule
 )");
   SNLSVConstructor constructor(library_);
   expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialAsyncUnprovenResetAliasesRejected) {
+  size_t index = 0;
+  for (const auto& declarations : {
+         "wire [2:0] reset_value; assign reset_value=incoming;",
+         "wire [2:0] reset_value, other; assign reset_value=other; assign other=reset_value;",
+         "wire [2:0] reset_value; assign reset_value=3'b101; assign reset_value=incoming;",
+         "wire [2:0] reset_value; assign reset_value=3'b10x;",
+         "wire [2:0] reset_value; assign reset_value=3'b10z;",
+         "wire [2:0] reset_value; assign reset_value=incoming; assign incoming=3'b101;"}) {
+    const auto name = "async_unproven_reset_" + std::to_string(index++);
+    SCOPED_TRACE(declarations);
+    const auto path = writeSVTestFile(name, "module " + name + R"(
+(input logic clk,rst,enable, input wire [2:0] incoming, input logic [2:0] data,
+ output logic [2:0] q);
+)" + declarations + R"(
+  always_ff @(posedge clk or posedge rst)
+    if (rst) q <= reset_value; else if (enable) q <= data;
+endmodule
+)");
+    SNLSVConstructor constructor(library_);
+    expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+  }
 }

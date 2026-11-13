@@ -771,6 +771,24 @@ module top(input logic clk, rst, rst_n, enable, input logic [4:0] data,
 endmodule
 """)
 
+    def test_systemverilog_constant_driven_async_reset(self):
+        self.check_determinism("sv", """
+module top(input logic clk, rst, rst_n, enable, input logic [4:0] data,
+           output logic [4:0] a, b, c);
+  typedef struct packed { logic [4:0] value; logic tag; } item_t;
+  item_t [1:0] items;
+  wire [4:0] alias_value;
+  assign alias_value = items[1].value;
+  assign items = {5'b01011, 1'b0, 5'b10100, 1'b1};
+  always_ff @(posedge clk or negedge rst_n)
+    if (!rst_n) a <= alias_value; else if (enable) a <= data;
+  always_ff @(negedge clk or posedge rst)
+    if (rst) b <= items[0].value; else b <= data;
+  always_ff @(posedge clk or posedge rst)
+    if (rst) c <= alias_value; else c <= data;
+endmodule
+""")
+
     def test_systemverilog_selected_sequential_arithmetic(self):
         self.check_determinism("sv", """
 module top(input logic clk, rst, enable,

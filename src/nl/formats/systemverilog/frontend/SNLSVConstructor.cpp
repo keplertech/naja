@@ -31051,13 +31051,47 @@ endmodule
       return DirectSequentialConditionalLowering::Lowered;
     }
 
+    void canonicalizeSequentialResetBits(
+      SNLDesign* design, std::vector<SNLBitNet*>& bits) {
+      // Continuous assignments and instance connections are present before
+      // sequential lowering. Follow only unambiguous assignment aliases;
+      // other drivers, module inputs and cycles cannot prove a reset constant.
+      for (auto*& bit : bits) {
+        auto* source = bit;
+        std::unordered_set<SNLBitNet*> visited;
+        while (source && visited.insert(source).second) {
+          if (source->isConstant0() || source->isConstant1()) {
+            bit = static_cast<SNLBitNet*>(getConstNet(design, source->isConstant1()));
+            break;
+          }
+          bool externalDriver = false;
+          for (auto* term : source->getBitTerms()) {
+            externalDriver |= term->getDirection() != SNLTerm::Direction::Output;
+          }
+          SNLInstTerm* driver = nullptr;
+          bool multipleDrivers = false;
+          for (auto* term : source->getInstTerms()) {
+            if (term->getDirection() == SNLTerm::Direction::Input) continue;
+            if (driver) multipleDrivers = true;
+            driver = term;
+          }
+          if (externalDriver || multipleDrivers || !driver ||
+              !NLDB0::isAssign(driver->getInstance()->getModel()) ||
+              driver->getBitTerm() != NLDB0::getAssignOutput()) {
+            break;
+          }
+          source = driver->getInstance()->getInstTerm(NLDB0::getAssignInput())->getNet();
+        }
+      }
+    }
+
     bool emitSequentialConditionalAssignment(
       SNLDesign* design,
       const Expression& lhsExpr,
       SNLNet* lhsNet,
       const std::vector<SNLBitNet*>& lhsBits,
       std::vector<SNLBitNet*> dataBits,
-      const std::vector<SNLBitNet*>& resetBits,
+      std::vector<SNLBitNet*> resetBits,
       const Expression& resetConditionExpr,
       SNLBitNet* clkNet,
       slang::ast::EdgeKind clockEdge,
@@ -31073,6 +31107,8 @@ endmodule
           describeLHSForDiagnostics(lhsExpr)); // LCOV_EXCL_LINE: Caller validates nonempty, equally sized assignment/reset vectors.
         return false; // LCOV_EXCL_LINE: Caller validates nonempty, equally sized assignment/reset vectors.
       }
+
+      if (asyncResetEventExpr) canonicalizeSequentialResetBits(design, resetBits);
 
       // Partition reset, set and unreset bits without changing their bit order.
       // Only a hold on the reset event can safely use a data-input mux.
@@ -35143,6 +35179,7 @@ endmodule
           if (resetBits.empty()) {
             continue;
           }
+          if (asyncResetEventExpr) canonicalizeSequentialResetBits(design, resetBits);
         }
 
         std::vector<SNLBitNet*> dataBits = defaultBits;
