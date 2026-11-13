@@ -26276,7 +26276,7 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialResetBranchNestedConditionalSupported) {
+  parseSequentialResetBranchNestedConditionalRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "sequential_reset_branch_nested_conditional_supported";
@@ -26314,11 +26314,9 @@ endmodule
 )";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top =
-    library_->getSNLDesign(NLName("sequential_reset_branch_nested_conditional_supported"));
-  ASSERT_NE(top, nullptr);
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSequentialCaseSupported) {
@@ -26473,7 +26471,7 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialAsyncResetUnaryPlusConditionSupported) {
+  parseSequentialAsyncResetUnaryPlusConditionRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "sequential_async_reset_unary_plus_condition_supported";
@@ -26502,17 +26500,14 @@ endmodule
 )";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top = library_->getSNLDesign(
-    NLName("sequential_async_reset_unary_plus_condition_supported"));
-  ASSERT_NE(top, nullptr);
-  EXPECT_NE(top->getNet(NLName("q")), nullptr);
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialAsyncResetConditionalConditionSupported) {
+  parseSequentialAsyncResetConditionalConditionRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "sequential_async_reset_conditional_condition_supported";
@@ -26549,14 +26544,9 @@ endmodule
 )";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top = library_->getSNLDesign(
-    NLName("sequential_async_reset_conditional_condition_supported"));
-  ASSERT_NE(top, nullptr);
-  EXPECT_NE(top->getNet(NLName("q0")), nullptr);
-  EXPECT_NE(top->getNet(NLName("q1")), nullptr);
-  EXPECT_GE(countMux2Instances(top), 1u);
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseAlwaysNoTimingNoClkSkipped) {
@@ -30272,7 +30262,7 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialMultiAssignmentResetDynamicElementSelectSupported) {
+  parseSequentialMultiAssignmentResetDynamicElementSelectRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "seq_multi_assignment_reset_dynamic_element_select_supported";
@@ -30318,27 +30308,14 @@ endmodule
 )";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top = library_->getSNLDesign(
-    NLName("seq_multi_assignment_reset_dynamic_element_select_supported"));
-  ASSERT_NE(top, nullptr);
-
-  size_t ffCount = 0;
-  auto dffModel = NLDB0::getDFF();
-  auto dffrnModel = NLDB0::getDFFRN();
-  for (auto inst : top->getInstances()) {
-    if ((dffModel && NLDB0::isDFF(inst->getModel())) ||
-        (dffrnModel && NLDB0::isDFFRN(inst->getModel()))) {
-      ffCount += getPrimitiveWidth(inst);
-    }
-  }
-  EXPECT_EQ(32u, ffCount);
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialMultiAssignmentResetDynamicElementSelectPartialConstantSelectorSupported) {
+  parseSequentialMultiAssignmentResetDynamicElementSelectPartialConstantSelectorRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath =
@@ -30395,22 +30372,9 @@ endmodule
 )";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top = library_->getSNLDesign(NLName(
-    "seq_multi_assignment_reset_dynamic_element_select_partial_constant_selector_supported"));
-  ASSERT_NE(top, nullptr);
-
-  size_t ffCount = 0;
-  auto dffModel = NLDB0::getDFF();
-  auto dffrnModel = NLDB0::getDFFRN();
-  for (auto inst : top->getInstances()) {
-    if ((dffModel && NLDB0::isDFF(inst->getModel())) ||
-        (dffrnModel && NLDB0::isDFFRN(inst->getModel()))) {
-      ffCount += getPrimitiveWidth(inst);
-    }
-  }
-  EXPECT_EQ(64u, ffCount);
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(
@@ -31849,20 +31813,10 @@ endmodule
     NLName("seq_reset_struct_member_setters_with_default_zero_supported"));
   ASSERT_NE(top, nullptr);
 
-  auto dffModel = NLDB0::getDFF();
-  auto dffrnModel = NLDB0::getDFFRN();
-  ASSERT_NE(dffModel, nullptr);
-  ASSERT_NE(dffrnModel, nullptr);
-  size_t ffCount = 0;
-  for (auto inst : top->getInstances()) {
-    if (NLDB0::isDFF(inst->getModel()) || NLDB0::isDFFRN(inst->getModel())) {
-      ffCount += getPrimitiveWidth(inst);
-    }
-  }
-  EXPECT_EQ(7u, ffCount);
-  EXPECT_EQ(1u, countMux2Instances(top));
-  EXPECT_EQ(1u, countMux2Instances(top, 7));
-  EXPECT_EQ(0u, countMux2Instances(top, 1));
+  EXPECT_EQ(4u, countDFFRNBits(top));
+  EXPECT_EQ(3u, countDFFSBits(top));
+  EXPECT_EQ(0u, countDFFBits(top));
+  EXPECT_EQ(0u, countMux2Instances(top));
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSequentialConcatLHSSupported) {
@@ -35151,7 +35105,7 @@ endmodule
 }
 
 TEST_F(SNLSVConstructorTestSimple,
-       parseSequentialTimingEventListCompoundResetConditionSupported) {
+       parseSequentialTimingEventListCompoundResetConditionRejected) {
   SNLSVConstructor constructor(library_);
   const auto svPath = writeSVTestFile(
     "seq_timing_event_list_compound_reset_condition_supported",
@@ -35171,12 +35125,9 @@ TEST_F(SNLSVConstructorTestSimple,
 endmodule
 )");
 
-  constructor.construct(svPath);
-
-  auto* top = library_->getSNLDesign(
-    NLName("seq_timing_event_list_compound_reset_condition_supported"));
-  ASSERT_NE(nullptr, top);
-  EXPECT_EQ(1u, countPrimitiveBits(top, isSequentialDFFPrimitive));
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(SNLSVConstructorTestSimple,
@@ -35986,7 +35937,7 @@ TEST_F(SNLSVConstructorTestSimple, parseSequentialAddWithXLiteralSupported) {
   EXPECT_GT(addSubCount, 0u);
 }
 
-TEST_F(SNLSVConstructorTestSimple, parseSequentialResetStructDefaultUnknownSupported) {
+TEST_F(SNLSVConstructorTestSimple, parseSequentialResetStructDefaultUnknownRejected) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "seq_reset_struct_default_unknown_supported";
@@ -36026,19 +35977,9 @@ TEST_F(SNLSVConstructorTestSimple, parseSequentialResetStructDefaultUnknownSuppo
     << "endmodule\n";
   svFile.close();
 
-  constructor.construct(svPath);
-
-  auto top = library_->getSNLDesign(NLName("seq_reset_struct_default_unknown_supported"));
-  ASSERT_NE(top, nullptr);
-
-  EXPECT_EQ(0u, countPrimitiveBits(top, NLDB0::isDFFRN));
-  EXPECT_EQ(12u, countPrimitiveBits(top, NLDB0::isDFF));
-  EXPECT_EQ(24u, countPrimitiveBits(top, NLDB0::isMux2));
-  size_t assignXCount = 0;
-  for (auto* net : top->getScalarNets()) {
-    assignXCount += net->isAssignX();
-  }
-  EXPECT_EQ(1u, assignXCount);
+  // The reset event can write a nonconstant value or has no matching
+  // unconditional reset control; a mux+DFF would lose that event.
+  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSequentialAddWithUnbasedXLiteralSupported) {
@@ -38696,7 +38637,7 @@ endmodule
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, parseSequentialTimingEventListNegedgeResetNonZeroUsesMuxDFF) {
+TEST_F(SNLSVConstructorTestSimple, parseSequentialTimingEventListNegedgeResetNonZeroUsesAsyncSet) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "seq_timing_event_list_negedge_reset_nonzero_supported";
@@ -38730,29 +38671,10 @@ endmodule
   auto top = library_->getSNLDesign(NLName("seq_timing_event_list_negedge_reset_nonzero_supported"));
   ASSERT_NE(top, nullptr);
 
-  auto dffModel = NLDB0::getDFF();
-  auto dffrnModel = NLDB0::getDFFRN();
-  auto mux2Model = NLDB0::getMux2();
-  ASSERT_NE(dffModel, nullptr);
-  ASSERT_NE(dffrnModel, nullptr);
-  ASSERT_NE(mux2Model, nullptr);
-
-  size_t dffCount = 0;
-  size_t dffrnCount = 0;
-  size_t mux2Count = 0;
-  for (auto inst : top->getInstances()) {
-    if (NLDB0::isDFF(inst->getModel())) {
-      dffCount += getPrimitiveWidth(inst);
-    } else if (NLDB0::isDFFRN(inst->getModel())) {
-      dffrnCount += getPrimitiveWidth(inst);
-    } else if (inst->getModel() == mux2Model) {
-      ++mux2Count;
-    }
-  }
-
-  EXPECT_EQ(1u, dffCount);
-  EXPECT_EQ(0u, dffrnCount);
-  EXPECT_EQ(1u, mux2Count);
+  EXPECT_EQ(1u, countDFFSBits(top));
+  EXPECT_EQ(0u, countDFFBits(top));
+  EXPECT_EQ(0u, countDFFRNBits(top));
+  EXPECT_EQ(0u, countMux2Instances(top));
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseTranslateOffInitialIgnored) {
@@ -42359,4 +42281,126 @@ endmodule
   EXPECT_EQ(1u, wrapper->getSlaveInstances().size());
   EXPECT_TRUE(std::any_of(wrapper->getInstances().begin(), wrapper->getInstances().end(),
     [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
+  const bool simulate = !std::system("command -v iverilog >/dev/null 2>&1") &&
+    !std::system("command -v vvp >/dev/null 2>&1");
+  for (const auto& value : {std::string("101"), std::string("000"), std::string("111")}) {
+    for (bool activeLow : {false, true}) {
+      for (bool negativeClock : {false, true}) {
+        for (const auto& mode : {std::string("direct"), std::string("enabled"),
+                                std::string("explicit_hold"), std::string("partial"),
+                                std::string("ascending"), std::string("partial_reset"),
+                                std::string("assigned"), std::string("assigned_struct")}) {
+          const auto name = "async_constant_" + value + (activeLow ? "_low" : "_high") +
+            (negativeClock ? "_neg_" : "_pos_") + mode;
+          SCOPED_TRACE(name);
+          const bool enabled = mode != "direct";
+          const std::string target = mode == "partial" ? "q[4:2]" : "q";
+          const std::string shape = mode == "partial" ? "[6:0]" :
+            mode == "ascending" ? "[0:2]" : "[2:0]";
+          const std::string resetTarget = mode == "partial_reset" ? "q[2:1]" : target;
+          const std::string resetValue = mode == "partial_reset" ? "2'b" + value.substr(0, 2) : "3'b" + value;
+          const std::string resetDeclarations = mode == "assigned_struct" ?
+            "typedef struct packed { logic [2:0] value; logic tag; } item_t;\n"
+            "item_t [1:0] items; wire [2:0] reset_value;\n"
+            "assign reset_value=items[1].value;\n"
+            "assign items={3'b" + value + ",1'b0,3'b011,1'b1};\n" :
+            mode == "assigned" ? "wire [2:0] reset_value; assign reset_value=" + resetValue + ";\n" : "";
+          const auto source = "module " + name +
+            "(input logic clk,rst,enable, input logic [2:0] data, output logic " + shape + " q);\n"
+            + resetDeclarations +
+            "always_ff @(" + (negativeClock ? std::string("negedge") : "posedge") +
+            " clk or " + (activeLow ? "negedge" : "posedge") + " rst) begin\n"
+            "if (" + (activeLow ? "!rst" : "rst") + ") " + resetTarget + " <= " +
+            (resetDeclarations.empty() ? resetValue : "reset_value") + ";\n"
+            "else " + (enabled ? "if (enable) " : "") + target + " <= data;\n" +
+            (mode == "explicit_hold" ? "else q <= q;\n" : "") + "end endmodule\n";
+          const auto path = writeSVTestFile(name, source);
+          SNLSVConstructor(library_).construct(path);
+          auto* top = library_->getSNLDesign(NLName(name));
+          ASSERT_NE(nullptr, top);
+          EXPECT_EQ(mode == "partial_reset" && !negativeClock ? 1u : 0u, countDFFBits(top));
+          EXPECT_EQ(mode == "partial_reset" && negativeClock ? 1u : 0u, countDFFNBits(top));
+          const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+          if (!simulate) continue;
+          const auto tbPath = dumped.parent_path() / "tb.sv";
+          std::ofstream tb(tbPath);
+          tb << "module tb; reg clk=" << negativeClock << ",rst=" << activeLow
+             << ",enable=0; reg [2:0] data=3'b010; wire " << shape << " q;\n"
+             << "wire [2:0] actual=" << target << "; reg [2:0] expected;\n"
+             << name << " dut(.*);\n"
+             << "task check; begin #1; if(actual !== expected) "
+                "$fatal(1,\"state mismatch actual=%b expected=%b\",actual,expected); end endtask\n"
+             << "task tick; begin clk=" << !negativeClock << "; check; clk=" << negativeClock
+             << "; check; end endtask\n"
+             << "initial begin #2; rst=" << !activeLow << "; expected=3'b"
+             << (mode == "partial_reset" ? value.substr(0, 2) + "x" : value) << "; check;\n"
+             // Reset must take effect with no clock edges and enable low.
+             << "tick; rst=" << activeLow << "; check;\n"
+             << "enable=1; data=3'b010; #1; clk=" << !negativeClock << "; expected=data; check;\n"
+             << "data=3'b110; clk=" << negativeClock << "; check;\n"
+             << "enable=0; #1; clk=" << !negativeClock << "; "
+             << (enabled ? "" : "expected=data;") << "check; clk=" << negativeClock << "; check;\n"
+             // Assert again after data has changed, in the other clock phase.
+             << "clk=" << !negativeClock << "; " << (enabled ? "" : "expected=data;") << "check;\n"
+             << "#2; rst=" << !activeLow << "; "
+             << (mode == "partial_reset" ? "expected[2:1]=" + resetValue : "expected=" + resetValue)
+             << "; check;\n"
+             << "clk=" << negativeClock << "; check; tick;\n"
+             << "rst=" << activeLow << "; check; enable=1; data=3'b011; #1;\n"
+             << "clk=" << !negativeClock << "; expected=data; check; $finish; end endmodule\n";
+          tb.close();
+          const auto quote = [](const std::filesystem::path& p) { return "'" + p.string() + "'"; };
+          for (bool rtl : {true, false}) {
+            SCOPED_TRACE(rtl ? "RTL" : "netlist");
+            const auto executable = dumped.parent_path() / (rtl ? "rtl.vvp" : "netlist.vvp");
+            const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+              " " + quote(rtl ? path : dumped) +
+              (rtl ? "" : " " + quote(dumped.parent_path() / "naja_primitives.v"));
+            ASSERT_EQ(0, std::system(command.c_str()));
+            ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+          }
+        }
+      }
+    }
+  }
+  if (!simulate) GTEST_SKIP() << "Icarus Verilog required for stopped-clock simulation";
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialAsyncVariableResetRejected) {
+  const auto path = writeSVTestFile("async_variable_reset", R"(
+module top(input logic clk,rst,enable, input logic [2:0] data, reset_data,
+           output logic [2:0] q);
+  always_ff @(posedge clk or posedge rst)
+    if (rst) q <= reset_data; else if (enable) q <= data;
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialAsyncUnprovenResetAliasesRejected) {
+  size_t index = 0;
+  for (const auto& declarations : {
+         "wire [2:0] reset_value; assign reset_value=incoming;",
+         "wire [2:0] reset_value, other; assign reset_value=other; assign other=reset_value;",
+         "wire [2:0] reset_value; assign reset_value=3'b101; assign reset_value=incoming;",
+         "wire [2:0] reset_value; assign reset_value=3'b10x;",
+         "wire [2:0] reset_value; assign reset_value=3'b10z;",
+         "wire [2:0] reset_value; assign reset_value=incoming; assign incoming=3'b101;"}) {
+    const auto name = "async_unproven_reset_" + std::to_string(index++);
+    SCOPED_TRACE(declarations);
+    const auto path = writeSVTestFile(name, "module " + name + R"(
+(input logic clk,rst,enable, input wire [2:0] incoming, input logic [2:0] data,
+ output logic [2:0] q);
+)" + declarations + R"(
+  always_ff @(posedge clk or posedge rst)
+    if (rst) q <= reset_value; else if (enable) q <= data;
+endmodule
+)");
+    SNLSVConstructor constructor(library_);
+    expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+  }
 }

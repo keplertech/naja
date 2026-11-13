@@ -6726,7 +6726,7 @@ endmodule
       }
       const auto* clockExpr = clockEvent->expr;
 
-      auto asyncEvent = getSingleAsyncEventExpression(*timing, *clockExpr);
+      auto asyncEvent = getSingleAsyncEventExpression(*timing, *clockExpr, clockEvent->edge);
       const Expression* asyncResetEventExpr = asyncEvent.multiple ? nullptr : asyncEvent.expr;
       std::optional<slang::ast::EdgeKind> asyncResetEventEdge =
         asyncEvent.multiple ? std::optional<slang::ast::EdgeKind>{} : asyncEvent.edge;
@@ -7033,7 +7033,7 @@ endmodule
       }
       const auto* clockExpr = clockEvent->expr;
 
-      auto asyncEvent = getSingleAsyncEventExpression(*timing, *clockExpr);
+      auto asyncEvent = getSingleAsyncEventExpression(*timing, *clockExpr, clockEvent->edge);
       if (asyncEvent.multiple) {
         failureReason = "unsupported direct inferred memory event list with multiple async events";
         return false;
@@ -31051,13 +31051,47 @@ endmodule
       return DirectSequentialConditionalLowering::Lowered;
     }
 
+    void canonicalizeSequentialResetBits(
+      SNLDesign* design, std::vector<SNLBitNet*>& bits) {
+      // Continuous assignments and instance connections are present before
+      // sequential lowering. Follow only unambiguous assignment aliases;
+      // other drivers, module inputs and cycles cannot prove a reset constant.
+      for (auto*& bit : bits) {
+        auto* source = bit;
+        std::unordered_set<SNLBitNet*> visited;
+        while (source && visited.insert(source).second) {
+          if (source->isConstant0() || source->isConstant1()) {
+            bit = static_cast<SNLBitNet*>(getConstNet(design, source->isConstant1()));
+            break;
+          }
+          bool externalDriver = false;
+          for (auto* term : source->getBitTerms()) {
+            externalDriver |= term->getDirection() != SNLTerm::Direction::Output;
+          }
+          SNLInstTerm* driver = nullptr;
+          bool multipleDrivers = false;
+          for (auto* term : source->getInstTerms()) {
+            if (term->getDirection() == SNLTerm::Direction::Input) continue;
+            if (driver) multipleDrivers = true;
+            driver = term;
+          }
+          if (externalDriver || multipleDrivers || !driver ||
+              !NLDB0::isAssign(driver->getInstance()->getModel()) ||
+              driver->getBitTerm() != NLDB0::getAssignOutput()) {
+            break;
+          }
+          source = driver->getInstance()->getInstTerm(NLDB0::getAssignInput())->getNet();
+        }
+      }
+    }
+
     bool emitSequentialConditionalAssignment(
       SNLDesign* design,
       const Expression& lhsExpr,
       SNLNet* lhsNet,
       const std::vector<SNLBitNet*>& lhsBits,
       std::vector<SNLBitNet*> dataBits,
-      const std::vector<SNLBitNet*>& resetBits,
+      std::vector<SNLBitNet*> resetBits,
       const Expression& resetConditionExpr,
       SNLBitNet* clkNet,
       slang::ast::EdgeKind clockEdge,
@@ -31074,33 +31108,44 @@ endmodule
         return false; // LCOV_EXCL_LINE: Caller validates nonempty, equally sized assignment/reset vectors.
       }
 
-      // Mixed constant reset values require separate reset and set cells.
-      // A data-input mux would lose the asynchronous reset event.
+      if (asyncResetEventExpr) canonicalizeSequentialResetBits(design, resetBits);
+
+      // Partition reset, set and unreset bits without changing their bit order.
+      // Only a hold on the reset event can safely use a data-input mux.
       if (asyncResetEventExpr && asyncResetEventEdge && lhsBits.size() > 1) {
         auto* constZero = static_cast<SNLBitNet*>(getConstNet(design, false));
         auto* constOne = static_cast<SNLBitNet*>(getConstNet(design, true));
-        const bool allConstant = std::all_of(resetBits.begin(), resetBits.end(),
-          [&](auto* bit) { return bit == constZero || bit == constOne; });
-        if (allConstant &&
-            std::any_of(resetBits.begin(), resetBits.end(),
-              [&](auto* bit) { return bit != resetBits.front(); })) {
-          for (auto* resetValue : {constZero, constOne}) {
+        bool hasZero = false;
+        bool hasOne = false;
+        bool hasHold = false;
+        bool supported = true;
+        for (size_t bit = 0; bit < lhsBits.size(); ++bit) {
+          if (resetBits[bit] == constZero) hasZero = true;
+          else if (resetBits[bit] == constOne) hasOne = true;
+          else if (resetBits[bit] == lhsBits[bit]) hasHold = true;
+          else supported = false;
+        }
+        if (supported && (unsigned(hasZero) + unsigned(hasOne) + unsigned(hasHold) > 1)) {
+          for (unsigned kind = 0; kind < 3; ++kind) {
             std::vector<SNLBitNet*> selectedLhs;
             std::vector<SNLBitNet*> selectedData;
             std::vector<SNLBitNet*> selectedReset;
             for (size_t bit = 0; bit < lhsBits.size(); ++bit) {
-              if (resetBits[bit] == resetValue) {
+              const bool selected = kind == 0 ? resetBits[bit] == constZero :
+                kind == 1 ? resetBits[bit] == constOne : resetBits[bit] == lhsBits[bit];
+              if (selected) {
                 selectedLhs.push_back(lhsBits[bit]);
                 selectedData.push_back(dataBits[bit]);
-                selectedReset.push_back(resetValue);
+                selectedReset.push_back(resetBits[bit]);
               }
             }
+            if (selectedLhs.empty()) continue;
             if (!emitSequentialConditionalAssignment(
                   design, lhsExpr, lhsNet, selectedLhs, std::move(selectedData),
                   selectedReset, resetConditionExpr, clkNet, clockEdge,
                   asyncResetEventExpr, asyncResetEventEdge, blockSourceRange,
                   failureReason)) {
-              return false; // LCOV_EXCL_LINE: Recursive reset/set groups have validated widths; emitter failure propagation.
+              return false; // LCOV_EXCL_LINE: Validated group widths; emitter failure propagation.
             }
           }
           return true;
@@ -31178,6 +31223,17 @@ endmodule
       }
 
       if (!useAsyncResetDFFRN && !useAsyncResetDFFR && !useAsyncResetDFFS) {
+        const bool resetIsHold = std::equal(resetBits.begin(), resetBits.end(), lhsBits.begin());
+        const bool holdsOnAsyncEvent = resetIsHold && asyncResetEventExpr && asyncResetEventEdge &&
+          ((*asyncResetEventEdge == slang::ast::EdgeKind::NegEdge &&
+            isActiveLowResetConditionForSignal(resetConditionExpr, *asyncResetEventExpr)) ||
+           (*asyncResetEventEdge == slang::ast::EdgeKind::PosEdge &&
+            isActiveHighResetConditionForSignal(resetConditionExpr, *asyncResetEventExpr)));
+        if (asyncResetEventExpr && !holdsOnAsyncEvent) {
+          failureReason = formatQuotedDescriptionFailure(
+            "unable to preserve asynchronous reset for ", describeLHSForDiagnostics(lhsExpr));
+          return false;
+        }
         auto* resetNet = resolveConditionNet(
           design,
           resetConditionExpr,
@@ -33602,21 +33658,21 @@ endmodule
 
     AsyncEventInfo getSingleAsyncEventExpression(
       const TimingControl& timing,
-      const Expression& clockExpr) const {
+      const Expression& clockExpr,
+      slang::ast::EdgeKind clockEdge) const {
       AsyncEventInfo info;
       if (timing.kind != slang::ast::TimingControlKind::EventList) {
         return info;
       }
       const auto& eventList = timing.as<slang::ast::EventListControl>();
-      bool skippedClock = false;
       for (const auto* eventCtrl : eventList.events) {
         if (!eventCtrl ||
             eventCtrl->kind != slang::ast::TimingControlKind::SignalEvent) {
           continue; // LCOV_EXCL_LINE
         }
         const auto& event = eventCtrl->as<slang::ast::SignalEventControl>();
-        if (!skippedClock && sameLhs(&event.expr, &clockExpr)) {
-          skippedClock = true;
+        // Repeated occurrences of the clock edge do not add an async control.
+        if (event.edge == clockEdge && sameLhs(&event.expr, &clockExpr)) {
           continue;
         }
         if (!info.expr) {
@@ -34793,7 +34849,7 @@ endmodule
           if (clockEvent) {
             clockEdge = clockEvent->edge;
             clkNet = getSingleBitNet(resolveExpressionNet(design, *clockEvent->expr));
-            auto asyncEvent = getSingleAsyncEventExpression(*timing, *clockEvent->expr);
+            auto asyncEvent = getSingleAsyncEventExpression(*timing, *clockEvent->expr, clockEvent->edge);
             if (asyncEvent.multiple) {
               std::ostringstream reason;
               reason << "Unsupported sequential block in module '" << moduleName
@@ -35123,6 +35179,7 @@ endmodule
           if (resetBits.empty()) {
             continue;
           }
+          if (asyncResetEventExpr) canonicalizeSequentialResetBits(design, resetBits);
         }
 
         std::vector<SNLBitNet*> dataBits = defaultBits;
@@ -35310,6 +35367,25 @@ endmodule
               dataBits = std::move(enBits);
             }
           }
+        }
+
+        // Reuse the conditional emitter for async cases not handled by the
+        // combined cells above. It partitions mixed constants in stable bit
+        // order and preserves reset polarity and negative clock edges. The
+        // enable mux already includes the default/hold and partial-write bits.
+        if (chain.resetCond && asyncResetEventExpr &&
+            !useAsyncResetDFFRN && !useAsyncResetDFFR && !useAsyncResetDFFS &&
+            !useAsyncResetDFFRE && !useAsyncResetDFFSE) {
+          std::string failureReason;
+          if (!emitSequentialConditionalAssignment(
+                design, *chain.lhs, lhsNet, lhsBits, std::move(dataBits), resetBits,
+                *chain.resetCond, clkNet, clockEdge, asyncResetEventExpr,
+                asyncResetEventEdge, statementSourceRange, failureReason)) {
+            reportUnsupportedError(
+              "Unsupported sequential block in module '" + moduleName + "': " + failureReason,
+              resetSourceRange);
+          }
+          continue;
         }
 
         if (chain.resetCond &&

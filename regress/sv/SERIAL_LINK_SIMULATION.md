@@ -5,6 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Serial Link RTL/netlist simulation exploration
 
+The [fix validation below](#asynchronous-reset-fix-validation-2026-11-12) records the
+subsequent passing results. The exploration and failure analysis in this section
+are historical.
+
 Local results on 2026-11-11: **RTL 16/16 passed; generated netlist 1/16 passed**.
 The idle case passes. All 15 traffic cases reach the one-second simulation-time
 watchdog without accepting any AXI channel transaction. Functional equivalence
@@ -196,3 +200,78 @@ Local-only evidence (ignored artifacts, not included in the PR):
 - [Generated netlist](../../build/fast-verification/netlist.v).
 - Per-case original/generated logs under `build/fast-verification/<case>/`.
 - Short wrapper/reset diagnostics under `build/debug/` and `build/reset-repro/`.
+
+## Asynchronous-reset fix validation (2026-11-12)
+
+The fix was developed in a fresh `fix-async-mixed-reset-lowering` worktree from
+`origin/main` at `3db7bde0`, without an upstream. Validation used uncommitted
+frontend changes on that base.
+The CMake build reports `0.7.35 / 3db7bde0`; that identity is the base revision,
+with the local frontend changes described here.
+
+The main sequential-chain path only recognized uniform asynchronous reset
+constants. Mixed constants fell through to a reset mux and ordinary DFF, losing
+the event while the clock was stopped. It now shares the conditional assignment
+emitter, which partitions bits into reset-zero, set-one and reset-hold groups
+in stable order. The existing cells preserve reset polarity, clock edge,
+enables and partial assignments. Held bits retain the existing clocked hold
+mux; a real asynchronous write never falls back to that mux. Unsupported
+nonconstant/X/Z or conditional asynchronous writes are diagnosed. Duplicate
+occurrences of the same clock edge are not treated as asynchronous controls.
+No ITA, primitive model, dependency, memory conversion or shared CI changes
+were needed.
+
+Validation on the final implementation:
+
+- The standalone gated-clock reproducer passes for RTL and the generated
+  netlist with pinned Verilator: both return `101` at 7 ns. Icarus also passed
+  both models during investigation.
+- All **1,267 CMake frontend tests pass** in **72.33 s**. The new matrix simulates
+  72 combinations of mixed/zero/one constants, both reset polarities, both clock
+  edges, unconditional/enabled/explicit-hold assignments, ascending ranges,
+  partial slices and partly reset vectors. Reset is checked with stopped clocks
+  in both phases, including with enable low. Historical assertions requiring
+  mux+DFF for real asynchronous writes now require faithful cells or rejection.
+- The full CMake determinism suite passes in **63.53 s**. Its new synthetic
+  regression compares live state, Verilog, DOT and all NajaIF artifacts across
+  five fresh processes, same-process reloads and cold-process reloads, including
+  mixed resets and unreset bits within a vector.
+- Bazel frontend and determinism targets were attempted twice. They could not
+  execute: the local macOS toolchain rejects the absolute SDK dependency
+  `MacOSX.sdk/SDKSettings.json`, first in an autoconf checker and on the final
+  attempt in `thirdparty/sha256`. CMake/Bazel runtime parity is therefore not
+  established locally. No BCR readiness is claimed.
+- Sphinx succeeds with the built-in Alabaster theme (the local RTD theme is
+  absent); the four Serial Link checker tests, REUSE lint and `git diff --check`
+  pass. The complete proposed diff was reviewed.
+
+The fresh pinned RTL matrix passes **16/16**. The first complete RTL/netlist run
+also passes **16/16** in **467.853 s**, with **251.630 s** spent preparing,
+building and validating RTL. After the final hold-bit and duplicate-event
+handling changes, the runner revalidates every RTL log and the unchanged
+source/binary hashes using `--reuse-rtl`, then elaborates, rebuilds and runs all
+16 final netlist cases. That final phase passes in **196.960 s**. A separate
+comparison of all saved logs also passes.
+
+Every case satisfies the upstream assertions/checkers, completion and complete
+transaction coverage. All **558,926 accepted AXI channel beats** match RTL in
+payloads, per-channel ordering, responses and **exact handshake timestamps**.
+The final run uses the same benchmark, Serial Link, six locked verification
+dependencies, Verilator 5.052 pin, Z3 4.13.3, seed 1, eight workers and six build
+jobs documented above. Both models use `--constant-delay-fast-path`; skipping
+randomization for equal delay bounds changes RNG advancement, so this is not
+an assertion about the unadapted driver's seeded stimulus stream. No checker
+or traffic timing workaround was added.
+
+Behavioral memory support is preserved and no memory-to-flop pass is invoked.
+This configuration still contains zero NLDB0 memory instances, so it does not
+establish inferred-memory or SRAM coverage. The exploration's other exclusions
+(additional seeds/configurations, four-channel traffic, atomic operations,
+mid-traffic reset campaigns, four-state equivalence and formal proof) remain.
+Unsupported asynchronous mappings are rejected pending a separately agreed
+representation; no primitive capability expansion is included.
+
+Final local evidence is under `build/serial-link-final/`: `summary.json`,
+`comparison-summary.json`, `producer.json`, `diagnostics.log`, the generated
+netlist/models, and all original/generated per-case logs. Standalone evidence
+is under `build/reset-repro/`. These generated artifacts remain ignored.

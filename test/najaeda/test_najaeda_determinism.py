@@ -752,6 +752,43 @@ module top(input logic [47:0] data, input logic [5:0] offset,
 endmodule
 """)
 
+    def test_systemverilog_mixed_async_reset(self):
+        self.check_determinism("sv", """
+module top(input logic clk, rst, rst_n, enable, input logic [4:0] data,
+           output logic [4:0] a, b, output logic [0:4] c,
+           output logic [6:2] partial, output logic [4:0] held);
+  always_ff @(posedge clk or negedge rst_n)
+    if (!rst_n) a <= 5'b10110; else if (enable) a <= data;
+  always_ff @(negedge clk or posedge rst)
+    if (rst) b <= 5'b01001; else b <= data;
+  always_ff @(negedge clk or negedge rst_n)
+    if (!rst_n) c <= '1; else if (enable) c <= data;
+  always_ff @(posedge clk or posedge rst)
+    if (rst) partial[5:3] <= 3'b101;
+    else if (enable) partial[5:3] <= data[2:0];
+  always_ff @(negedge clk or negedge rst_n)
+    if (!rst_n) held[3:1] <= 3'b101; else if (enable) held <= data;
+endmodule
+""")
+
+    def test_systemverilog_constant_driven_async_reset(self):
+        self.check_determinism("sv", """
+module top(input logic clk, rst, rst_n, enable, input logic [4:0] data,
+           output logic [4:0] a, b, c);
+  typedef struct packed { logic [4:0] value; logic tag; } item_t;
+  item_t [1:0] items;
+  wire [4:0] alias_value;
+  assign alias_value = items[1].value;
+  assign items = {5'b01011, 1'b0, 5'b10100, 1'b1};
+  always_ff @(posedge clk or negedge rst_n)
+    if (!rst_n) a <= alias_value; else if (enable) a <= data;
+  always_ff @(negedge clk or posedge rst)
+    if (rst) b <= items[0].value; else b <= data;
+  always_ff @(posedge clk or posedge rst)
+    if (rst) c <= alias_value; else c <= data;
+endmodule
+""")
+
     def test_systemverilog_selected_sequential_arithmetic(self):
         self.check_determinism("sv", """
 module top(input logic clk, rst, enable,

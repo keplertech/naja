@@ -381,9 +381,19 @@ subsequent shifts.
 Sequential multi-assignment lowering preserves the bits written by each process:
 replaying a whole vector to resolve overlapping assignments does not create
 flops for untouched bits. Nested writes to the same target retain source-order
-priority and share one driver per bit. In the conditional multi-assignment path,
-mixed binary asynchronous reset values use separate reset/set cells, including
-active-low controls and negative-edge clocks, rather than a clocked data mux.
+priority and share one driver per bit. Mixed binary asynchronous reset values
+use separate reset/set cells in both sequential-chain and conditional
+multi-assignment lowering, including active-low controls, negative-edge clocks,
+and enabled registers. Reset events take effect while the clock is stopped.
+Bits that are not assigned in the reset branch retain their value; partial
+assignments preserve their original bit positions. Only those held bits may
+use a clocked data mux to suppress updates during reset.
+
+Asynchronous writes without a faithful mapping are rejected with an
+``unable to preserve asynchronous reset`` diagnostic. Examples include
+nonconstant or X/Z reset values, reset writes conditional on another signal,
+and reset conditions that do not match the asynchronous event polarity. They
+are not silently converted to synchronous reset behavior.
 
 Functions whose bodies consist of returns, conditionals, and case statements
 support nested early returns. The first executed return takes priority over
