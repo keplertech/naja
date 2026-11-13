@@ -107,3 +107,7 @@ Files: test/nl/formats/systemverilog/benchmarks/prim_mubi/*.sv
 Source: https://github.com/lowRISC/opentitan/tree/e404f576d4e48cdbd2e56e4b34f686107bf38850/hw/ip/prim/rtl
 Copyright: lowRISC contributors (OpenTitan project).
 License: Apache-2.0
+
+Files: regress/mux-reduction/samples.csv
+Copyright: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+License: Apache-2.0
