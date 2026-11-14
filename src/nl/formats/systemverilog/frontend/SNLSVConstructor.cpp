@@ -59,6 +59,7 @@
 #include "SNLParameter.h"
 #include "SNLRTLInfos.h"
 #include "SNLRTLPrimitives.h"
+#include "SNLHDLMuxSelection.h"
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 
@@ -19347,6 +19348,53 @@ endmodule
         createUnaryGate(design, NLDB0::GateType(NLDB0::GateType::Not), in0, nullptr, sourceRange));
     }
 
+    using PendingMuxSelection = SNLHDLMuxSelection<std::optional<slang::SourceRange>>;
+
+    void annotateMuxSelectionSources(SNLBitNet* bit,
+        const PendingMuxSelection::Sources& sources) {
+      for (const auto& source : sources) {
+        annotateSourceInfo(bit, source);
+        for (auto* term : bit->getInstTerms())
+          if (term->getDirection() == SNLTerm::Direction::Output)
+            annotateSourceInfo(term->getInstance(), source);
+      }
+    }
+
+    std::vector<SNLBitNet*> emitPendingMuxSelection(SNLDesign* design,
+        SNLBitNet* condition, const std::vector<SNLBitNet*>& no,
+        const std::vector<SNLBitNet*>& yes, const PendingMuxSelection::Sources& sources) {
+      std::vector<SNLBitNet*> result;
+      if (!createMux2Instance(design, condition, no, yes, result, sources.back()))
+        throw SNLSVInternalError("Internal error: pending mux width mismatch");
+      if (sources.size() > 1) for (size_t i = 0; i < result.size(); ++i)
+        if (result[i] != no[i] && result[i] != yes[i])
+          annotateMuxSelectionSources(result[i], sources);
+      return result;
+    }
+
+    std::vector<SNLBitNet*> materializeMuxSelection(
+        SNLDesign* design, PendingMuxSelection& selection) {
+      return selection.materialize([&](auto* condition, const auto& no,
+          const auto& yes, const auto& sources) {
+        return emitPendingMuxSelection(design, condition, no, yes, sources);
+      });
+    }
+
+    PendingMuxSelection mergeMuxSelection(SNLDesign* design, SNLBitNet* condition,
+        PendingMuxSelection no, PendingMuxSelection yes,
+        const std::optional<slang::SourceRange>& source) {
+      return PendingMuxSelection::merge(condition, std::move(no), std::move(yes), source,
+        [&](bool isAnd, auto* a, auto* b, const auto& sources) {
+          auto* bit = static_cast<SNLBitNet*>(createBinaryGate(design,
+            NLDB0::GateType(isAnd ? NLDB0::GateType::And : NLDB0::GateType::Or),
+            a, b, nullptr, sources.back()));
+          annotateMuxSelectionSources(bit, sources);
+          return bit;
+        }, [&](auto* guard, const auto& a, const auto& b, const auto& sources) {
+          return emitPendingMuxSelection(design, guard, a, b, sources);
+        });
+    }
+
     void createMux2Instance(
       SNLDesign* design,
       SNLBitNet* select,
@@ -24538,7 +24586,8 @@ endmodule
       size_t& tempIndex,
       std::string& failureReason,
       const std::unordered_set<const slang::ast::ValueSymbol*>* ignoredSymbols = nullptr,
-      SequentialStatementAssignmentCache* assignmentCache = nullptr) {
+      SequentialStatementAssignmentCache* assignmentCache = nullptr,
+      PendingMuxSelection* pendingResult = nullptr) {
       const Statement* current = unwrapStatement(stmt);
       if (!current) {
         return true; // LCOV_EXCL_LINE
@@ -24573,7 +24622,8 @@ endmodule
                 tempIndex,
                 failureReason,
                 ignoredSymbols,
-                assignmentCache)) {
+                assignmentCache,
+                item == list.back() ? pendingResult : nullptr)) {
             return false;
           }
         }
@@ -24637,6 +24687,7 @@ endmodule
             assignmentCache);
         }
 
+        PendingMuxSelection trueSelection, falseSelection;
         std::vector<SNLBitNet*> trueBits = dataBits;
         if (!applySequentialStatementForLhs(
               design,
@@ -24650,7 +24701,7 @@ endmodule
               tempIndex,
               failureReason,
               ignoredSymbols,
-              assignmentCache)) {
+              assignmentCache, &trueSelection)) {
           return false; // LCOV_EXCL_LINE
         }
 
@@ -24668,7 +24719,7 @@ endmodule
                 tempIndex,
                 failureReason,
                 ignoredSymbols,
-                assignmentCache)) {
+                assignmentCache, &falseSelection)) {
             return false;
           }
         }
@@ -24688,22 +24739,12 @@ endmodule
           return false;
         }
 
-        std::vector<SNLBitNet*> mergedBits;
-        // createMux2Instance() is width-total here after the earlier branch
-        // normalizations above. Keep the failure as defensive reporting rather
-        // than a parser-backed lowering branch.
-        // LCOV_EXCL_START
-        if (!createMux2Instance(
-              design,
-              condNet,
-              falseBits,
-              trueBits,
-              mergedBits,
-              condSourceRange)) {
-          return false; // LCOV_EXCL_LINE
-        }
-        // LCOV_EXCL_STOP
-        dataBits = std::move(mergedBits);
+        auto selected = mergeMuxSelection(design, condNet,
+          falseSelection.hasSelection() ? std::move(falseSelection) : PendingMuxSelection(falseBits),
+          trueSelection.hasSelection() ? std::move(trueSelection) : PendingMuxSelection(trueBits),
+          condSourceRange);
+        if (pendingResult) *pendingResult = std::move(selected);
+        else dataBits = materializeMuxSelection(design, selected);
         return true;
       }
 
@@ -29464,7 +29505,8 @@ endmodule
       const std::unordered_set<const slang::ast::ValueSymbol*>* ignoredSymbols = nullptr,
       CombinationalSubtreeSummaryCache* subtreeSummaryCache = nullptr,
       const std::unordered_set<const slang::ast::ValueSymbol*>* replaySymbols = nullptr,
-      bool preserveAssignmentScheduling = false) {
+      bool preserveAssignmentScheduling = false,
+      PendingMuxSelection* pendingResult = nullptr) {
       const Statement* current = unwrapStatement(stmt);
       if (!current) {
         return true; // LCOV_EXCL_LINE
@@ -29515,7 +29557,8 @@ endmodule
                 ignoredSymbols,
                 subtreeSummaryCache,
                 replaySymbols,
-                preserveAssignmentScheduling)) {
+                preserveAssignmentScheduling,
+                item == list.back() ? pendingResult : nullptr)) {
             return false; // LCOV_EXCL_LINE
           }
           if (isCurrentForLoopBreakRequested()) {
@@ -29631,11 +29674,24 @@ endmodule
         if (mergeReplayEnv) {
           tryGetRootValueSymbolReference(lhsExpr, replayLhsSymbol);
         }
+        // A private final result may bypass bookkeeping for this output alone.
+        // Dependent-symbol replay, scheduling replay and loop exits stay eager.
+        bool privateReplay = !mergeReplayEnv;
+        if (mergeReplayEnv && replayLhsSymbol && subtreeSummaryCache) {
+          const auto& summary = getOrComputeCombinationalSubtreeSummary(
+            *current, *subtreeSummaryCache, ignoredSymbols);
+          privateReplay = !summary.hasUnknownEffects && !summary.mayBreak &&
+            std::all_of(replaySymbols->begin(), replaySymbols->end(), [&](const auto* symbol) {
+              return symbol == replayLhsSymbol || !summary.affectedSymbols.contains(symbol);
+            });
+        }
+        const bool canDeferSelection = !hasLoopContext && !preserveAssignmentScheduling && privateReplay;
         ProceduralReplayEnv incomingReplayEnv;
         if (mergeReplayEnv) {
           incomingReplayEnv = *replayEnvPtr;
         }
 
+        PendingMuxSelection trueSelection, falseSelection;
         std::vector<SNLBitNet*> trueBits = dataBits;
         ProceduralReplayEnv trueReplayEnv = incomingReplayEnv;
         if (mergeReplayEnv) {
@@ -29652,7 +29708,8 @@ endmodule
               ignoredSymbols,
               subtreeSummaryCache,
               replaySymbols,
-              preserveAssignmentScheduling)) {
+              preserveAssignmentScheduling,
+              canDeferSelection ? &trueSelection : nullptr)) {
           // LCOV_EXCL_START
           // Failure cleanup mirrors directly tested statement lowering
           // failures; this branch only restores replay state before return.
@@ -29682,7 +29739,8 @@ endmodule
                 ignoredSymbols,
                 subtreeSummaryCache,
                 replaySymbols,
-                preserveAssignmentScheduling)) {
+                preserveAssignmentScheduling,
+                canDeferSelection ? &falseSelection : nullptr)) {
             // LCOV_EXCL_START
             // False-branch failure mirrors the true-branch cleanup path.
             activeProceduralReplayEnv_ = replayEnvPtr;
@@ -29696,7 +29754,7 @@ endmodule
         const bool falseBreak = hasLoopContext ? isCurrentForLoopBreakRequested() : false;
 
         auto condSourceRange = getSourceRange(condStmt);
-        if (trueBits == falseBits) {
+        if (!trueSelection.hasSelection() && !falseSelection.hasSelection() && trueBits == falseBits) {
           dataBits = std::move(trueBits);
           if (mergeReplayEnv) {
             ProceduralReplayEnv mergedReplayEnv;
@@ -29725,22 +29783,13 @@ endmodule
           }
           return true;
         }
-        std::vector<SNLBitNet*> mergedBits;
-        if (!createMux2Instance(
-              design,
-              conditionBit,
-              falseBits,
-              trueBits,
-              mergedBits,
-              condSourceRange,
-              nullptr,
-              true)) {
-          // LCOV_EXCL_START
-          failureReason = "unable to merge always_comb conditional branches";
-          return false;
-          // LCOV_EXCL_STOP
-        }
-        dataBits = std::move(mergedBits);
+        auto selected = mergeMuxSelection(design, conditionBit,
+          falseSelection.hasSelection() ? std::move(falseSelection) : PendingMuxSelection(falseBits),
+          trueSelection.hasSelection() ? std::move(trueSelection) : PendingMuxSelection(trueBits),
+          condSourceRange);
+        if (pendingResult && canDeferSelection)
+          *pendingResult = std::move(selected);
+        else dataBits = materializeMuxSelection(design, selected);
         if (mergeReplayEnv) {
           ProceduralReplayEnv mergedReplayEnv;
           if (!mergeProceduralReplayEnvs(
@@ -29752,7 +29801,7 @@ endmodule
                 condSourceRange,
                 failureReason,
                 preserveAssignmentScheduling ? nullptr : replayLhsSymbol,
-                preserveAssignmentScheduling ? nullptr : &dataBits)) {
+                preserveAssignmentScheduling || (pendingResult && canDeferSelection) ? nullptr : &dataBits)) {
             // Replay merge failure details are covered in the merge helper;
             // this call site only propagates the helper result.
             // LCOV_EXCL_START

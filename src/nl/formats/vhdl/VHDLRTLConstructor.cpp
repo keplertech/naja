@@ -23,6 +23,7 @@
 #include <functional>
 #include <fstream>
 #include "SNLRTLPrimitives.h"
+#include "SNLHDLMuxSelection.h"
 #include "SNLUtils.h"
 #include "SNLClockGating.h"
 #include "SNLScalarNet.h"
@@ -3565,6 +3566,48 @@ class RTLConstructor {
     if (net && net->isConstant1()) return true;
     return std::nullopt;
   }
+  using PendingMuxSelection = SNLHDLMuxSelection<vhdl::SourceSpan>;
+  using PendingSelections = std::map<std::string, PendingMuxSelection>;
+
+  Bits emitPendingMuxSelection(SNLBitNet* condition, const Bits& no,
+      const Bits& yes, const PendingMuxSelection::Sources& sources) {
+    DiagnosticScope location(sources.back());
+    auto result = mux(condition, yes, no);
+    for (const auto& source : sources) {
+      DiagnosticScope folded(source);
+      if (sources.size() > 1) for (size_t i = 0; i < result.size(); ++i)
+        if (result[i] && result[i] != no[i] && result[i] != yes[i]) reuse(result[i]);
+    }
+    return result;
+  }
+
+  Bits materializeMuxSelection(PendingMuxSelection& selection) {
+    return selection.materialize([&](auto* condition, const auto& no,
+        const auto& yes, const auto& sources) {
+      return emitPendingMuxSelection(condition, no, yes, sources);
+    });
+  }
+
+  PendingMuxSelection mergeMuxSelection(SNLBitNet* condition,
+      PendingMuxSelection no, PendingMuxSelection yes) {
+    return PendingMuxSelection::merge(condition, std::move(no), std::move(yes), diagnosticSpan,
+      [&](bool isAnd, auto* a, auto* b, const auto& sources) {
+        auto* bit = gate(isAnd ? "and" : "or", a, b);
+        for (const auto& source : sources) {
+          DiagnosticScope folded(source);
+          reuse(bit);
+        }
+        return bit;
+      }, [&](auto* guard, const auto& a, const auto& b, const auto& sources) {
+        return emitPendingMuxSelection(guard, a, b, sources);
+      });
+  }
+
+  void materializeSelections(State& state, PendingSelections& pending) {
+    for (auto& [name, value] : pending) state.scheduled.at(name) = materializeMuxSelection(value);
+    pending.clear();
+  }
+
   Bits mux(SNLBitNet* condition, const Bits& yes, const Bits& no) {
     if (auto value = constantValue(condition)) return *value ? yes : no;
     const auto cacheKey = std::make_tuple(condition, yes, no);
@@ -5141,7 +5184,9 @@ class RTLConstructor {
   }
 
   void merge(State& state, const State& yes, const State& no, SNLBitNet* condition,
-      const std::set<std::string>& overwritten = {}) {
+      const std::set<std::string>& overwritten = {},
+      PendingSelections* pending = nullptr, PendingSelections* yesPending = nullptr,
+      PendingSelections* noPending = nullptr) {
     for (auto& [name, write] : state.memoryWrites) {
       const auto& a = yes.memoryWrites.at(name);
       const auto& b = no.memoryWrites.at(name);
@@ -5165,8 +5210,15 @@ class RTLConstructor {
     for (auto& [name, bits] : state.scheduled) {
       // Signal reads use the current value, never the pending scheduled value.
       // Keep definite-write tracking even when a later whole write kills this merge.
-      if (!overwritten.contains(name))
-        bits = mux(condition, yes.scheduled.at(name), no.scheduled.at(name));
+      if (!overwritten.contains(name)) {
+        if (pending) {
+          auto a = yesPending && yesPending->contains(name) ? std::move(yesPending->at(name))
+              : PendingMuxSelection(yes.scheduled.at(name));
+          auto b = noPending && noPending->contains(name) ? std::move(noPending->at(name))
+              : PendingMuxSelection(no.scheduled.at(name));
+          pending->insert_or_assign(name, mergeMuxSelection(condition, std::move(b), std::move(a)));
+        } else bits = mux(condition, yes.scheduled.at(name), no.scheduled.at(name));
+      }
       for (size_t i = 0; i < bits.size(); ++i) {
         state.written.at(name)[i] = yes.written.at(name)[i] || no.written.at(name)[i];
       }
@@ -5264,6 +5316,9 @@ class RTLConstructor {
     }
     // A proven exhaustive last alternative is a valid default, avoiding a
     // fictitious unassigned path in combinational definite-assignment checks.
+    const bool privateBranches = !runtime && std::all_of(statement.caseBodies.begin(),
+        statement.caseBodies.end(), [&](const auto& body) { return simpleScheduledStatements(body); });
+    PendingSelections pending;
     auto result = state;
     auto returned = branch(statement.caseBodies.size()-1, result);
     for (size_t i = statement.caseBodies.size() - 1; i-- > 0;) {
@@ -5277,9 +5332,13 @@ class RTLConstructor {
       }
       if (returned) *returned = mergeRuntimeResults(matches[i], *branchReturn, *returned);
       auto merged = state;
-      merge(merged, alternative, result, matches[i]);
+      PendingSelections next;
+      merge(merged, alternative, result, matches[i], {},
+          privateBranches ? &next : nullptr, nullptr, &pending);
+      pending = std::move(next);
       result = std::move(merged);
     }
+    materializeSelections(result, pending);
     state = std::move(result);
     return returned;
   }
@@ -5326,7 +5385,8 @@ class RTLConstructor {
   }
 
   void statements(const std::vector<Statement>& statements, State& state,
-      const std::set<std::string>& overwritten = {}) {
+      const std::set<std::string>& overwritten = {}, PendingSelections* pendingResult = nullptr) {
+    PendingSelections pending;
     std::map<std::string, size_t> lastWrites;
     auto discarded = overwritten;
     if (simpleScheduledStatements(statements)) {
@@ -5338,6 +5398,8 @@ class RTLConstructor {
     }
     size_t index = 0;
     for (const auto& statement : statements) {
+      // A subsequent statement may read, slice, share or replay this result.
+      materializeSelections(state, pending);
       if (statement.kind == Statement::Kind::Assignment) {
         const auto name = key(statement.assignment.target);
         if (const auto found = lastWrites.find(name);
@@ -5360,9 +5422,13 @@ class RTLConstructor {
         }
         auto yes = state, no = state;
         assume(yes, condition.bits.front(), true); assume(no, condition.bits.front(), false);
-        this->statements(statement.statements, yes, discarded);
-        this->statements(statement.alternative, no, discarded);
-        merge(state, yes, no, condition.bits.front(), discarded);
+        const bool privateBranches = simpleScheduledStatements(statement.statements) &&
+            simpleScheduledStatements(statement.alternative);
+        PendingSelections yesPending, noPending;
+        this->statements(statement.statements, yes, discarded, privateBranches ? &yesPending : nullptr);
+        this->statements(statement.alternative, no, discarded, privateBranches ? &noPending : nullptr);
+        merge(state, yes, no, condition.bits.front(), discarded,
+            privateBranches ? &pending : nullptr, &yesPending, &noPending);
       } else if (statement.kind == Statement::Kind::For) {
         const auto bounds = range(statement.range);
         const auto name = key(statement.iterator);
@@ -5376,6 +5442,8 @@ class RTLConstructor {
         integers_.erase(name);
       } else fail("return is only supported inside functions");
     }
+    if (pendingResult) *pendingResult = std::move(pending);
+    else materializeSelections(state, pending);
   }
 
   void readBit(SNLBitNet* bit) {

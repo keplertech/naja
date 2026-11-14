@@ -495,6 +495,21 @@ module top(input logic [2:0] a,b, input logic s,t,u,
 endmodule
 """)
 
+    def test_systemverilog_pending_mux_selections(self):
+        self.check_determinism("sv", """
+module top(input logic clk, s,t,u, input logic [4:0] a,b,
+           output logic [4:0] y,z,q,readback);
+  always_comb begin
+    if(s) y=b; else if(t) y=b; else if(u) y=b; else y=a;
+    if(s) begin if(t) z=b; else z=a; end else z=a;
+    readback=y ^ z;
+  end
+  always_ff @(posedge clk) begin
+    if(s) q=b; else if(t) q=b; else if(u) q=b; else q=a;
+  end
+endmodule
+""")
+
     def test_systemverilog_overwritten_mux_results(self):
         self.check_determinism("sv", """
 module leaf(input logic [3:0] a,b, input logic s,
@@ -936,6 +951,26 @@ entity top is port(a,b : in bit_vector(2 downto 0); s,t,u : in bit;
 architecture rtl of top is begin
   x: entity work.leaf port map(a,b,s,t,u,y0,q0);
   y: entity work.leaf port map(a,b,s,t,u,y1,q1);
+end;
+""")
+
+    def test_vhdl_pending_mux_selections(self):
+        self.check_determinism("vhd", """
+entity top is port(clk,s,t,u : in bit; a,b : in bit_vector(4 downto 0);
+                   mode : in bit_vector(1 downto 0); y,z,q,c : out bit_vector(4 downto 0)); end;
+architecture rtl of top is begin
+  process(a,b,s,t,u,mode) begin
+    if s='1' then y<=b; elsif t='1' then y<=b; elsif u='1' then y<=b; else y<=a; end if;
+    if s='1' then
+      if t='1' then z<=b; else z<=a; end if;
+    else z<=a; end if;
+    case mode is
+      when "00" => c<=b; when "01" => c<=b; when "10" => c<=b; when others => c<=a;
+    end case;
+  end process;
+  process(clk) begin if rising_edge(clk) then
+    if s='1' then q<=b; elsif t='1' then q<=b; elsif u='1' then q<=b; else q<=a; end if;
+  end if; end process;
 end;
 """)
 

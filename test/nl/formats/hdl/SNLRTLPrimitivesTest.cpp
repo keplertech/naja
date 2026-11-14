@@ -19,6 +19,7 @@
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 #include "SNLRTLPrimitives.h"
+#include "SNLHDLMuxSelection.h"
 
 using namespace naja::NL;
 
@@ -307,4 +308,79 @@ TEST_F(SNLRTLPrimitivesTest, VectorSelectFactoryPreservesBitOrderAndValidatesInp
   EXPECT_EQ(count, design_->getInstances().size());
   SNLInstParameter::create(instance, model->getParameter(NLName("SIGNED")), "0");
   EXPECT_THROW(NLDB0::getVectorSelectSignature(instance), NLException);
+}
+
+TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
+  using Selection = SNLHDLMuxSelection<unsigned>;
+  using Bits = Selection::Bits;
+  for (bool commonFalse : {false, true}) for (bool sameGuard : {false, true}) {
+    auto* design = SNLDesign::create(library_);
+    const Bits a{SNLScalarNet::create(design), SNLScalarNet::create(design)};
+    const Bits b{SNLScalarNet::create(design), SNLScalarNet::create(design)};
+    auto* guard = SNLScalarNet::create(design);
+    unsigned muxCount = 0, gateCount = 0;
+    const auto emit = [&](auto* condition, const Bits& no, const Bits& yes, const auto& sources) {
+      ++muxCount;
+      EXPECT_EQ(32u, sources.size());
+      for (unsigned i = 0; i < sources.size(); ++i) EXPECT_EQ(i, sources[i]);
+      auto* output = SNLBusNet::create(design, 1, 0);
+      SNLRTLPrimitives::createMux(design, condition, no, yes, output);
+      return Bits{output->getBit(0), output->getBit(1)};
+    };
+    const auto gate = [&](bool isAnd, auto* left, auto* right, const auto&) {
+      ++gateCount;
+      EXPECT_EQ(commonFalse, isAnd);
+      auto* output = SNLScalarNet::create(design);
+      SNLRTLPrimitives::createGate(design, isAnd ? SNLRTLPrimitives::GateKind::And :
+          SNLRTLPrimitives::GateKind::Or, {left, right}, output);
+      return output;
+    };
+    auto value = Selection::merge(guard, Selection(a), Selection(b), 0, gate, emit);
+    for (unsigned i = 1; i < 32; ++i) {
+      auto* next = sameGuard ? guard : SNLScalarNet::create(design);
+      value = commonFalse ? Selection::merge(next, Selection(a), std::move(value), i, gate, emit)
+          : Selection::merge(next, std::move(value), Selection(b), i, gate, emit);
+      EXPECT_EQ(0u, muxCount);
+    }
+    EXPECT_EQ(2u, value.materialize(emit).size());
+    EXPECT_EQ(1u, muxCount);
+    EXPECT_EQ(sameGuard ? 0u : 31u, gateCount);
+    value.materialize(emit);
+    EXPECT_EQ(1u, muxCount);
+  }
+}
+
+TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsMaterializeAtFallbackBoundaries) {
+  using Selection = SNLHDLMuxSelection<unsigned>;
+  using Bits = Selection::Bits;
+  const Bits a{SNLScalarNet::create(design_), SNLScalarNet::create(design_)};
+  const Bits b{SNLScalarNet::create(design_), SNLScalarNet::create(design_)};
+  auto* s = SNLScalarNet::create(design_);
+  auto* t = SNLScalarNet::create(design_);
+  unsigned emitted = 0;
+  const auto emit = [&](auto* condition, const Bits& no, const Bits& yes, const auto&) {
+    ++emitted;
+    auto* output = SNLBusNet::create(design_, 1, 0);
+    SNLRTLPrimitives::createMux(design_, condition, no, yes, output);
+    return Bits{output->getBit(0), output->getBit(1)};
+  };
+  const auto gate = [&](bool, auto*, auto*, const auto&) -> SNLBitNet* {
+    ADD_FAILURE() << "fallback must not combine guards";
+    return nullptr;
+  };
+  // Partly identical vectors are immediately handled by the ordinary emitter.
+  auto partial = Selection::merge(s, Selection(a), Selection({a[0], b[1]}), 0, gate, emit);
+  EXPECT_EQ(1u, emitted);
+  partial.materialize(emit);
+  EXPECT_EQ(1u, emitted);
+  // A permuted common arm must not match a whole-vector chain.
+  auto inner = Selection::merge(s, Selection(a), Selection(b), 1, gate, emit);
+  auto outer = Selection::merge(t, std::move(inner), Selection({b[1], b[0]}), 2, gate, emit);
+  EXPECT_EQ(2u, emitted);
+  auto shared = outer.materialize(emit);
+  EXPECT_EQ(3u, emitted);
+  // Once read/shared, even equal values are materialized boundaries.
+  auto read = Selection::merge(s, Selection(shared), Selection({b[1], b[0]}), 3, gate, emit);
+  read.materialize(emit);
+  EXPECT_EQ(4u, emitted);
 }

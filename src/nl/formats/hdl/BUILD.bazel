@@ -5,7 +5,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 cc_library(
     name = "naja_snl_hdl",
     srcs = ["SNLRTLPrimitives.cpp"],
-    hdrs = ["SNLRTLPrimitives.h", "SNLHDLLibrary.h"],
+    hdrs = ["SNLRTLPrimitives.h", "SNLHDLLibrary.h", "SNLHDLMuxSelection.h"],
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = ["//src/nl/netlist:naja_nl"],
