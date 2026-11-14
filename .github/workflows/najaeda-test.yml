@@ -64,7 +64,7 @@ jobs:
       env:
         PYTHONPATH: ${{github.workspace}}/build/test/najaeda
       run: |
-        python -m pip install "naja-schematic>=0.1.1"
+        python -m pip install "naja-schematic>=0.3.0"
         python -c "import naja_schematic"
         python -m unittest discover -v -s test/najaeda -p test_najaeda_schematic.py
     - name: Upload coverage to Codecov
