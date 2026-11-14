@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-schematic = ["naja-schematic>=0.1.1"]
+schematic = ["naja-schematic>=0.3.0"]
 
 [tool.scikit-build.cmake.define]
 CMAKE_BUILD_TYPE="Release"

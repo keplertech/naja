@@ -106,6 +106,34 @@ existing view, call ``view.annotate(items)``; to clear its diagnoses, call
 ``view.annotate([])``. Both APIs also accept a dictionary containing an
 ``items`` list, such as a decoded diagnosis JSON document.
 
+Headless export
+---------------
+
+Draw part of a design to an SVG or PNG file with no notebook, browser or
+display, for a report or a CI artifact. This needs ``naja-schematic`` 0.3.0
+or later, from a platform wheel (it ships the renderer):
+
+.. code-block:: python
+
+   from najaeda import netlist
+   from najaeda.schematic import export_png, export_svg
+
+   top = netlist.load_gate_level_verilog("design.v")
+
+   # The fan-in cone of u1's D pin, with u1 drawn alone, as SVG.
+   export_svg(["u1"], "cone.svg", traces=[(["u1"], "D")],
+              title="Fan-in of u1/D", legend=True)
+   # A net in orange, as a PNG at 3 pixels per SVG pixel.
+   export_png(nets=[top.get_term("y")], path="y.png", scale=3,
+              style=[{"kind": "net", "target": top.get_term("y"), "color": "#ff7f0e"}])
+
+Targets are instances (a ``netlist.Instance``, or a path as a list of names)
+and pins (a ``netlist.Term``, or an ``(instance, terminal[, bit])`` tuple).
+A target that doesn't resolve raises ``ValueError`` and nothing is written;
+``RenderError`` reports a missing renderer or nothing to draw.
+``export_svgs([...])`` draws several files with one renderer process. The
+same drawing is available from a shell as ``naja-schematic render``.
+
 Optional API exports
 --------------------
 
@@ -119,6 +147,14 @@ Optional API exports
 * ``handle_request(request)`` accepts a decoded viewer request dictionary
   and returns a list of response dictionaries, in send order. This is for
   custom viewer transports; normal notebook use calls ``show()``.
+* ``style_response(items)`` builds a style response (colors, widths, fills
+  and labels on nets, instances and pins), as ``show(style=...)`` and the
+  exports' ``style=`` take.
+* ``export_svg()``, ``export_svgs()`` and ``export_png()`` draw without a
+  display (see `Headless export`_); ``RenderError`` is the error they raise
+  when they can't draw.
+* ``diff_svg()`` and ``diff_png()`` are re-exported when the installed
+  ``naja-schematic`` provides them.
 * ``__version__`` reports the installed viewer version, independently of
   the ``najaeda`` version.
 
@@ -131,7 +167,9 @@ Troubleshooting
 ---------------
 
 * If importing ``najaeda.schematic`` asks you to install the extra, install
-  it in the active kernel's environment and retry the import.
+  it in the active kernel's environment and retry the import. An older
+  ``naja-schematic`` (before 0.3.0, without the export API) gives the same
+  message: upgrade with ``pip install --upgrade "najaeda[schematic]"``.
 * If the output is blank, check that a top design is loaded, display the
   returned widget, and check that the notebook supports widgets. Inspect
   the kernel output and browser developer console for errors.
