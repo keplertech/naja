@@ -2567,8 +2567,14 @@ endmodule
       const auto& loopSymbol = symbolExpr->as<slang::ast::ValueExpressionBase>().symbol;
 
       detail::ActiveForLoopConstantHelpersTestResult result;
+      result.emptyBindingsRejected = std::all_of(
+        rhsExprs.begin(), rhsExprs.end(), [this](const Expression* expr) {
+          return !getActiveForLoopConstant(*expr).has_value() &&
+                 !isActiveForLoopVariableExpr(*expr);
+        });
       activeForLoopConstants_.push_back({&loopSymbol, 11});
       result.symbolDescriptionHit = getActiveForLoopConstant(*rhsExprs[0]) == 11;
+      result.symbolOnlyVariableHit = isActiveForLoopVariableExpr(*rhsExprs[0]);
       activeForLoopConstants_.clear();
 
       activeForLoopNameConstants_.push_back({"i", 12});
@@ -10317,6 +10323,9 @@ endmodule
     }
 
     std::optional<int64_t> getActiveForLoopConstant(const Expression& expr) const {
+      if (activeForLoopConstants_.empty() && activeForLoopNameConstants_.empty()) {
+        return std::nullopt;
+      }
       const auto* stripped = stripConversions(expr);
       // Concrete slang expression references normally strip to an expression;
       // keep this as a defensive guard for future expression wrappers.
@@ -21533,6 +21542,9 @@ endmodule
     }
 
     bool isActiveForLoopVariableExpr(const Expression& expr) const {
+      if (activeForLoopConstants_.empty() && activeForLoopNameConstants_.empty()) {
+        return false;
+      }
       const auto* stripped = stripConversions(expr);
       if (!stripped) {
         return false; // LCOV_EXCL_LINE
