@@ -313,10 +313,11 @@ TEST_F(SNLRTLPrimitivesTest, VectorSelectFactoryPreservesBitOrderAndValidatesInp
 TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
   using Selection = SNLHDLMuxSelection<unsigned>;
   using Bits = Selection::Bits;
-  for (bool commonFalse : {false, true}) for (bool sameGuard : {false, true}) {
+  for (bool commonFalse : {false, true}) for (bool sameGuard : {false, true})
+      for (bool identicalBit : {false, true}) {
     auto* design = SNLDesign::create(library_);
     const Bits a{SNLScalarNet::create(design), SNLScalarNet::create(design)};
-    const Bits b{SNLScalarNet::create(design), SNLScalarNet::create(design)};
+    const Bits b{identicalBit ? a[0] : SNLScalarNet::create(design), SNLScalarNet::create(design)};
     auto* guard = SNLScalarNet::create(design);
     unsigned muxCount = 0, gateCount = 0;
     const auto emit = [&](auto* condition, const Bits& no, const Bits& yes, const auto& sources) {
@@ -368,9 +369,9 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsMaterializeAtFallbackBoundaries
     ADD_FAILURE() << "fallback must not combine guards";
     return nullptr;
   };
-  // Partly identical vectors are immediately handled by the ordinary emitter.
+  // A partly identical vector remains private until its owning merge reads it.
   auto partial = Selection::merge(s, Selection(a), Selection({a[0], b[1]}), 0, gate, emit);
-  EXPECT_EQ(1u, emitted);
+  EXPECT_EQ(0u, emitted);
   partial.materialize(emit);
   EXPECT_EQ(1u, emitted);
   // A permuted common arm must not match a whole-vector chain.
@@ -383,4 +384,11 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsMaterializeAtFallbackBoundaries
   auto read = Selection::merge(s, Selection(shared), Selection({b[1], b[0]}), 3, gate, emit);
   read.materialize(emit);
   EXPECT_EQ(4u, emitted);
+  // Matching only the changed positions would silently drop the outer update
+  // to the position that was identical in the inner selection.
+  auto mixed = Selection::merge(s, Selection(a), Selection({a[0], b[1]}), 4, gate, emit);
+  auto changedCommon = Selection::merge(t, std::move(mixed), Selection(b), 5, gate, emit);
+  EXPECT_EQ(5u, emitted);
+  changedCommon.materialize(emit);
+  EXPECT_EQ(6u, emitted);
 }

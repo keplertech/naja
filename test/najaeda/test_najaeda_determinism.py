@@ -510,6 +510,28 @@ module top(input logic clk, s,t,u, input logic [4:0] a,b,
 endmodule
 """)
 
+    def test_systemverilog_pending_mux_identical_bits(self):
+        self.check_determinism("sv", """
+module top(input logic clk,s,t,u, input logic [0:4] a,b,
+           output logic [0:4] y,z,q,copied,changed);
+  always_comb begin
+    if(s) y={a[0],b[1:2],a[3],b[4]};
+    else if(t) y={a[0],b[1:2],a[3],b[4]};
+    else if(u) y={a[0],b[1:2],a[3],b[4]}; else y=a;
+    if(s) begin
+      if(t) z={a[0],b[1:2],a[3],b[4]}; else z=a;
+    end else z=a;
+    copied=y;
+    changed=y;
+    if(t) changed[1:2]={b[2],b[1]};
+  end
+  always_ff @(posedge clk) begin
+    if(s) q={a[0],b[1:2],a[3],b[4]};
+    else if(t) q={a[0],b[1:2],a[3],b[4]}; else q=a;
+  end
+endmodule
+""")
+
     def test_systemverilog_overwritten_mux_results(self):
         self.check_determinism("sv", """
 module leaf(input logic [3:0] a,b, input logic s,
@@ -970,6 +992,34 @@ architecture rtl of top is begin
   end process;
   process(clk) begin if rising_edge(clk) then
     if s='1' then q<=b; elsif t='1' then q<=b; elsif u='1' then q<=b; else q<=a; end if;
+  end if; end process;
+end;
+""")
+
+    def test_vhdl_pending_mux_identical_bits(self):
+        self.check_determinism("vhd", """
+entity top is port(clk,s,t,u : in bit; a,b : in bit_vector(0 to 4);
+                   mode : in bit_vector(1 downto 0); y,z,q,c,copied : out bit_vector(0 to 4)); end;
+architecture rtl of top is signal selected : bit_vector(0 to 4); begin
+  process(a,b,s,t,u,mode) begin
+    if s='1' then y<=a(0) & b(1 to 2) & a(3) & b(4);
+    elsif t='1' then y<=a(0) & b(1 to 2) & a(3) & b(4);
+    elsif u='1' then y<=a(0) & b(1 to 2) & a(3) & b(4); else y<=a; end if;
+    if s='1' then
+      if t='1' then z<=a(0) & b(1 to 2) & a(3) & b(4); else z<=a; end if;
+    else z<=a; end if;
+    case mode is
+      when "00" => c<=a(0) & b(1 to 2) & a(3) & b(4);
+      when "01" => c<=a(0) & b(1 to 2) & a(3) & b(4);
+      when "10" => c<=a(0) & b(1 to 2) & a(3) & b(4); when others => c<=a;
+    end case;
+    if s='1' then selected<=a(0) & b(1 to 2) & a(3) & b(4);
+    elsif t='1' then selected<=a(0) & b(1 to 2) & a(3) & b(4); else selected<=a; end if;
+  end process;
+  copied<=selected;
+  process(clk) begin if rising_edge(clk) then
+    if s='1' then q<=a(0) & b(1 to 2) & a(3) & b(4);
+    elsif t='1' then q<=a(0) & b(1 to 2) & a(3) & b(4); else q<=a; end if;
   end if; end process;
 end;
 """)

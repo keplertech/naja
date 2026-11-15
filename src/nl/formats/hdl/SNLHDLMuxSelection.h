@@ -63,11 +63,12 @@ class SNLHDLMuxSelection {
     result.yes_ = std::move(b);
     result.condition_ = condition;
     result.sources_.push_back(source);
-    // Splitting partly identical vectors, unavailable values and malformed
-    // widths belongs to the ordinary builder, never to this whole-vector buffer.
+    // Keep the complete vectors, including identical positions, until the
+    // owning merge emits the changed runs. Matching still requires the entire
+    // common arm in the same order; unavailable values and invalid widths flush.
     bool whole = condition && !result.no_.empty() && result.no_.size() == result.yes_.size();
     for (std::size_t i = 0; whole && i < result.no_.size(); ++i)
-      whole = result.no_[i] && result.yes_[i] && result.no_[i] != result.yes_[i];
+      whole = result.no_[i] && result.yes_[i];
     if (!whole)
       return SNLHDLMuxSelection(emit(condition, result.no_, result.yes_, result.sources_));
     return result;
