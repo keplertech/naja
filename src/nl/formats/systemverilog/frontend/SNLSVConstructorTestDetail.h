@@ -74,6 +74,8 @@ struct ProceduralReplayEnvMergeTestResult {
 };
 
 struct ActiveForLoopConstantHelpersTestResult {
+    bool emptyBindingsRejected {false};
+    bool symbolOnlyVariableHit {false};
     bool symbolDescriptionHit {false};
     bool nameDescriptionHit {false};
     bool crossScopeSymbolNameHit {false};

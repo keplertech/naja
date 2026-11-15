@@ -13579,6 +13579,8 @@ TEST_F(
   activeForLoopConstantHelpersHandleNamesSourcesParametersAndOverflow) {
   const auto result = detail::testSVConstructorActiveForLoopConstantHelpers();
   ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->emptyBindingsRejected);
+  EXPECT_TRUE(result->symbolOnlyVariableHit);
   EXPECT_TRUE(result->symbolDescriptionHit);
   EXPECT_TRUE(result->nameDescriptionHit);
   EXPECT_TRUE(result->crossScopeSymbolNameHit);

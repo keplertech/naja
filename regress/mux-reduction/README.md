@@ -56,3 +56,9 @@ Expected scope: a small common chain-reduction helper, two frontend adapters, fo
 Validation: rerun allocation measurements separately from final counts; test both common-arm orientations, equal/distinct guards, partial matches, shared/named results, slices/reordering and fallback boundaries. Preserve all folded source origins. Run supported four-state RTL/dump comparisons, old-state/overwrite diagnostics, DFFE/reset/enable checks, snapshots, cross-process determinism, and relevant CMake/Bazel frontend/kernel tests. Principal risks are pending-result escape, cache aliasing, SV replay dependencies, VHDL current/variable/scheduled semantics, origin loss and deterministic creation order. No simulation suite was rerun for this measurement-only study; no build-path/BCR parity claim is made.
 
 The committed [CSV](samples.csv) contains every accepted measurement. Full raw logs, warm-ups, failed pilots, source hashes, measurement scripts and instrumented binaries are retained locally; they are not included in this report-only change. Source instrumentation was restored after measurement. Unrelated follow-ups are in [backlog](backlog.md).
+
+Follow-up reports cover [private pending selections](pending-selections.md),
+[identical bit positions](identical-bits.md), and
+[controlled Release performance](release-performance.md), followed by an
+[Ibex loader profile](ibex-profile.md) and the
+[empty-binding fast path](loop-fastpath.md).

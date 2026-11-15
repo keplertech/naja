@@ -109,5 +109,8 @@ Copyright: lowRISC contributors (OpenTitan project).
 License: Apache-2.0
 
 Files: regress/mux-reduction/samples.csv
+ regress/mux-reduction/release-samples.csv
+ regress/mux-reduction/ibex-profile-samples.csv
+ regress/mux-reduction/loop-fastpath-samples.csv
 Copyright: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
 License: Apache-2.0
