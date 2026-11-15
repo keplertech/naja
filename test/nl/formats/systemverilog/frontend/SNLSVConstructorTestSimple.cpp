@@ -27382,10 +27382,60 @@ TEST_F(SNLSVConstructorTestSimple, unusedPackedReplayCleanupPreservesOutputs) {
   }
 }
 
+TEST_F(SNLSVConstructorTestSimple, pendingMuxSelectionsPreserveValuesAndOrigins) {
+  const auto path = writeSVTestFile("pending_mux_selections", R"(module top(
+    input logic [8:0] a, output logic [2:0] y,z);
+    always_comb begin
+      if(a[6]) y=a[5:3];
+      else if(a[7]) y=a[5:3];
+      else if(a[8]) y=a[5:3]; else y=a[2:0];
+      if(a[6]) begin
+        if(a[7]) begin
+          if(a[8]) z=a[5:3]; else z=a[2:0];
+        end else z=a[2:0];
+      end else z=a[2:0];
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  EXPECT_EQ(2u, countMux2Instances(top, 3));
+  for (auto* instance : top->getInstances()) if (NLDB0::isMux2(instance->getModel())) {
+    ASSERT_NE(nullptr, instance->getRTLInfos());
+    EXPECT_GE(instance->getRTLInfos()->getSourceOrigins().size(), 3u);
+  }
+  // Cleanup destroys redundant instances but leaves their output nets. A
+  // construction-time reduction must avoid those intermediate nets as well.
+  for (auto* net : top->getNets()) if (net->getWidth() == 3) {
+    for (auto* bit : net->getBits())
+      EXPECT_FALSE(bit->getInstTerms().empty() && bit->getBitTerms().empty());
+  }
+  library_->getDB()->mergeAssigns();
+  for (unsigned input = 0; input < 512; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    const unsigned a = input & 7, b = (input >> 3) & 7;
+    for (const auto& value : {std::pair{"y", input & 448 ? b : a},
+                             std::pair{"z", (input & 448) == 448 ? b : a}})
+      for (auto* bit : top->getTerm(NLName(value.first))->getBits())
+        EXPECT_EQ(bool((value.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << value.first << ":" << input;
+  }
+}
+
 TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveFourStateValues) {
   const auto path = writeSVTestFile("repeated_mux_four_state", R"(module top(
     input logic [2:0] a,b, input logic s,t,u,
-    output logic [2:0] y,z,shared, output logic [1:0] dual);
+    output logic [2:0] y,z,shared,branch_or,branch_and, output logic [1:0] dual);
+    always_comb begin
+      if(s) branch_or=b;
+      else if(t) branch_or=b;
+      else if(u) branch_or=b; else branch_or=a;
+      if(s) begin
+        if(t) begin
+          if(u) branch_and=b; else branch_and=a;
+        end else branch_and=a;
+      end else branch_and=a;
+    end
     assign y=u ? b : (t ? b : (s ? b : a));
     assign dual=u ? (t ? (s ? b[1:0] : a[1:0]) : a[1:0]) : a[1:0];
     assign shared=s ? a : b;
@@ -27394,7 +27444,7 @@ TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveFourStateValues)
   SNLSVConstructor(library_).construct(path);
   auto* top = library_->getSNLDesign(NLName("top"));
   ASSERT_NE(top, nullptr);
-  EXPECT_EQ(4u, countMux2Instances(top));
+  EXPECT_EQ(6u, countMux2Instances(top));
   const auto dumped = dumpTopAndGetVerilogPath(top, "repeated_mux_four_state_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1")) {
@@ -27404,8 +27454,8 @@ TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveFourStateValues)
   std::ofstream tb(tbPath);
   tb << R"(module tb;
 reg [2:0] a,b; reg s,t,u;
-wire [2:0] y,z,shared; wire [1:0] dual;
-top dut(a,b,s,t,u,y,z,shared,dual);
+wire [2:0] y,z,shared,branch_or,branch_and; wire [1:0] dual;
+top dut(a,b,s,t,u,y,z,shared,branch_or,branch_and,dual);
 function logic value(input integer i);
 case(i) 0:value=0; 1:value=1; 2:value=1'bx; 3:value=1'bz; endcase
 endfunction
@@ -27416,6 +27466,12 @@ initial begin
       a[bitn]=value((i>>(bitn*2))&3); b[bitn]=value((j>>(bitn*2))&3);
     end
     s=value(k&3); t=value((k>>2)&3); u=value((k>>4)&3); #1;
+    // Procedural guards are checked in the supported binary-control domain;
+    // data still spans all 0/1/X/Z combinations. Continuous muxes also cover
+    // unknown selectors below.
+    if ((k & 42)==0 && (branch_or !== ((s||t||u)?b:a) ||
+                        branch_and !== ((s&&t&&u)?b:a)))
+      $fatal(1,"pending branch data mismatch i=%d j=%d k=%d",i,j,k);
     if(y !== (u?b:(t?b:(s?b:a))) ||
        dual !== (u?(t?(s?b[1:0]:a[1:0]):a[1:0]):a[1:0]) ||
        shared !== (s?a:b) || z !== (t?a:(s?a:b)))
