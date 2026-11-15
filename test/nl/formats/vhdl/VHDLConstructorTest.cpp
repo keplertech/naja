@@ -119,7 +119,7 @@ TEST_F(VHDLConstructorTest, RetainedIntentPropertyDescriptions) {
 TEST_F(VHDLConstructorTest, PendingMuxSelectionsPreserveValuesAndOrigins) {
   auto* top = VHDLConstructor(library_).construct(R"(
     entity top is port(a,b : in bit_vector(2 downto 0); s,t,u : in bit;
-                       mode : in bit_vector(1 downto 0); y,z,c : out bit_vector(2 downto 0)); end;
+                       mode : in bit_vector(1 downto 0); y,z,c,p,q,r : out bit_vector(2 downto 0)); end;
     architecture rtl of top is begin
       process(a,b,s,t,u,mode) begin
         if s='1' then y<=b;
@@ -134,6 +134,23 @@ TEST_F(VHDLConstructorTest, PendingMuxSelectionsPreserveValuesAndOrigins) {
             if u='1' then z<=b; else z<=a; end if;
           else z<=a; end if;
         else z<=a; end if;
+        if s='1' then p<=a(2) & b(1) & a(0);
+        else
+          if t='1' then p<=a(2) & b(1) & a(0);
+          else
+            if u='1' then p<=a(2) & b(1) & a(0); else p<=a; end if;
+          end if;
+        end if;
+        if s='1' then
+          if t='1' then
+            if u='1' then q<=a(2) & b(1) & a(0); else q<=a; end if;
+          else q<=a; end if;
+        else q<=a; end if;
+        case mode is
+          when "00" => r<=a(2) & b(1) & a(0);
+          when "01" => r<=a(2) & b(1) & a(0);
+          when "10" => r<=a(2) & b(1) & a(0); when others => r<=a;
+        end case;
         case mode is
           when "00" => c<=b; when "01" => c<=b; when "10" => c<=b; when others => c<=a;
         end case;
@@ -146,12 +163,10 @@ TEST_F(VHDLConstructorTest, PendingMuxSelectionsPreserveValuesAndOrigins) {
     ASSERT_NE(nullptr, instance->getRTLInfos());
     if (instance->getRTLInfos()->getSourceOrigins().size() >= 3) ++foldedOrigins;
   }
-  EXPECT_EQ(3u, muxes);
-  EXPECT_EQ(2u, foldedOrigins);
-  for (auto* net : top->getNets()) if (net->getWidth() == 3) {
-    for (auto* bit : net->getBits())
-      EXPECT_FALSE(bit->getInstTerms().empty() && bit->getBitTerms().empty());
-  }
+  EXPECT_EQ(6u, muxes);
+  EXPECT_EQ(4u, foldedOrigins);
+  for (auto* bit : top->getBitNets()) if (!bit->isConstant())
+    EXPECT_FALSE(bit->getInstTerms().empty() && bit->getBitTerms().empty());
   for (unsigned input = 0; input < 2048; ++input) {
     std::unordered_map<SNLBitNet*, bool> values;
     for (unsigned bit = 0; bit < 3; ++bit) {
@@ -163,9 +178,13 @@ TEST_F(VHDLConstructorTest, PendingMuxSelectionsPreserveValuesAndOrigins) {
     for (unsigned bit = 0; bit < 2; ++bit)
       values[top->getBusTerm(NLName("mode"))->getBit(bit)->getNet()] = (input >> (bit + 9)) & 1;
     const unsigned a = input & 7, b = (input >> 3) & 7;
+    const unsigned changed = (a & 5) | (b & 2);
     for (const auto& result : {std::pair{"y", input & 448 ? b : a},
                               std::pair{"z", (input & 448) == 448 ? b : a},
-                              std::pair{"c", input >> 9 == 3 ? a : b}}) {
+                              std::pair{"c", input >> 9 == 3 ? a : b},
+                              std::pair{"p", input & 448 ? changed : a},
+                              std::pair{"q", (input & 448) == 448 ? changed : a},
+                              std::pair{"r", input >> 9 == 3 ? a : changed}}) {
       std::unordered_set<SNLBitNet*> visiting;
       for (unsigned bit = 0; bit < 3; ++bit)
         EXPECT_EQ(bool((result.second >> bit) & 1),
