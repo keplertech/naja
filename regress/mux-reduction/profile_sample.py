@@ -30,6 +30,14 @@ CATEGORIES = {
     "source_lookup": "::getSourceInfo(",
     "slang_parse_all_sources": "::parseAllSources(",
     "alias_cleanup": "::collapseAnonymousAssignAliases(",
+    "constant_int64": "::getConstantInt64(",
+    "case_item_match": "::buildCaseItemMatchBit(",
+    "procedural_lhs": "::applyCombinationalStatementForLhs(",
+    "assigned_bit_mask": "::makeProceduralAssignedBitMask(",
+    "cycle_check": "::checkCombinationalBlockCycles(",
+    "term_order_update": "::SNLDesign::setOrderIDs(",
+    "instance_post_create": "::SNLInstance::commonPostCreate(",
+    "flat_collection_iterator": ">::NajaFlatCollectionIterator::findNextElement(",
 }
 
 

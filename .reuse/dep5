@@ -112,5 +112,7 @@ Files: regress/mux-reduction/samples.csv
  regress/mux-reduction/release-samples.csv
  regress/mux-reduction/ibex-profile-samples.csv
  regress/mux-reduction/loop-fastpath-samples.csv
+ regress/mux-reduction/post-loop-profile-samples.csv
+ regress/mux-reduction/term-order-append-samples.csv
 Copyright: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
 License: Apache-2.0

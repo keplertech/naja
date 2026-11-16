@@ -13,9 +13,20 @@ using ::testing::ElementsAre;
 #include "SNLScalarTerm.h"
 #include "SNLBusTerm.h"
 #include "SNLBusTermBit.h"
+#include "SNLBundleTerm.h"
 #include "SNLUtils.h"
 #include "NLException.h"
 using namespace naja::NL;
+
+namespace {
+void checkTermOrder(SNLDesign* design, const std::vector<SNLBitTerm*>& expected) {
+  EXPECT_EQ(expected, std::vector<SNLBitTerm*>(
+    design->getBitTerms().begin(), design->getBitTerms().end()));
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(i, expected[i]->getOrderID());
+  }
+}
+}
 
 class SNLDesignTest: public ::testing::Test {
   protected:
@@ -29,6 +40,61 @@ class SNLDesignTest: public ::testing::Test {
     }
     NLDB*  db_;
 };
+
+TEST_F(SNLDesignTest, testTermOrderIDsAfterAppendAndInsertion) {
+  auto design = SNLDesign::create(db_->getLibrary(NLName("MYLIB")), NLName("design"));
+  auto first = SNLBusTerm::create(design, 10, SNLTerm::Direction::Input, 4, 2);
+  first->getBit(3)->destroy();
+  auto scalar = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  auto last = SNLBusTerm::create(design, SNLTerm::Direction::Output, -2, 0);
+  checkTermOrder(design, {
+    first->getBit(4), first->getBit(2), scalar,
+    last->getBit(-2), last->getBit(-1), last->getBit(0)});
+
+  auto inserted = SNLScalarTerm::create(design, 5, SNLTerm::Direction::Input);
+  checkTermOrder(design, {
+    inserted, first->getBit(4), first->getBit(2), scalar,
+    last->getBit(-2), last->getBit(-1), last->getBit(0)});
+
+  last->getBit(0)->destroy();
+  auto appended = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  checkTermOrder(design, {
+    inserted, first->getBit(4), first->getBit(2), scalar,
+    last->getBit(-2), last->getBit(-1), appended});
+
+  appended->destroy();
+  last->getBit(-1)->destroy();
+  last->getBit(-2)->destroy();
+  auto afterEmpty = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  checkTermOrder(design, {inserted, first->getBit(4), first->getBit(2), scalar, afterEmpty});
+}
+
+TEST_F(SNLDesignTest, testTermOrderIDsWithBundleMembers) {
+  auto library = NLLibrary::create(db_, NLLibrary::Type::Primitives, NLName("PRIMS"));
+  auto design = SNLDesign::create(library, SNLDesign::Type::Primitive, NLName("design"));
+  auto bundle = SNLBundleTerm::create(design, SNLTerm::Direction::Input);
+  auto member = SNLBusTerm::create(bundle, SNLTerm::Direction::Input, 1, 0);
+  checkTermOrder(design, {member->getBit(1), member->getBit(0)});
+
+  auto addedMember = SNLScalarTerm::create(bundle, SNLTerm::Direction::Input);
+  checkTermOrder(design, {member->getBit(1), member->getBit(0), addedMember});
+  auto addedBus = SNLBusTerm::create(bundle, SNLTerm::Direction::Input, -1, 0);
+  auto scalar = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  auto afterMember = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  checkTermOrder(design, {
+    member->getBit(1), member->getBit(0), addedMember, addedBus->getBit(-1), addedBus->getBit(0),
+    scalar, afterMember});
+
+  auto empty = SNLBundleTerm::create(design, SNLTerm::Direction::Output);
+  auto afterEmpty = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  checkTermOrder(design, {
+    member->getBit(1), member->getBit(0), addedMember, addedBus->getBit(-1), addedBus->getBit(0),
+    scalar, afterMember, afterEmpty});
+  empty->destroy();
+  checkTermOrder(design, {
+    member->getBit(1), member->getBit(0), addedMember, addedBus->getBit(-1), addedBus->getBit(0),
+    scalar, afterMember, afterEmpty});
+}
 
 TEST_F(SNLDesignTest, testCreation0) {
   NLLibrary* library = db_->getLibrary(NLName("MYLIB"));
