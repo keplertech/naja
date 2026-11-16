@@ -314,16 +314,25 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
   using Selection = SNLHDLMuxSelection<unsigned>;
   using Bits = Selection::Bits;
   for (bool commonFalse : {false, true}) for (bool sameGuard : {false, true})
-      for (bool identicalBit : {false, true}) {
+      for (bool identicalBit : {false, true}) for (bool scalar : {false, true}) {
     auto* design = SNLDesign::create(library_);
-    const Bits a{SNLScalarNet::create(design), SNLScalarNet::create(design)};
-    const Bits b{identicalBit ? a[0] : SNLScalarNet::create(design), SNLScalarNet::create(design)};
+    Bits a{SNLScalarNet::create(design)};
+    Bits b{SNLScalarNet::create(design)};
+    if (!scalar) {
+      a.push_back(SNLScalarNet::create(design));
+      b.push_back(identicalBit ? a.back() : SNLScalarNet::create(design));
+    }
     auto* guard = SNLScalarNet::create(design);
     unsigned muxCount = 0, gateCount = 0;
     const auto emit = [&](auto* condition, const Bits& no, const Bits& yes, const auto& sources) {
       ++muxCount;
       EXPECT_EQ(32u, sources.size());
       for (unsigned i = 0; i < sources.size(); ++i) EXPECT_EQ(i, sources[i]);
+      if (scalar) {
+        auto* output = SNLScalarNet::create(design);
+        SNLRTLPrimitives::createMux(design, condition, no, yes, output);
+        return Bits{output};
+      }
       auto* output = SNLBusNet::create(design, 1, 0);
       SNLRTLPrimitives::createMux(design, condition, no, yes, output);
       return Bits{output->getBit(0), output->getBit(1)};
@@ -343,7 +352,7 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
           : Selection::merge(next, std::move(value), Selection(b), i, gate, emit);
       EXPECT_EQ(0u, muxCount);
     }
-    EXPECT_EQ(2u, value.materialize(emit).size());
+    EXPECT_EQ(scalar ? 1u : 2u, value.materialize(emit).size());
     EXPECT_EQ(1u, muxCount);
     EXPECT_EQ(sameGuard ? 0u : 31u, gateCount);
     value.materialize(emit);

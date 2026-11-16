@@ -20281,6 +20281,8 @@ endmodule
       std::unordered_map<const Statement*, CombinationalSubtreeSummary>;
     using ProceduralReplayEnv =
       std::unordered_map<const slang::ast::ValueSymbol*, std::vector<SNLBitNet*>>;
+    using PendingReplayScalars =
+      std::unordered_map<const slang::ast::ValueSymbol*, PendingMuxSelection>;
     using ProceduralReplayDependencyMap =
       std::unordered_map<
         const slang::ast::ValueSymbol*,
@@ -28943,7 +28945,8 @@ endmodule
       const std::optional<slang::SourceRange>& sourceRange,
       std::string& failureReason,
       const slang::ast::ValueSymbol* externallyMergedSymbol = nullptr,
-      const std::vector<SNLBitNet*>* externallyMergedBits = nullptr) {
+      const std::vector<SNLBitNet*>* externallyMergedBits = nullptr,
+      PendingReplayScalars* pendingScalars = nullptr) {
       mergedEnv = falseEnv;
       for (const auto* symbol : symbolsInDeclarationOrder(trueEnv)) {
         const auto& trueBits = trueEnv.at(symbol);
@@ -28951,21 +28954,44 @@ endmodule
           continue;
         }
         auto falseFound = falseEnv.find(symbol);
-        if (falseFound == falseEnv.end()) {
+        const bool hasPending = pendingScalars && pendingScalars->contains(symbol);
+        if (falseFound == falseEnv.end() && !hasPending) {
           mergedEnv[symbol] = trueBits;
           continue;
         }
 
-        const auto& falseBits = falseFound->second;
-        if (falseBits.size() != trueBits.size()) {
+        const auto falseWidth = hasPending ? 1u : falseFound->second.size();
+        if (falseWidth != trueBits.size()) {
           std::ostringstream reason;
           reason << "width mismatch while merging always_comb replay symbol '"
                  << std::string(symbol->name) << "'"
-                 << " (false_width=" << falseBits.size()
+                 << " (false_width=" << falseWidth
                  << ", true_width=" << trueBits.size() << ")";
           failureReason = reason.str();
           return false;
         }
+        if (!hasPending && falseFound->second == trueBits) {
+          continue;
+        }
+        // Only a case's private merge accumulator may own these selections.
+        // It is never an active replay environment: arms and match expressions
+        // read incoming values, and the case materializes before publishing it.
+        // No placeholders or pending values enter the expression caches.
+        if (pendingScalars && symbol->getType().isScalar() &&
+            trueBits.size() == 1 && trueBits.front() &&
+            (hasPending || falseFound->second.front())) {
+          auto no = hasPending ? std::move(pendingScalars->at(symbol)) :
+            PendingMuxSelection(falseFound->second);
+          (*pendingScalars)[symbol] = mergeMuxSelection(design, selectBit,
+            std::move(no), PendingMuxSelection(trueBits), sourceRange);
+          mergedEnv.erase(symbol);
+          continue;
+        }
+        if (hasPending) {
+          mergedEnv[symbol] = materializeMuxSelection(design, pendingScalars->at(symbol));
+          pendingScalars->erase(symbol);
+        }
+        const auto& falseBits = mergedEnv.at(symbol);
         if (falseBits == trueBits) {
           mergedEnv[symbol] = falseBits;
           continue;
@@ -29846,6 +29872,17 @@ endmodule
 
         std::vector<SNLBitNet*> mergedBits = dataBits;
         ProceduralReplayEnv mergedReplayEnv = incomingReplayEnv;
+        PendingReplayScalars pendingReplayScalars;
+        // Branch evaluation stays eager. Only whole scalar results in this
+        // case's merge chain are private; nested cases flush at their own exit.
+        // Scheduling, loop exits and uncertain effects retain eager merging.
+        bool canDeferReplayScalars = mergeReplayEnv && !preserveAssignmentScheduling &&
+          !hasActiveForLoopContext() && subtreeSummaryCache;
+        if (canDeferReplayScalars) {
+          const auto& summary = getOrComputeCombinationalSubtreeSummary(
+            *current, *subtreeSummaryCache, ignoredSymbols);
+          canDeferReplayScalars = !summary.hasUnknownEffects && !summary.mayBreak;
+        }
         auto itemBegin = caseStmt.items.rbegin();
         if (caseStmt.defaultCase) {
           std::vector<SNLBitNet*> defaultBits = dataBits;
@@ -29997,7 +30034,8 @@ endmodule
                   itemSourceRange,
                   failureReason,
                   preserveAssignmentScheduling ? nullptr : replayLhsSymbol,
-                  nullptr)) {
+                  nullptr,
+                  canDeferReplayScalars ? &pendingReplayScalars : nullptr)) {
               // Replay merge failure details are covered in the merge helper.
               // LCOV_EXCL_START
               return false;
@@ -30009,6 +30047,9 @@ endmodule
         }
 
         if (!flushPending()) return false;
+        for (const auto* symbol : symbolsInDeclarationOrder(pendingReplayScalars)) {
+          mergedReplayEnv[symbol] = materializeMuxSelection(design, pendingReplayScalars.at(symbol));
+        }
         if (mergeReplayEnv && !preserveAssignmentScheduling && replayLhsSymbol) {
           mergedReplayEnv[replayLhsSymbol] = mergedBits;
         }

@@ -528,6 +528,63 @@ module top(input logic clk, s,t,u, input logic [4:0] a,b,
 endmodule
 """)
 
+    def test_systemverilog_case_replay_scalar_accumulator(self):
+        self.check_determinism("sv", """
+module leaf(input logic clk, input logic [7:0] a,
+            output logic [7:0] y, output logic q);
+  always_comb begin
+    logic first, second, selector, item, equal_guards;
+    logic [1:0] partial;
+    first=a[0]; second=a[1]; selector=a[2]; item=a[3];
+    equal_guards=a[0]; partial=a[1:0];
+    case (selector)
+      item: begin first=a[4]; second=first; selector=~selector; item=~item; end
+      a[5]: begin first=a[4]; second=first ^ second; end
+      a[6]: begin first=a[4]; second=first; end
+      default: begin first=a[0]; second=a[1]; end
+    endcase
+    y[0]=first; y[1]=second; y[2]=selector; y[3]=item;
+    case (1'b1)
+      a[7]: equal_guards=a[1];
+      a[7]: equal_guards=a[1];
+      default: equal_guards=a[0];
+    endcase
+    y[4]=equal_guards;
+    case (1'b1)
+      a[7]: second=a[0];
+      a[6]: second=a[0];
+      default: case (1'b1)
+        a[5]: second=a[1];
+        a[4]: second=a[1];
+        default: second=a[0];
+      endcase
+    endcase
+    y[5]=second;
+    case (1'b1)
+      a[7]: partial[0]=first;
+      a[6]: partial[0]=first;
+      a[5]: partial[0]=second;
+      default: partial[1]=a[2];
+    endcase
+    y[7:6]=partial;
+  end
+  always_ff @(posedge clk) begin
+    logic scratch;
+    scratch=a[0];
+    case (1'b1)
+      a[7]: scratch=a[1];
+      a[6]: scratch=a[1];
+      default: scratch=a[0];
+    endcase
+    q<=scratch;
+  end
+endmodule
+module top(input logic clk, input logic [7:0] a,
+           output logic [7:0] y,z, output logic q,r);
+  leaf first(clk,a,y,q); leaf second(clk,a,z,r);
+endmodule
+""")
+
     def test_systemverilog_pending_mux_identical_bits(self):
         self.check_determinism("sv", """
 module top(input logic clk,s,t,u, input logic [0:4] a,b,
