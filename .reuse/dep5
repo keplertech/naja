@@ -109,6 +109,10 @@ Copyright: lowRISC contributors (OpenTitan project).
 License: Apache-2.0
 
 Files: regress/mux-reduction/samples.csv
+ regress/mux-reduction/removal-readiness-counts.csv
+ regress/mux-reduction/removal-readiness-designs.csv
+ regress/mux-reduction/removal-readiness-merges.csv
+ regress/mux-reduction/removal-readiness-timings.csv
  regress/mux-reduction/release-samples.csv
  regress/mux-reduction/ibex-profile-samples.csv
  regress/mux-reduction/loop-fastpath-samples.csv
