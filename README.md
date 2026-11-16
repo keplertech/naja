@@ -12,9 +12,10 @@
   <a href="https://codecov.io/gh/keplertech/naja"><img src="https://codecov.io/gh/keplertech/naja/branch/main/graph/badge.svg?token=59ZKZ74HFP" alt="Coverage"/></a>
   <a href="https://codspeed.io/keplertech/naja"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"/></a>
-  <a href="https://api.reuse.software/info/github.com/keplertech/naja"><img src="https://api.reuse.software/badge/github.com/keplertech/naja" alt="REUSE status"/></a>
   <br/>
+  <a href="https://api.reuse.software/info/github.com/keplertech/naja"><img src="https://api.reuse.software/badge/github.com/keplertech/naja" alt="REUSE status"/></a>
   <a href="https://matrix.to/#/#naja:fossi-chat.org"><img src="https://img.shields.io/badge/Matrix-Join%20Chat-success?logo=matrix" alt="Join Matrix Chat"/></a>
+  <br/>
   <a href="https://keplertech.io"><img src="https://img.shields.io/badge/Website-keplertech.io-0b7285" alt="KeplerTech website"/></a>
   <a href="https://www.linkedin.com/company/keplertech-io"><img src="https://img.shields.io/badge/LinkedIn-keplertech.io-0077B5?logo=linkedin" alt="keplertech.io on LinkedIn"/></a>
 </p>
