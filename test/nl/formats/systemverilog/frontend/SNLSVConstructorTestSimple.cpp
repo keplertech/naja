@@ -27596,6 +27596,206 @@ TEST_F(SNLSVConstructorTestSimple, overwrittenMuxResultsPreserveValues) {
   }
 }
 
+TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorAvoidsIntermediateNets) {
+  const auto path = writeSVTestFile("case_replay_scalar_accumulator", R"(module top(
+    input logic [5:0] a, output logic [1:0] y);
+    always_comb begin
+      logic distinct_guards, equal_guards;
+      distinct_guards=a[0]; equal_guards=a[0];
+      case (1'b1)
+        a[5]: distinct_guards=a[1];
+        a[4]: distinct_guards=a[1];
+        a[3]: distinct_guards=a[1];
+        default: distinct_guards=a[0];
+      endcase
+      case (1'b1)
+        a[2]: equal_guards=a[1];
+        a[2]: equal_guards=a[1];
+        a[2]: equal_guards=a[1];
+        default: equal_guards=a[0];
+      endcase
+      y={equal_guards,distinct_guards};
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  // Two tracked-local muxes remain in addition to the two replay results.
+  EXPECT_EQ(4u, countMux2Instances(top));
+  size_t replayMuxes = 0;
+  for (auto* instance : top->getInstances()) if (NLDB0::isMux2(instance->getModel())) {
+    ASSERT_NE(nullptr, instance->getRTLInfos());
+    if (instance->getRTLInfos()->getSourceOrigins().size() >= 3u) ++replayMuxes;
+  }
+  EXPECT_EQ(2u, replayMuxes);
+  // Post-load cleanup leaves the destroyed muxes' intermediate nets behind.
+  // Check before mergeAssigns so this proves construction-time avoidance.
+  for (auto* bit : top->getBitNets()) if (!bit->isConstant())
+    EXPECT_FALSE(bit->getInstTerms().empty() && bit->getBitTerms().empty());
+  library_->getDB()->mergeAssigns();
+  const auto dumped = dumpTopAndGetVerilogPath(top, "case_replay_scalar_accumulator_dump");
+  for (unsigned input = 0; input < 64; ++input) {
+    const unsigned expected = ((input & 4 ? input >> 1 : input) & 1) << 1 |
+      ((input & 56 ? input >> 1 : input) & 1);
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (auto* bit : top->getTerm(NLName("y"))->getBits())
+      EXPECT_EQ(bool((expected >> bit->getBit()) & 1),
+        evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << input;
+  }
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1")) {
+    GTEST_SKIP() << "Icarus Verilog required for four-state data verification";
+  }
+  const auto tbPath = dumped.parent_path() / "tb.sv";
+  std::ofstream tb(tbPath);
+  tb << R"(module tb;
+reg [5:0] a; wire [1:0] y;
+top dut(a,y);
+function logic value(input integer i);
+case(i) 0:value=0; 1:value=1; 2:value=1'bx; 3:value=1'bz; endcase
+endfunction
+integer data, guards;
+initial begin
+  // Case comparisons retain their existing binary-control contract. Data
+  // exercises every 0/1/X/Z pair through both equal and distinct guards.
+  for(data=0;data<16;data=data+1) for(guards=0;guards<16;guards=guards+1) begin
+    a={guards[3:0],value(data>>2),value(data&3)}; #1;
+    if(y !== {(a[2]?a[1]:a[0]),((|a[5:3])?a[1]:a[0])})
+      $fatal(1,"case replay scalar mismatch a=%b y=%b",a,y);
+  end
+  $finish;
+end
+endmodule
+)";
+  tb.close();
+  const auto quote = [](const std::filesystem::path& file) {
+    std::string result = "'";
+    for (char c : file.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+    return result + "'";
+  };
+  const auto executable = dumped.parent_path() / "simulation.vvp";
+  const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+    " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+  ASSERT_EQ(0, std::system(command.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+}
+
+TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorPreservesIncomingReadsAndSharing) {
+  const auto path = writeSVTestFile("case_replay_incoming", R"(module top(
+    input logic [7:0] a, output logic [5:0] y);
+    always_comb begin
+      logic first, second, selector, item;
+      first=a[0]; second=a[1]; selector=a[2]; item=a[3];
+      case (selector)
+        item: begin first=a[4]; second=first; selector=~selector; item=~item; end
+        a[5]: begin first=a[4]; second=first ^ second; end
+        a[6]: begin first=a[4]; second=first; end
+        default: begin first=a[0]; second=a[1]; end
+      endcase
+      y[0]=first; y[1]=second; y[2]=selector; y[3]=item;
+      y[4]=first ^ second;
+      // Both dependent reads and later statements see materialized values.
+      case (a[7])
+        1: first=second;
+        default: first=first;
+      endcase
+      y[5]=first;
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 256; ++input) {
+    const auto bit = [&](unsigned n) { return bool((input >> n) & 1); };
+    bool first=bit(0), second=bit(1), selector=bit(2), item=bit(3);
+    if (selector == item) { first=bit(4); second=first; selector=!selector; item=!item; }
+    else if (selector == bit(5)) { first=bit(4); second=first ^ second; }
+    else if (selector == bit(6)) { first=bit(4); second=first; }
+    const unsigned expected = unsigned(first) | unsigned(second) << 1 |
+      unsigned(selector) << 2 | unsigned(item) << 3 | unsigned(first ^ second) << 4 |
+      unsigned(bit(7) ? second : first) << 5;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (auto* output : top->getTerm(NLName("y"))->getBits())
+      EXPECT_EQ(bool((expected >> output->getBit()) & 1),
+        evaluateFunctionResultBit(top, output->getNet(), input, 0, &memo)) << input;
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorKeepsDiagnosticsEager) {
+  const auto path = writeSVTestFile("case_replay_diagnostic", R"(module top(
+    input logic [3:0] a, output logic y, hidden);
+    function automatic void copy(input logic value, output logic result);
+      hidden=value;
+      result=value;
+    endfunction
+    always_comb begin
+      logic first;
+      first=a[0];
+      case (1'b1)
+        a[3]: first=a[1];
+        a[2]: begin copy(a[1],first); first=a[1]; end
+        default: first=a[0];
+      endcase
+      y=first;
+    end
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"output subroutine writes outside its local scope"});
+}
+
+TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorFlushesNestedAndPartialResults) {
+  const auto path = writeSVTestFile("case_replay_boundaries", R"(module top(
+    input logic [7:0] a, output logic [4:0] y);
+    always_comb begin
+      logic common_true, common_false, copied;
+      logic [1:0] partial;
+      common_true=a[0]; common_false=a[0]; partial=a[1:0];
+      case (1'b1)
+        a[7]: begin common_true=a[1]; common_false=a[0]; end
+        a[6]: begin common_true=a[1]; common_false=a[0]; end
+        default: begin
+          case (1'b1)
+            a[5]: begin common_true=a[1]; common_false=a[1]; end
+            a[4]: begin common_true=a[1]; common_false=a[1]; end
+            default: begin common_true=a[0]; common_false=a[0]; end
+          endcase
+        end
+      endcase
+      copied=common_true;
+      // Vector and partial replay remain eager, including after a scalar read.
+      case (1'b1)
+        a[7]: partial[0]=common_true;
+        a[6]: partial[0]=common_true;
+        a[5]: partial[0]=common_false;
+        default: partial[1]=a[2];
+      endcase
+      y={partial,copied,common_false,common_true};
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 256; ++input) {
+    const auto bit = [&](unsigned n) { return bool((input >> n) & 1); };
+    const bool outer=bit(7) || bit(6), inner=bit(5) || bit(4);
+    const bool commonTrue=outer || inner ? bit(1) : bit(0);
+    const bool commonFalse=!outer && inner ? bit(1) : bit(0);
+    unsigned partial=input & 3;
+    if (outer) partial=(partial & 2) | unsigned(commonTrue);
+    else if (bit(5)) partial=(partial & 2) | unsigned(commonFalse);
+    else partial=unsigned(bit(2)) << 1 | unsigned(bit(0));
+    const unsigned expected=partial << 3 | unsigned(commonTrue) << 2 |
+      unsigned(commonFalse) << 1 | unsigned(commonTrue);
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (auto* output : top->getTerm(NLName("y"))->getBits())
+      EXPECT_EQ(bool((expected >> output->getBit()) & 1),
+        evaluateFunctionResultBit(top, output->getNet(), input, 0, &memo)) << input;
+  }
+}
+
 TEST_F(SNLSVConstructorTestSimple, compactReplayCaseAndMuxesPreserveValues) {
   const auto path = writeSVTestFile("compact_replay", R"(module top(
     input logic [7:0] a,
