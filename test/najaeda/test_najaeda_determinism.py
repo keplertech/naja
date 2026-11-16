@@ -386,6 +386,24 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 else:
                     self.assert_artifacts_equal(baseline, original)
 
+    def test_systemverilog_appended_term_order(self):
+        shapes = ["", "[4:2]", "[-2:1]", "[3:-1]"]
+        ports = [f"{direction} wire {shapes[i % len(shapes)]} {prefix}{i}"
+                 for direction, prefix in [("input", "a"), ("output", "y")]
+                 for i in range(24)]
+        port_list = ", ".join(ports)
+        assignments = "\n".join(f"assign y{i} = ~a{i};" for i in range(24))
+        connections = ", ".join(f".{prefix}{i}({prefix}{i})"
+                                for prefix in ("a", "y") for i in range(24))
+        self.check_determinism("sv", f"""
+module leaf({port_list});
+  {assignments}
+endmodule
+module top({port_list});
+  leaf u({connections});
+endmodule
+""")
+
     def test_systemverilog_clock_gate_context(self):
         self.check_determinism("sv", """
 module phase_cell(input source, request, test, output result);

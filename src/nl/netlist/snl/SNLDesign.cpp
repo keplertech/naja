@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <list>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -238,6 +239,22 @@ void SNLDesign::addTermAndSetID(SNLTerm* term) {
 void SNLDesign::addTerm(SNLTerm* term) {
   assert(dynamic_cast<SNLScalarTerm*>(term) or dynamic_cast<SNLBusTerm*>(term) or dynamic_cast<SNLBundleTerm*>(term));
 
+  // Appending a top-level term leaves existing order IDs unchanged. Bundle
+  // members and empty predecessors still require the full ordered traversal.
+  std::optional<NLID::DesignObjectID> firstOrderID;
+  if (not term->getBundleOwner()) {
+    if (terms_.empty()) {
+      firstOrderID = 0;
+    } else {
+      auto& lastTerm = *terms_.rbegin();
+      if (term->getID() > lastTerm.getID() and not lastTerm.getBundleOwner()) {
+        for (auto bit: lastTerm.getBits()) {
+          firstOrderID = bit->getOrderID() + 1;
+        }
+      }
+    }
+  }
+
   if (terms_.empty()) {
     term->setFlatID(0);
   } else {
@@ -263,7 +280,14 @@ void SNLDesign::addTerm(SNLTerm* term) {
       }
     }
   }
-  setOrderIDs();
+  if (firstOrderID.has_value()) {
+    auto orderID = *firstOrderID;
+    for (auto bit: term->getBits()) {
+      bit->setOrderID(orderID++);
+    }
+  } else {
+    setOrderIDs();
+  }
 }
 
 void SNLDesign::removeTerm(SNLTerm* term) {

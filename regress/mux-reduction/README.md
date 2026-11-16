@@ -61,4 +61,6 @@ Follow-up reports cover [private pending selections](pending-selections.md),
 [identical bit positions](identical-bits.md), and
 [controlled Release performance](release-performance.md), followed by an
 [Ibex loader profile](ibex-profile.md) and the
-[empty-binding fast path](loop-fastpath.md).
+[empty-binding fast path](loop-fastpath.md). The
+[post-fast-path profile](post-loop-profile.md) investigates the remaining cost
+and terminal order-ID maintenance.
