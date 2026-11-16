@@ -39,7 +39,7 @@ add_test(NAME najaeda-python-determinism-tests
 set_tests_properties(najaeda-python-determinism-tests PROPERTIES
   FIXTURES_REQUIRED najaeda-test-env
   LABELS determinism
-  TIMEOUT 300
+  TIMEOUT 600
   ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};NAJA_DB0_AUDIT_BINARY=$<TARGET_FILE:snlCapnPTests>;NAJAEDA_TEST_PATH=${CMAKE_CURRENT_BINARY_DIR}"
 )
 

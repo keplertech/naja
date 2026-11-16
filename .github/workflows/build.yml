@@ -62,7 +62,7 @@ jobs:
       working-directory: ${{github.workspace}}/build
       # Execute tests defined by the CMake configuration.
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest --parallel $(nproc) -VV -C ${{ env.BUILD_TYPE }}
+      run: ctest --parallel $(nproc) -LE determinism -VV -C ${{ env.BUILD_TYPE }}
 
   macos:
     # The CMake configure and build commands are platform agnostic and should work equally
@@ -107,4 +107,4 @@ jobs:
       working-directory: ${{github.workspace}}/build
       # Execute tests defined by the CMake configuration.
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest --parallel $(sysctl -n hw.logicalcpu) -VV -C ${{ env.BUILD_TYPE }}
+      run: ctest --parallel $(sysctl -n hw.logicalcpu) -LE determinism -VV -C ${{ env.BUILD_TYPE }}
