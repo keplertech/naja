@@ -3,6 +3,10 @@
 
 # Frontend mux-cleanup removal readiness — 2026-11-16
 
+Follow-up: [#541 measurement and validation](case-replay-scalars.md#measurement-follow-up--2026-11-17)
+avoids all 207 targeted scalar allocations; 176 SV and 18 VHDL direct cleanup
+removals remain. The figures below are the historical pre-#541 audit.
+
 **Removal is not justified. Keep both frontend calls enabled.** Newly measured
 direct cleanup remains substantial; synthetic-chain success does not cover the
 remaining replay, expression and materialization boundaries. No optimization was

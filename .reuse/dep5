@@ -113,6 +113,10 @@ Files: regress/mux-reduction/samples.csv
  regress/mux-reduction/removal-readiness-designs.csv
  regress/mux-reduction/removal-readiness-merges.csv
  regress/mux-reduction/removal-readiness-timings.csv
+ regress/mux-reduction/case-replay-counts.csv
+ regress/mux-reduction/case-replay-designs.csv
+ regress/mux-reduction/case-replay-merges.csv
+ regress/mux-reduction/case-replay-timings.csv
  regress/mux-reduction/release-samples.csv
  regress/mux-reduction/ibex-profile-samples.csv
  regress/mux-reduction/loop-fastpath-samples.csv
