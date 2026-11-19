@@ -259,7 +259,8 @@ def constructSRL16E(lib):
 
 
 def _set_flip_flop_model(primitive, next_state, clear=None, preset=None):
-    state = {"name": "IQ", "next_state": next_state}
+    state = {"name": "IQ", "next_state": next_state,
+             "init_from": {"parameter": "INIT", "bit": 0}}
     if clear is not None:
         state["clear"] = clear
     if preset is not None:

@@ -1566,3 +1566,45 @@ TEST_F(SNLDesignModelingTest0, testParameterizedTermRoles) {
   EXPECT_EQ(Role::Other, Modeling::getTermRole(r));
   EXPECT_FALSE(Modeling::hasRolesFromParameters(nullptr));
 }
+
+TEST_F(SNLDesignModelingTest0, testSequentialInitialValues) {
+  using Modeling = SNLDesignModeling;
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* primitives = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* designs = NLLibrary::create(db);
+  auto* top = SNLDesign::create(designs, NLName("top"));
+  auto* primitive = SNLDesign::create(primitives, SNLDesign::Type::Primitive, NLName("FF"));
+  auto* clock = SNLScalarTerm::create(primitive, SNLTerm::Direction::Input, NLName("C"));
+  auto* output = SNLScalarTerm::create(primitive, SNLTerm::Direction::Output, NLName("Q"));
+  auto* parameter = SNLParameter::create(primitive, NLName("INIT_VAL"), SNLParameter::Type::Binary, "2'b10");
+  auto* instance = SNLInstance::create(top, primitive, NLName("ff"));
+  Modeling::SequentialModel model;
+  model.clockedOn.root = model.clockedOn.addTerm(clock);
+  Modeling::SequentialState state;
+  state.nextState.root = state.nextState.addConstant(false);
+  state.init = false;
+  model.states.push_back(state);
+  Modeling::SequentialOutput pin;
+  pin.term = output;
+  pin.function.root = pin.function.addState(0);
+  model.outputs.push_back(pin);
+  Modeling::setSequentialModel(primitive, model);
+  EXPECT_EQ(Modeling::getSequentialInitialValues(instance), std::vector<std::optional<bool>>{false});
+  model.states[0].initFrom = Modeling::SequentialState::InitialValueParameter{"INIT_VAL", 1};
+  EXPECT_THROW(Modeling::setSequentialModel(primitive, model), NLException);
+  model.states[0].init.reset();
+  Modeling::setSequentialModel(primitive, model);
+  EXPECT_EQ(Modeling::getSequentialInitialValues(instance), std::vector<std::optional<bool>>{true});
+  auto* override = SNLInstParameter::create(instance, parameter, "2'd0");
+  EXPECT_EQ(Modeling::getSequentialInitialValues(instance), std::vector<std::optional<bool>>{false});
+  override->setValue("2'bx0");
+  EXPECT_EQ(Modeling::getSequentialInitialValues(instance), std::vector<std::optional<bool>>{std::nullopt});
+  override->setValue("2'b10");
+  EXPECT_EQ(Modeling::getSequentialInitialValues(instance), std::vector<std::optional<bool>>{true});
+  override->setValue("2'b20");
+  EXPECT_THROW(Modeling::getSequentialInitialValues(instance), NLException);
+  model.states[0].initFrom->parameter = "MISSING";
+  EXPECT_THROW(Modeling::setSequentialModel(primitive, model), NLException);
+  EXPECT_THROW(Modeling::getSequentialInitialValues(nullptr), NLException);
+}

@@ -27,6 +27,7 @@
 #include "NLException.h"
 
 #include "SNLDesign.h"
+#include "SNLDesignModeling.h"
 #include "SNLDesignObject.h"
 #include "SNLRTLInfos.h"
 #include "SNLCapnPRTLInfos.h"
@@ -189,6 +190,11 @@ void dumpDesignInterface(
   dumpAttributes(designInterface, snlDesign);
   if (snlDesign->hasRTLInfos()) {
     dumpRTLInfos(designInterface.initRtlInfos(), snlDesign->getRTLInfos());
+  }
+  if (SNLDesignModeling::hasSequentialModel(snlDesign) &&
+      !snlDesign->getProperty("SNLSequentialModels")) {
+    throw NLException("Cannot serialize sequential model with missing or foreign terminals: " +
+        snlDesign->getDescription());
   }
   auto lambda = [](SNLDesignInterface::Builder& builder, size_t nbProperties) {
     return builder.initProperties(nbProperties);
@@ -457,6 +463,7 @@ void loadDesignInterface(
       }
     }
   }
+  SNLDesignModeling::restoreSequentialModels(snlDesign);
 }
 
 void loadLibraryInterface(

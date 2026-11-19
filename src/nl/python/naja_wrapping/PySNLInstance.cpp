@@ -150,6 +150,8 @@ PyMethodDef PySNLInstance_Methods[] = {
 
   { "getMemoryInterface", (PyCFunction)PySNLInstance_getMemoryInterface, METH_NOARGS,
     "Return the memory interface dictionary; raise RuntimeError if absent."},
+  { "getSequentialInitialValues", (PyCFunction)PySNLInstance_getSequentialInitialValues, METH_NOARGS,
+    "Resolve each sequential state initial value (0, 1, or None)."},
   { "getSequentialModel", (PyCFunction)PySNLInstance_getSequentialModel, METH_NOARGS,
     "Resolve the instance sequential model as expression trees."},
   { "create", (PyCFunction)PySNLInstance_create, METH_VARARGS|METH_STATIC,

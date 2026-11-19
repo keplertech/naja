@@ -146,10 +146,16 @@ class SNLDesignModeling {
 
     struct SequentialState {
       enum class ClearPresetValue { Zero, One, Hold, Toggle, Unknown };
+      struct InitialValueParameter {
+        std::string parameter {};
+        size_t bit {0}; // Least-significant bit is zero, independent of pin indexing.
+      };
       BooleanExpression nextState {};
       std::optional<BooleanExpression> clear {};
       std::optional<BooleanExpression> preset {};
       ClearPresetValue clearPresetValue {ClearPresetValue::Unknown};
+      std::optional<bool> init {};
+      std::optional<InitialValueParameter> initFrom {};
     };
     struct SequentialOutput {
       SNLBitTerm* term {nullptr};
@@ -253,6 +259,10 @@ class SNLDesignModeling {
     static const SequentialModel& getSequentialModel(std::nullptr_t) {
       return getSequentialModel(static_cast<const SNLDesign*>(nullptr));
     }
+    // State order matches getSequentialModel(instance). nullopt denotes a free state.
+    static std::vector<std::optional<bool>> getSequentialInitialValues(const SNLInstance* instance);
+    // Restore the versioned dumpable-property payload after loading an interface.
+    static void restoreSequentialModels(SNLDesign* design);
     static void invalidateSequentialModelCache(const SNLInstance* instance);
 
     static void setTruthTable(SNLDesign* design, const SNLTruthTable& truthTable);
