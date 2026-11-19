@@ -8119,3 +8119,81 @@ TEST_F(VHDLConstructorTest, GuardedLatchesRejectUnsupportedInitializationAndSens
     EXPECT_THROW(VHDLConstructor(library).construct(source), NLException);
   }
 }
+
+TEST_F(VHDLConstructorTest, ScalarLogicConversionWithoutNumericStd) {
+  auto* design = VHDLConstructor(library_).constructFile(
+      std::filesystem::path(SNL_VHDL_CONVERSIONS_DIR) / "conv.vhd");
+  EXPECT_EQ(assignSource(design->getScalarTerm(NLName("a_o"))->getNet()),
+      design->getScalarTerm(NLName("a_i"))->getNet());
+}
+
+TEST_F(VHDLConstructorTest, LogicVectorConversionWithoutNumericStd) {
+  auto* design = VHDLConstructor(library_).constructFile(
+      std::filesystem::path(SNL_VHDL_CONVERSIONS_DIR) / "conv_vec.vhd");
+  for (int i = 0; i < 4; ++i)
+    EXPECT_EQ(assignSource(design->getBusTerm(NLName("v_o"))->getBit(i)->getNet()),
+        design->getBusTerm(NLName("v_i"))->getBit(i)->getNet());
+}
+
+TEST_F(VHDLConstructorTest, ScalarTypeAndSubtypeConversionsPreserveValues) {
+  auto* design = VHDLConstructor(library_).construct(R"(
+library ieee; use ieee.std_logic_1164.all;
+entity conversions is port(a : in std_logic; b : in bit; c : in boolean;
+  x : out std_ulogic; y : out bit; z : out boolean; phases : out bit_vector(1 downto 0)); end;
+architecture rtl of conversions is
+  subtype logic_t is std_ulogic;
+  subtype flag_t is boolean;
+  type phase_t is (idle, busy, done);
+  subtype phase_alias_t is phase_t;
+  signal phase : phase_t;
+begin
+  x <= logic_t(std_ulogic(a));
+  y <= bit(b);
+  z <= flag_t(boolean(c));
+  phase <= phase_alias_t(phase_t(busy));
+  phases <= "10" when phase_t(phase) = busy else "01";
+end;
+)");
+  for (const auto& [output, input] : {std::pair{"x", "a"}, {"y", "b"}, {"z", "c"}})
+    EXPECT_EQ(assignSource(design->getScalarTerm(NLName(output))->getNet()),
+        design->getScalarTerm(NLName(input))->getNet());
+  std::unordered_map<SNLBitNet*, bool> values;
+  std::unordered_set<SNLBitNet*> visiting;
+  for (int i = 0; i < 2; ++i)
+    EXPECT_EQ(evaluateRTL(design->getBusTerm(NLName("phases"))->getBit(i)->getNet(), values, visiting), i == 1);
+}
+
+TEST_F(VHDLConstructorTest, VectorConversionsPreservePositionAndSubtypeBounds) {
+  auto* design = VHDLConstructor(library_).construct(R"(
+library ieee; use ieee.std_logic_1164.all;
+entity conversions is port(a : in std_logic_vector(3 downto 0); y : out std_ulogic_vector(4 to 7)); end;
+architecture rtl of conversions is
+  subtype word_t is std_ulogic_vector(4 to 7);
+begin y <= word_t(std_ulogic_vector(a)); end;
+)");
+  for (int i = 0; i < 4; ++i)
+    EXPECT_EQ(assignSource(design->getBusTerm(NLName("y"))->getBit(4+i)->getNet()),
+        design->getBusTerm(NLName("a"))->getBit(3-i)->getNet());
+}
+
+TEST_F(VHDLConstructorTest, RejectsUnrelatedScalarConversionsAndInvisibleNumericTypes) {
+  for (const auto* assignment : {"y <= bit(a);", "z <= boolean(a);", "y <= bit(z);"}) {
+    EXPECT_THROW(VHDLConstructor(library_).construct(std::string(R"(
+library ieee; use ieee.std_logic_1164.all;
+entity invalid is port(a : in std_ulogic; y : out bit; z : out boolean); end;
+architecture rtl of invalid is begin
+)") + assignment + " end;"), NLException);
+  }
+  EXPECT_THROW(VHDLConstructor(library_).construct(R"(
+library ieee; use ieee.std_logic_1164.all;
+entity invalid_numeric is port(a : in std_logic_vector(1 downto 0); y : out std_logic_vector(1 downto 0)); end;
+architecture rtl of invalid_numeric is begin y <= std_logic_vector(unsigned(a)); end;
+)"), NLException);
+  EXPECT_THROW(VHDLConstructor(library_).construct(R"(
+entity invalid_enum is port(y : out bit); end;
+architecture rtl of invalid_enum is
+  type first_t is (first_a, first_b); type second_t is (second_a, second_b);
+  signal value : first_t;
+begin value <= first_t(second_b); y <= '0'; end;
+)"), NLException);
+}
