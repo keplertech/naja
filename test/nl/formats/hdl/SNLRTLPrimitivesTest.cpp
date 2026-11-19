@@ -314,13 +314,13 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
   using Selection = SNLHDLMuxSelection<unsigned>;
   using Bits = Selection::Bits;
   for (bool commonFalse : {false, true}) for (bool sameGuard : {false, true})
-      for (bool identicalBit : {false, true}) for (bool scalar : {false, true}) {
+      for (bool identicalBit : {false, true}) for (unsigned width : {1u, 2u, 7u}) {
     auto* design = SNLDesign::create(library_);
     Bits a{SNLScalarNet::create(design)};
     Bits b{SNLScalarNet::create(design)};
-    if (!scalar) {
+    for (unsigned bit = 1; bit < width; ++bit) {
       a.push_back(SNLScalarNet::create(design));
-      b.push_back(identicalBit ? a.back() : SNLScalarNet::create(design));
+      b.push_back(identicalBit && bit % 2 ? a.back() : SNLScalarNet::create(design));
     }
     auto* guard = SNLScalarNet::create(design);
     unsigned muxCount = 0, gateCount = 0;
@@ -328,14 +328,16 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
       ++muxCount;
       EXPECT_EQ(32u, sources.size());
       for (unsigned i = 0; i < sources.size(); ++i) EXPECT_EQ(i, sources[i]);
-      if (scalar) {
+      if (width == 1) {
         auto* output = SNLScalarNet::create(design);
         SNLRTLPrimitives::createMux(design, condition, no, yes, output);
         return Bits{output};
       }
-      auto* output = SNLBusNet::create(design, 1, 0);
+      auto* output = SNLBusNet::create(design, width - 1, 0);
       SNLRTLPrimitives::createMux(design, condition, no, yes, output);
-      return Bits{output->getBit(0), output->getBit(1)};
+      Bits result;
+      for (unsigned bit = 0; bit < width; ++bit) result.push_back(output->getBit(bit));
+      return result;
     };
     const auto gate = [&](bool isAnd, auto* left, auto* right, const auto&) {
       ++gateCount;
@@ -352,7 +354,8 @@ TEST_F(SNLRTLPrimitivesTest, PendingMuxSelectionsAllocateOnlyTheFinalMux) {
           : Selection::merge(next, std::move(value), Selection(b), i, gate, emit);
       EXPECT_EQ(0u, muxCount);
     }
-    EXPECT_EQ(scalar ? 1u : 2u, value.materialize(emit).size());
+    EXPECT_EQ(width, value.width());
+    EXPECT_EQ(width, value.materialize(emit).size());
     EXPECT_EQ(1u, muxCount);
     EXPECT_EQ(sameGuard ? 0u : 31u, gateCount);
     value.materialize(emit);

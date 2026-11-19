@@ -20272,6 +20272,7 @@ endmodule
 
     struct CombinationalSubtreeSummary {
       std::unordered_set<const slang::ast::ValueSymbol*> affectedSymbols {};
+      std::unordered_set<const slang::ast::ValueSymbol*> nonWholeWrites {};
       bool mayBreak {false};
       bool hasUnknownEffects {false};
       bool computed {false};
@@ -20281,7 +20282,7 @@ endmodule
       std::unordered_map<const Statement*, CombinationalSubtreeSummary>;
     using ProceduralReplayEnv =
       std::unordered_map<const slang::ast::ValueSymbol*, std::vector<SNLBitNet*>>;
-    using PendingReplayScalars =
+    using PendingReplayValues =
       std::unordered_map<const slang::ast::ValueSymbol*, PendingMuxSelection>;
     using ProceduralReplayDependencyMap =
       std::unordered_map<
@@ -20704,6 +20705,7 @@ endmodule
         summary.mayBreak = summary.mayBreak || child.mayBreak;
         summary.hasUnknownEffects = summary.hasUnknownEffects || child.hasUnknownEffects;
         summary.affectedSymbols.insert(child.affectedSymbols.begin(), child.affectedSymbols.end());
+        summary.nonWholeWrites.insert(child.nonWholeWrites.begin(), child.nonWholeWrites.end());
       };
 
       if (isIgnorableSequentialTimingStatement(*current) ||
@@ -20801,11 +20803,15 @@ endmodule
       const Expression* lhsExpr = nullptr;
       AssignAction action;
       if (extractAssignment(*current, lhsExpr, action)) {
+        const auto* assignedLhs = lhsExpr;
         lhsExpr = getTrackedAlwaysCombLHS(lhsExpr);
         if (!shouldIgnoreTrackedLHS(lhsExpr, ignoredSymbols)) {
           const slang::ast::ValueSymbol* symbol = nullptr;
           if (lhsExpr && tryGetRootValueSymbolReference(*lhsExpr, symbol)) {
             summary.affectedSymbols.insert(symbol);
+            const slang::ast::ValueSymbol* wholeSymbol = nullptr;
+            if (!tryGetValueSymbolReference(*assignedLhs, wholeSymbol))
+              summary.nonWholeWrites.insert(symbol);
           } else {
             summary.hasUnknownEffects = true; // LCOV_EXCL_LINE
           }
@@ -20845,6 +20851,7 @@ endmodule
             const slang::ast::ValueSymbol* symbol = nullptr;
             if (actualLhs && tryGetRootValueSymbolReference(*actualLhs, symbol)) {
               summary.affectedSymbols.insert(symbol);
+              summary.nonWholeWrites.insert(symbol);
             } else {
               summary.hasUnknownEffects = true; // LCOV_EXCL_LINE
             }
@@ -28946,7 +28953,8 @@ endmodule
       std::string& failureReason,
       const slang::ast::ValueSymbol* externallyMergedSymbol = nullptr,
       const std::vector<SNLBitNet*>* externallyMergedBits = nullptr,
-      PendingReplayScalars* pendingScalars = nullptr) {
+      PendingReplayValues* pendingValues = nullptr,
+      const std::unordered_set<const slang::ast::ValueSymbol*>* nonWholeWrites = nullptr) {
       mergedEnv = falseEnv;
       for (const auto* symbol : symbolsInDeclarationOrder(trueEnv)) {
         const auto& trueBits = trueEnv.at(symbol);
@@ -28954,13 +28962,13 @@ endmodule
           continue;
         }
         auto falseFound = falseEnv.find(symbol);
-        const bool hasPending = pendingScalars && pendingScalars->contains(symbol);
+        const bool hasPending = pendingValues && pendingValues->contains(symbol);
         if (falseFound == falseEnv.end() && !hasPending) {
           mergedEnv[symbol] = trueBits;
           continue;
         }
 
-        const auto falseWidth = hasPending ? 1u : falseFound->second.size();
+        const auto falseWidth = hasPending ? pendingValues->at(symbol).width() : falseFound->second.size();
         if (falseWidth != trueBits.size()) {
           std::ostringstream reason;
           reason << "width mismatch while merging always_comb replay symbol '"
@@ -28977,19 +28985,30 @@ endmodule
         // It is never an active replay environment: arms and match expressions
         // read incoming values, and the case materializes before publishing it.
         // No placeholders or pending values enter the expression caches.
-        if (pendingScalars && symbol->getType().isScalar() &&
-            trueBits.size() == 1 && trueBits.front() &&
-            (hasPending || falseFound->second.front())) {
-          auto no = hasPending ? std::move(pendingScalars->at(symbol)) :
+        const auto& type = symbol->getType().getCanonicalType();
+        // Integral values are already fully typed and in replay bit order.
+        // Never infer completeness from a changed slice or the observed width.
+        const bool completeValue = pendingValues && type.isIntegral() && !trueBits.empty() &&
+          type.getBitWidth() == trueBits.size() &&
+          (type.isScalar() || (nonWholeWrites && !nonWholeWrites->contains(symbol))) &&
+          std::all_of(trueBits.begin(), trueBits.end(), [](auto* bit) { return bit; }) &&
+          (hasPending || std::all_of(falseFound->second.begin(), falseFound->second.end(),
+            [](auto* bit) { return bit; }));
+        if (pendingValues && completeValue) {
+          auto no = hasPending ? std::move(pendingValues->at(symbol)) :
             PendingMuxSelection(falseFound->second);
-          (*pendingScalars)[symbol] = mergeMuxSelection(design, selectBit,
+          (*pendingValues)[symbol] = mergeMuxSelection(design, selectBit,
             std::move(no), PendingMuxSelection(trueBits), sourceRange);
           mergedEnv.erase(symbol);
           continue;
         }
+        // Type and whole-write eligibility stay fixed within a case, and
+        // accepted eager arms contain complete values. Once pending, a symbol
+        // therefore remains eligible above (width mismatches already return).
+        // Keep this flush as a defensive backstop for future replay callers.
         if (hasPending) {
-          mergedEnv[symbol] = materializeMuxSelection(design, pendingScalars->at(symbol));
-          pendingScalars->erase(symbol);
+          mergedEnv[symbol] = materializeMuxSelection(design, pendingValues->at(symbol)); // LCOV_EXCL_LINE
+          pendingValues->erase(symbol); // LCOV_EXCL_LINE
         }
         const auto& falseBits = mergedEnv.at(symbol);
         if (falseBits == trueBits) {
@@ -29872,16 +29891,18 @@ endmodule
 
         std::vector<SNLBitNet*> mergedBits = dataBits;
         ProceduralReplayEnv mergedReplayEnv = incomingReplayEnv;
-        PendingReplayScalars pendingReplayScalars;
-        // Branch evaluation stays eager. Only whole scalar results in this
+        PendingReplayValues pendingReplayValues;
+        // Branch evaluation stays eager. Only complete packed results in this
         // case's merge chain are private; nested cases flush at their own exit.
         // Scheduling, loop exits and uncertain effects retain eager merging.
-        bool canDeferReplayScalars = mergeReplayEnv && !preserveAssignmentScheduling &&
+        bool canDeferReplayValues = mergeReplayEnv && !preserveAssignmentScheduling &&
           !hasActiveForLoopContext() && subtreeSummaryCache;
-        if (canDeferReplayScalars) {
+        const std::unordered_set<const slang::ast::ValueSymbol*>* nonWholeWrites = nullptr;
+        if (canDeferReplayValues) {
           const auto& summary = getOrComputeCombinationalSubtreeSummary(
             *current, *subtreeSummaryCache, ignoredSymbols);
-          canDeferReplayScalars = !summary.hasUnknownEffects && !summary.mayBreak;
+          canDeferReplayValues = !summary.hasUnknownEffects && !summary.mayBreak;
+          nonWholeWrites = &summary.nonWholeWrites;
         }
         auto itemBegin = caseStmt.items.rbegin();
         if (caseStmt.defaultCase) {
@@ -30035,7 +30056,8 @@ endmodule
                   failureReason,
                   preserveAssignmentScheduling ? nullptr : replayLhsSymbol,
                   nullptr,
-                  canDeferReplayScalars ? &pendingReplayScalars : nullptr)) {
+                  canDeferReplayValues ? &pendingReplayValues : nullptr,
+                  nonWholeWrites)) {
               // Replay merge failure details are covered in the merge helper.
               // LCOV_EXCL_START
               return false;
@@ -30047,8 +30069,8 @@ endmodule
         }
 
         if (!flushPending()) return false;
-        for (const auto* symbol : symbolsInDeclarationOrder(pendingReplayScalars)) {
-          mergedReplayEnv[symbol] = materializeMuxSelection(design, pendingReplayScalars.at(symbol));
+        for (const auto* symbol : symbolsInDeclarationOrder(pendingReplayValues)) {
+          mergedReplayEnv[symbol] = materializeMuxSelection(design, pendingReplayValues.at(symbol));
         }
         if (mergeReplayEnv && !preserveAssignmentScheduling && replayLhsSymbol) {
           mergedReplayEnv[replayLhsSymbol] = mergedBits;
