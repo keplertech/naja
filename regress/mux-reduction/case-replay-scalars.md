@@ -3,6 +3,9 @@
 
 # Case-local SV replay scalars
 
+Follow-up: [complete packed case-local replay](case-replay-packed.md) avoids all
+26 measured packed replay allocations; 150 SV and 18 VHDL cleanup removals remain.
+
 The [2026-11-17 measurement follow-up](#measurement-follow-up--2026-11-17)
 measures #541 against its parent: all 207 target allocations are avoided, but
 cleanup is still required in both frontends. The implementation notes below

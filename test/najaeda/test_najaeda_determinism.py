@@ -528,6 +528,73 @@ module top(input logic clk, s,t,u, input logic [4:0] a,b,
 endmodule
 """)
 
+    def test_systemverilog_case_replay_packed_accumulator(self):
+        self.check_determinism("sv", """
+module leaf(input logic [11:0] a, output logic [6:0] y,z,p,n);
+  always_comb begin
+    logic signed [9:3] first;
+    logic [3:9] second;
+    logic [6:0] partial, nested;
+    first=$signed(a[2:0]); second=a[6:0]; partial=a[6:0]; nested=a[6:0];
+    case(1'b1)
+      a[11]: begin first=$signed(a[5:3]); second={a[0],a[4:3],a[3],a[2],a[1],a[0]}; end
+      a[10]: begin first=$signed(a[5:3]); second={a[0],a[4:3],a[3],a[2],a[1],a[0]}; end
+      a[9]: begin first=$signed(a[5:3]); second=first; end
+      default: begin first=$signed(a[2:0]); second=a[6:0]; end
+    endcase
+    y=first; z=second ^ first;
+    case(1'b1)
+      a[11]: partial[2:0]=first[5:3];
+      a[10]: partial[2:0]=first[5:3];
+      default: partial[6:3]=a[3:0];
+    endcase
+    case(1'b1)
+      a[11]: nested=a[6:0];
+      a[10]: nested=a[6:0];
+      default: case(1'b1)
+        a[9]: nested=a[5:0];
+        a[8]: nested=a[5:0];
+        default: nested=a[6:0];
+      endcase
+    endcase
+    p=partial; n=nested;
+  end
+endmodule
+module top(input logic [11:0] a, output logic [27:0] y,z);
+  leaf x(a,y[6:0],y[13:7],y[20:14],y[27:21]);
+  leaf w(a,z[6:0],z[13:7],z[20:14],z[27:21]);
+endmodule
+""")
+
+    def test_systemverilog_case_replay_packed_fallbacks(self):
+        self.check_determinism("sv", """
+module top(input logic clk, input logic [7:0] a,
+           output logic [3:0] y, q);
+  always_comb begin
+    logic [3:0] value;
+    value=a[3:0];
+    for(int k=0;k<2;k++) begin
+      case(1'b1)
+        a[7]: value=a[4:1];
+        a[6]: value=a[4:1];
+        default: value=value ^ 4'(k);
+      endcase
+    end
+    y=value;
+  end
+  always_ff @(posedge clk) begin
+    logic [3:0] value;
+    value=a[3:0];
+    case(1'b1)
+      a[7]: value=a[4:1];
+      a[6]: value=a[4:1];
+      default: value=a[3:0];
+    endcase
+    q<=value;
+  end
+endmodule
+""")
+
     def test_systemverilog_case_replay_scalar_accumulator(self):
         self.check_determinism("sv", """
 module leaf(input logic clk, input logic [7:0] a,

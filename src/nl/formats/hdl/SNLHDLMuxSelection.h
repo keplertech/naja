@@ -23,6 +23,8 @@ class SNLHDLMuxSelection {
   SNLHDLMuxSelection() = default;
   explicit SNLHDLMuxSelection(Bits bits): no_(std::move(bits)) {}
 
+  std::size_t width() const { return no_.size(); }
+
   bool hasSelection() const { return !no_.empty(); }
 
   template<typename Emit>

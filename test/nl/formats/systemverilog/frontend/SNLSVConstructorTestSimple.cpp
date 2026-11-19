@@ -27745,6 +27745,29 @@ TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorKeepsDiagnosticsEa
     {"output subroutine writes outside its local scope"});
 }
 
+TEST_F(SNLSVConstructorTestSimple, caseReplayPackedAccumulatorKeepsDiagnosticsEager) {
+  const auto path = writeSVTestFile("case_replay_packed_diagnostic", R"(module top(
+    input logic [3:0] a, output logic y, hidden);
+    function automatic void copy(input logic value, output logic result);
+      hidden=value;
+      result=value;
+    endfunction
+    always_comb begin
+      logic [3:0] first;
+      first=a[0];
+      case (1'b1)
+        a[3]: first=a[1];
+        a[2]: begin copy(a[1],first); first=a[1]; end
+        default: first=a[0];
+      endcase
+      y=first;
+    end
+  endmodule)");
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, path,
+    {"output subroutine writes outside its local scope"});
+}
+
 TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorFlushesNestedAndPartialResults) {
   const auto path = writeSVTestFile("case_replay_boundaries", R"(module top(
     input logic [7:0] a, output logic [4:0] y);
@@ -27794,6 +27817,156 @@ TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorFlushesNestedAndPa
       EXPECT_EQ(bool((expected >> output->getBit()) & 1),
         evaluateFunctionResultBit(top, output->getNet(), input, 0, &memo)) << input;
   }
+}
+
+TEST_F(SNLSVConstructorTestSimple, caseReplayPackedAccumulatorWidthsRangesAndOrigins) {
+  // Different declarations exercise assignment sizing before private accumulation.
+  for (unsigned width : {2u, 4u, 7u, 11u}) for (bool ascending : {false, true})
+    for (bool isSigned : {false, true}) {
+      const auto range = ascending ? "[3:" + std::to_string(width + 2) + "]" :
+        "[" + std::to_string(width + 2) + ":3]";
+      const auto type = std::string("logic ") + (isSigned ? "signed " : "") + range;
+      const auto path = writeSVTestFile("case_replay_packed", "module top(input logic [7:0] a, "
+        "output logic [" + std::to_string(width - 1) + ":0] y);\n"
+        "always_comb begin " + type + " value;\n"
+        "value=" + (isSigned ? "$signed(a[1:0])" : "a[1:0]") + ";\n"
+        "case(1'b1)\n"
+        "a[7]: value=" + (isSigned ? "$signed(a[3:2])" : "a[3:2]") + ";\n"
+        "a[6]: value=" + (isSigned ? "$signed(a[3:2])" : "a[3:2]") + ";\n"
+        "a[5]: value=" + (isSigned ? "$signed(a[3:2])" : "a[3:2]") + ";\n"
+        "default: value=" + (isSigned ? "$signed(a[1:0])" : "a[1:0]") + ";\n"
+        "endcase\ny=value; end endmodule");
+      auto* library = NLLibrary::create(library_->getDB(), NLLibrary::Type::Standard);
+      SNLSVConstructor(library).construct(path);
+      auto* top = library->getSNLDesign(NLName("top"));
+      ASSERT_NE(top, nullptr);
+      size_t foldedOrigins = 0;
+      for (auto* instance : top->getInstances()) if (NLDB0::isMux2(instance->getModel())) {
+        ASSERT_NE(nullptr, instance->getRTLInfos());
+        if (instance->getRTLInfos()->getSourceOrigins().size() >= 3) ++foldedOrigins;
+      }
+      EXPECT_GE(foldedOrigins, 1u) << width << ascending << isSigned;
+      // Late cleanup cannot remove the abandoned output nets. None may exist.
+      for (auto* bit : top->getBitNets()) if (!bit->isConstant())
+        EXPECT_FALSE(bit->getInstTerms().empty() && bit->getBitTerms().empty());
+      library->getDB()->mergeAssigns();
+      for (unsigned input = 0; input < 256; ++input) {
+        unsigned value = input & 224 ? (input >> 2) & 3 : input & 3;
+        if (isSigned && (value & 2)) value |= ~3u;
+        std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+        for (auto* bit : top->getTerm(NLName("y"))->getBits())
+          EXPECT_EQ(bool((value >> bit->getBit()) & 1),
+            evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo));
+      }
+    }
+}
+
+TEST_F(SNLSVConstructorTestSimple, caseReplayPackedAccumulatorPreservesBoundaries) {
+  const auto path = writeSVTestFile("case_replay_packed_boundaries", R"(module top(
+    input logic [7:0] a, output logic [3:0] y,z,p,r,n,shared);
+    always_comb begin
+      logic [6:3] first, second, partial, permuted, nested, copied;
+      first=a[3:0]; second=a[3:0]; partial=a[3:0];
+      permuted=a[3:0]; nested=a[3:0];
+      case(1'b1)
+        a[7]: begin first={a[0],a[2],a[0],a[0]}; second=first; end
+        a[6]: begin first={a[0],a[2],a[0],a[0]}; second=first ^ second; end
+        a[5]: begin first={a[0],a[2],a[0],a[0]}; second=first; end
+        default: begin first=a[3:0]; second=a[3:0]; end
+      endcase
+      copied=first;
+      // Partial writes must retain the eager replay path.
+      case(1'b1)
+        a[7]: partial[4:3]=first[4:3];
+        a[6]: partial[4:3]=first[4:3];
+        default: partial[6:5]=a[1:0];
+      endcase
+      // A permuted or merely partial common arm is not a whole common arm.
+      case(1'b1)
+        a[7]: permuted={a[0],a[1],a[2],a[3]};
+        a[6]: permuted={a[1],a[0],a[2],a[3]};
+        a[5]: permuted=a[3:0];
+        default: permuted=a[3:0];
+      endcase
+      // The inner case exits before the outer common-false arm is merged.
+      case(1'b1)
+        a[7]: nested=a[3:0];
+        a[6]: nested=a[3:0];
+        default: case(1'b1)
+          a[5]: nested=a[2:0];
+          a[4]: nested=a[2:0];
+          default: nested=a[3:0];
+        endcase
+      endcase
+      y=first; z=second; p=partial; r=permuted; n=nested; shared=copied;
+    end
+  endmodule)");
+  SNLSVConstructor(library_).construct(path);
+  library_->getDB()->mergeAssigns();
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(top, nullptr);
+  for (unsigned input = 0; input < 256; ++input) {
+    const unsigned data = input & 15;
+    const unsigned changed = ((input & 1) ? 11 : 0) | (input & 4);
+    const unsigned first = input & 224 ? changed : data;
+    const unsigned second = input & 128 ? changed : input & 64 ? changed ^ data :
+      input & 32 ? changed : data;
+    const unsigned partial = input & 192 ? (data & 12) | (first & 3) :
+      ((input & 3) << 2) | (data & 3);
+    const unsigned reversed = ((input & 1) << 3) | ((input & 2) << 1) |
+      ((input & 4) >> 1) | ((input & 8) >> 3);
+    const unsigned permuted = input & 128 ? reversed : input & 64 ?
+      ((input & 2) << 2) | ((input & 1) << 2) | ((input & 4) >> 1) | ((input & 8) >> 3) : data;
+    const unsigned nested = !(input & 192) && (input & 48) ? input & 7 : data;
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (const auto& expected : {std::pair{"y",first}, {"z",second}, {"p",partial},
+        {"r",permuted}, {"n",nested}, {"shared",first}})
+      for (auto* bit : top->getTerm(NLName(expected.first))->getBits())
+        EXPECT_EQ(bool((expected.second >> bit->getBit()) & 1),
+          evaluateFunctionResultBit(top, bit->getNet(), input, 0, &memo)) << input << expected.first;
+  }
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1")) {
+    GTEST_SKIP() << "Icarus Verilog required for four-state data verification";
+  }
+  const auto dumped = dumpTopAndGetVerilogPath(top, "case_replay_packed_fourstate");
+  std::ifstream original(path);
+  std::string reference((std::istreambuf_iterator<char>(original)), {});
+  reference.replace(reference.find("module top("), 11, "module reference(");
+  const auto tbPath = dumped.parent_path() / "tb.sv";
+  std::ofstream tb(tbPath);
+  tb << reference << R"(
+module tb;
+reg [7:0] a;
+wire [23:0] actual, expected;
+top dut(a,actual[3:0],actual[7:4],actual[11:8],actual[15:12],actual[19:16],actual[23:20]);
+reference ref_dut(a,expected[3:0],expected[7:4],expected[11:8],expected[15:12],expected[19:16],expected[23:20]);
+function logic value(input integer i);
+case(i) 0:value=0; 1:value=1; 2:value=1'bx; 3:value=1'bz; endcase
+endfunction
+integer data, guards;
+initial begin
+  for(data=0;data<256;data=data+1) for(guards=0;guards<16;guards=guards+1) begin
+    a={guards[3:0],value((data>>6)&3),value((data>>4)&3),value((data>>2)&3),value(data&3)};
+    #1;
+    if(actual !== expected) $fatal(1,"packed case mismatch a=%b actual=%b expected=%b",a,actual,expected);
+  end
+  $finish;
+end
+endmodule
+)";
+  tb.close();
+  const auto quote = [](const std::filesystem::path& file) {
+    std::string result = "'";
+    for (char c : file.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+    return result + "'";
+  };
+  const auto executable = dumped.parent_path() / "simulation.vvp";
+  const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+    " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+  ASSERT_EQ(0, std::system(command.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+
 }
 
 TEST_F(SNLSVConstructorTestSimple, compactReplayCaseAndMuxesPreserveValues) {
