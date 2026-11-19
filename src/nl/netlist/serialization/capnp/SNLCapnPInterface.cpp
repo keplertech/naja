@@ -191,15 +191,28 @@ void dumpDesignInterface(
   if (snlDesign->hasRTLInfos()) {
     dumpRTLInfos(designInterface.initRtlInfos(), snlDesign->getRTLInfos());
   }
-  if (SNLDesignModeling::hasSequentialModel(snlDesign) &&
-      !snlDesign->getProperty("SNLSequentialModels")) {
-    throw NLException("Cannot serialize sequential model with missing or foreign terminals: " +
-        snlDesign->getDescription());
-  }
-  auto lambda = [](SNLDesignInterface::Builder& builder, size_t nbProperties) {
-    return builder.initProperties(nbProperties);
+  const auto sequentialModel = SNLDesignModeling::serializeSequentialModels(snlDesign);
+  constexpr auto sequentialPropertyName = "SNLSequentialModels";
+  auto properties = designInterface.initProperties(
+      snlDesign->getDumpableProperties().size() + (sequentialModel.empty() ? 0 : 1));
+  size_t propertyID = 0;
+  bool sequentialWritten = sequentialModel.empty();
+  const auto writeSequentialProperty = [&]() {
+    auto property = properties[propertyID++];
+    property.setName(sequentialPropertyName);
+    property.initValues(1)[0].setText(sequentialModel);
+    sequentialWritten = true;
   };
-  dumpProperties(designInterface, snlDesign, lambda);
+  // Preserve the property-name order of the existing dumpable-property format
+  // without attaching formatted snapshot data to the live design.
+  for (auto property : snlDesign->getDumpableProperties()) {
+    if (!sequentialWritten && property->getName() > sequentialPropertyName) {
+      writeSequentialProperty();
+    }
+    auto builder = properties[propertyID++];
+    dumpProperty(builder, property);
+  }
+  if (!sequentialWritten) writeSequentialProperty();
 
   size_t id = 0;
   auto parameters = designInterface.initParameters(snlDesign->getParameters().size());

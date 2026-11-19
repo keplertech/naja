@@ -1974,39 +1974,27 @@ Modeling::SequentialModel readSequentialModel(std::istream& in, SNLDesign* desig
   return model;
 }
 
-void storeSequentialModels(SNLDesign* design, const std::vector<std::string>& parameters,
-    const Modeling::SequentialModelTable& models) {
-  if (auto* old = design->getProperty(sequentialPropertyName)) old->destroy();
-  // Static setters historically permit incomplete/foreign-pin models so
-  // consumers can diagnose them. Keep that behavior, but never persist an
-  // invalid pointer as a different terminal in the destination design.
-  for (const auto& [key, model] : models) {
-    for (const auto& output : model.outputs) {
-      if (!output.term || output.term->getDesign() != design) return;
-    }
-    const auto localTerms = [design](const Expression& expression) {
-      return std::all_of(expression.nodes.begin(), expression.nodes.end(), [design](const auto& node) {
-        return node.operation != Expression::Operator::Term ||
-            (node.term && node.term->getDesign() == design);
-      });
-    };
-    if (!localTerms(model.clockedOn)) return;
-    for (const auto& state : model.states) {
-      if (!localTerms(state.nextState) || (state.clear && !localTerms(*state.clear)) ||
-          (state.preset && !localTerms(*state.preset))) return;
-    }
-    for (const auto& output : model.outputs) if (!localTerms(output.function)) return;
+void validateSerializableSequentialModel(const SNLDesign* design,
+    const Modeling::SequentialModel& model) {
+  const auto fail = [design]() {
+    throw NLException("Cannot serialize sequential model with missing or foreign terminals: " +
+        design->getDescription());
+  };
+  for (const auto& output : model.outputs) {
+    if (!output.term || output.term->getDesign() != design) fail();
   }
-  std::ostringstream out;
-  out << 1 << ' ' << parameters.size() << ' ';
-  for (const auto& name : parameters) out << std::quoted(name) << ' ';
-  out << models.size() << ' ';
-  for (const auto& [key, model] : models) {
-    for (auto value : key) out << value << ' ';
-    writeSequentialModel(out, model);
+  const auto localTerms = [design](const Expression& expression) {
+    return std::all_of(expression.nodes.begin(), expression.nodes.end(), [design](const auto& node) {
+      return node.operation != Expression::Operator::Term ||
+          (node.term && node.term->getDesign() == design);
+    });
+  };
+  if (!localTerms(model.clockedOn)) fail();
+  for (const auto& state : model.states) {
+    if (!localTerms(state.nextState) || (state.clear && !localTerms(*state.clear)) ||
+        (state.preset && !localTerms(*state.preset))) fail();
   }
-  auto* property = naja::NajaDumpableProperty::create(design, sequentialPropertyName);
-  property->addStringValue(out.str());
+  for (const auto& output : model.outputs) if (!localTerms(output.function)) fail();
 }
 
 void validateSequentialInitialValues(const SNLDesign* design,
@@ -2084,6 +2072,29 @@ std::optional<bool> parseSequentialInitialBit(const std::string& literal, size_t
 }
 } // namespace
 
+std::string SNLDesignModeling::serializeSequentialModels(const SNLDesign* design) {
+  auto* property = design ? getProperty(design) : nullptr;
+  if (!property || !property->getModeling()->hasSequentialModel_()) return {};
+  auto* modeling = property->getModeling();
+  std::lock_guard<std::mutex> lock(modeling->instanceSequentialModelsMutex_);
+  std::ostringstream out;
+  out << 1 << ' ' << modeling->sequentialParameters_.size() << ' ';
+  for (const auto& name : modeling->sequentialParameters_) out << std::quoted(name) << ' ';
+  if (modeling->sequentialModel_) {
+    out << 1 << ' ';
+    validateSerializableSequentialModel(design, *modeling->sequentialModel_);
+    writeSequentialModel(out, *modeling->sequentialModel_);
+  } else {
+    out << modeling->sequentialModels_.size() << ' ';
+    for (const auto& [key, model] : modeling->sequentialModels_) {
+      validateSerializableSequentialModel(design, model);
+      for (auto value : key) out << value << ' ';
+      writeSequentialModel(out, model);
+    }
+  }
+  return out.str();
+}
+
 void SNLDesignModeling::restoreSequentialModels(SNLDesign* design) {
   auto* property = dynamic_cast<naja::NajaDumpableProperty*>(design->getProperty(sequentialPropertyName));
   if (!property) return;
@@ -2109,6 +2120,7 @@ void SNLDesignModeling::restoreSequentialModels(SNLDesign* design) {
   if (!in || (in >> std::ws, !in.eof()) || models.empty()) {
     throw NLException("Invalid serialized sequential model payload");
   }
+  property->destroy(); // The wire payload is transient; the model owns the live state.
   if (parameters.empty()) {
     if (models.size() != 1) throw NLException("Invalid static sequential model payload");
     setSequentialModel(design, models.begin()->second);
@@ -2151,7 +2163,6 @@ void SNLDesignModeling::setSequentialModel(
   auto property = getOrCreateProperty(design, NO_PARAMETER);
   std::lock_guard<std::mutex> lock(property->getModeling()->instanceSequentialModelsMutex_);
   property->getModeling()->setSequentialModel_(model);
-  storeSequentialModels(design, {}, {{{}, model}});
 }
 
 bool SNLDesignModeling::hasSequentialModel(const SNLDesign* design) {
@@ -2289,7 +2300,6 @@ void SNLDesignModeling::setSequentialModelFromParameters(
   modeling->sequentialModel_.reset();
   modeling->sequentialParameters_ = parameters;
   modeling->sequentialModels_ = models;
-  storeSequentialModels(design, parameters, models);
 }
 
 bool SNLDesignModeling::hasSequentialModelFromParameters(const SNLDesign* design) {

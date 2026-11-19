@@ -261,6 +261,8 @@ class SNLDesignModeling {
     }
     // State order matches getSequentialModel(instance). nullopt denotes a free state.
     static std::vector<std::optional<bool>> getSequentialInitialValues(const SNLInstance* instance);
+    // Serialize only for snapshot I/O; model construction never formats a payload.
+    static std::string serializeSequentialModels(const SNLDesign* design);
     // Restore the versioned dumpable-property payload after loading an interface.
     static void restoreSequentialModels(SNLDesign* design);
     static void invalidateSequentialModelCache(const SNLInstance* instance);
