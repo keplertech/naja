@@ -18,7 +18,7 @@ a clean feature worktree/branch was created from this fetched revision.
 Implementation and measurement were completed before committing or publishing.
 Historical broad planner work was not resumed; no local research/design notes
 were present in the original checkout.
-The production-only Git diff SHA-256 is
+The measured production-only Git diff SHA-256 is
 `6c792fd90b2aac6fc88746e70b9338a21244a935ef62103a06aae5c7cda66214`.
 
 The case accumulator is separate from active replay environments. Every arm,

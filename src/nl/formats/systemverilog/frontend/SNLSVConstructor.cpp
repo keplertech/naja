@@ -29002,9 +29002,13 @@ endmodule
           mergedEnv.erase(symbol);
           continue;
         }
+        // Type and whole-write eligibility stay fixed within a case, and
+        // accepted eager arms contain complete values. Once pending, a symbol
+        // therefore remains eligible above (width mismatches already return).
+        // Keep this flush as a defensive backstop for future replay callers.
         if (hasPending) {
-          mergedEnv[symbol] = materializeMuxSelection(design, pendingValues->at(symbol));
-          pendingValues->erase(symbol);
+          mergedEnv[symbol] = materializeMuxSelection(design, pendingValues->at(symbol)); // LCOV_EXCL_LINE
+          pendingValues->erase(symbol); // LCOV_EXCL_LINE
         }
         const auto& falseBits = mergedEnv.at(symbol);
         if (falseBits == trueBits) {
