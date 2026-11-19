@@ -4304,6 +4304,41 @@ class RTLConstructor {
       // Match synthesis: dynamic metavalue detection is simulation metadata.
       // Static operands still use the IEEE function's constant result.
       value = {{{"boolean"}, {}}, {constant(unknown)}};
+    } else if (expr.kind == Expr::Kind::Indexed && expr.left->kind == Expr::Kind::Name &&
+        !objects_.contains(key(*expr.left)) && !integers_.contains(key(*expr.left)) &&
+        !booleans_.contains(key(*expr.left)) && !functions_.contains(key(*expr.left)) &&
+        (subtypes_.contains(key(*expr.left)) || enumerations_.contains(key(*expr.left)) ||
+         records_.contains(key(*expr.left)) || arrays_.contains(key(*expr.left)) ||
+         key(*expr.left) == "std_logic" || key(*expr.left) == "std_ulogic" ||
+         key(*expr.left) == "bit" || key(*expr.left) == "boolean" ||
+         key(*expr.left) == "std_logic_vector" || key(*expr.left) == "std_ulogic_vector" ||
+         key(*expr.left) == "bit_vector" || key(*expr.left) == "unsigned" || key(*expr.left) == "signed")) {
+      const auto& prefix = *expr.left;
+      vhdl::TypeMark mark{{prefix.text, prefix.canonical, prefix.span}, std::nullopt};
+      const auto resolved = resolveSubtype(mark);
+      const auto name = key(resolved.name);
+      const bool vector = name == "std_logic_vector" || name == "std_ulogic_vector" ||
+          name == "bit_vector" || name == "unsigned" || name == "signed";
+      if (vector) {
+        // Resolve visibility and nominal identity through the same path as declarations.
+        // An unconstrained conversion takes its bounds from the operand.
+        if (!resolved.constraint) mark.constraint = vhdl::DiscreteRange{0, 0, true};
+        auto target = shape(mark);
+        value = expression(*expr.right, state, nullptr, usedWidth);
+        const auto source = value.shape.types.front();
+        const bool logicVector = target.types.back() == "std_logic" &&
+            (source == "std_logic_vector" || source == "unsigned" || source == "signed");
+        if (value.shape.ranges.size() != 1 || (!logicVector && value.shape.types != target.types) ||
+            !value.shape.declarations.empty()) fail("unsupported vector conversion operand");
+        if (!resolved.constraint) target.ranges = value.shape.ranges;
+        if (target.size() != value.bits.size()) fail("vector conversion length mismatch");
+        value.shape = std::move(target);
+      } else {
+        const auto target = shape(mark);
+        // Scalar enumerations and their subtypes preserve both value and nominal type.
+        // Context also resolves character literals and overloaded enumeration literals.
+        value = expression(*expr.right, state, &target, usedWidth);
+      }
     } else if (isStatic(expr)) {
       const auto result = scalar(expr);
       const Shape type = result.boolean ? Shape{{"boolean"}, {}} :
@@ -4485,17 +4520,6 @@ class RTLConstructor {
       }
     } else if (expr.kind == Expr::Kind::Indexed) {
       if (expr.left->kind == Expr::Kind::Name &&
-          (key(*expr.left) == "std_logic_vector" || key(*expr.left) == "std_ulogic_vector" ||
-           key(*expr.left) == "unsigned" || key(*expr.left) == "signed")) {
-        const auto target = key(*expr.left) == "std_ulogic_vector" ? "std_logic_vector" : key(*expr.left);
-        if (!numeric_ || (target == "std_logic_vector" && !stdLogic_))
-          fail("vector conversion requires visible numeric_std and std_logic_1164 types");
-        value = expression(*expr.right, state, nullptr, usedWidth);
-        const auto source = value.shape.types.front();
-        if (value.shape.ranges.size() != 1 || (source != "unsigned" && source != "signed" && source != "std_logic_vector"))
-          fail("unsupported vector conversion operand");
-        value.shape.types.front() = target;
-      } else if (expr.left->kind == Expr::Kind::Name &&
           (key(*expr.left) == "conv_integer" || key(*expr.left) == "to_integer")) {
         const bool numeric = key(*expr.left) == "to_integer";
         if (numeric ? !numeric_ : (!unsigned_ || !arith_))

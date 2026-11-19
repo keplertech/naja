@@ -3,6 +3,7 @@
 
 add_executable(snlVHDLConstructorTests VHDLConstructorTest.cpp)
 target_compile_definitions(snlVHDLConstructorTests PRIVATE
+  SNL_VHDL_CONVERSIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
   SNL_SCHEDULED_OVERWRITE_SV="${CMAKE_CURRENT_SOURCE_DIR}/scheduled_overwrite.sv"
   SNL_SCHEDULED_OVERWRITE_VHDL="${CMAKE_CURRENT_SOURCE_DIR}/scheduled_overwrite.vhd"
   SNL_VHDL_EQUIVALENT_ARITHMETIC_SV="${CMAKE_CURRENT_SOURCE_DIR}/arithmetic_equivalent.sv"

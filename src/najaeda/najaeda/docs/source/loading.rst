@@ -605,8 +605,15 @@ inside static function bodies remain unsupported and are diagnosed.
 
 Vector conversions between ``std_logic_vector``, ``std_ulogic_vector``,
 ``unsigned``, and ``signed`` preserve bit order and width, including ascending
-source ranges. These conversions require visible ``std_logic_1164`` and
-``numeric_std`` packages; they do not resize or sign-extend their operands.
+source ranges. Logic-vector conversions require ``std_logic_1164``;
+``signed`` and ``unsigned`` type marks require ``numeric_std``. Conversions do
+not resize or sign-extend their operands. Constrained vector subtype marks
+check the length and supply the result bounds.
+
+Explicit conversions through visible scalar type or subtype marks preserve
+values and nominal type identity: ``std_logic`` and ``std_ulogic`` are
+interchangeable, while ``bit``, ``boolean``, and user-defined enumeration types
+accept operands of their own base type. Unrelated enumeration types are rejected.
 
 Identifier-based enumerated types declared in packages, architectures, and
 generate bodies support internal signals, variables, constants, record fields,

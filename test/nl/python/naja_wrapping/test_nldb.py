@@ -229,6 +229,29 @@ architecture rtl of inverter is begin y <= not a; end;
     self.assertEqual(db.getTopDesign(), design)
     self.assertTrue(db.isTopDB())
 
+  def testVHDLIdentityTypeConversions(self):
+    formats_path = os.environ['FORMATS_PATH']
+    for top, source, target, width in (("conv", "a_i", "a_o", 1),
+                                       ("conv_vec", "v_i", "v_o", 4)):
+      with self.subTest(top=top):
+        db = naja.NLDB.create(naja.NLUniverse.get())
+        with warnings.catch_warnings():
+          warnings.simplefilter("ignore", RuntimeWarning)
+          design = db.loadVHDL([os.path.join(formats_path, "vhdl", top + ".vhd")],
+                              top=top, diagnostics_report_path=None)
+        inputs = ([design.getScalarTerm(source)] if width == 1 else
+                  [design.getBusTerm(source).getBusTermBit(i) for i in range(width)])
+        outputs = ([design.getScalarTerm(target)] if width == 1 else
+                   [design.getBusTerm(target).getBusTermBit(i) for i in range(width)])
+        assigns = list(design.getAssignInstances())
+        self.assertEqual(len(assigns), width)
+        for input_term, output_term in zip(inputs, outputs):
+          drivers = [inst for inst in assigns
+                     if any(term.getNet() == output_term.getNet() for term in inst.getInstTerms())]
+          self.assertEqual(len(drivers), 1)
+          self.assertTrue(any(term.getNet() == input_term.getNet()
+                              for term in drivers[0].getInstTerms()))
+
   def testVHDLReadOnlyMemory(self):
     db = naja.NLDB.create(naja.NLUniverse.get())
     source = """\
