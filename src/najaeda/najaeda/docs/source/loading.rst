@@ -17,6 +17,38 @@ Call :func:`najaeda.netlist.reset` at the beginning of scripts and tests when
 you need an empty universe.  Loading a design returns the top
 :class:`najaeda.netlist.Instance` wrapper.
 
+RTL specialization names
+------------------------
+
+The SystemVerilog and VHDL loaders share a specialization naming policy.
+Instances with the same resolved parameters/generics share a model, including
+explicit values equal to defaults. The all-default specialization keeps the
+source module/entity name. Other names list values differing from the declared
+default environment, in declaration order: for example ``queue__DEPTH_12`` in
+SystemVerilog or ``queue__depth_12`` in VHDL. SystemVerilog identifier case is
+preserved; VHDL basic identifiers are canonicalized to lower case.
+
+Integers use decimal with ``n`` for a minus sign, logic vectors use full-width
+upper-case hexadecimal prefixed by ``h``, and vectors containing X/Z use binary
+prefixed by ``b``. Scalar bits use ``0``/``1``, and VHDL booleans use
+``true``/``false``. String values use readable names when sanitization preserves
+all characters; otherwise they use hashes to avoid order-dependent collisions
+between values such as ``"a-b"`` and ``"a b"``. A candidate longer than 64 characters, or an override without
+a readable encoding, uses ``<module>__h<8 hex digits>`` from SHA-256 of a
+versioned, length-prefixed canonical resolved environment. Digest-prefix
+collisions promote both designs to 16 digits. Source module names are reserved
+before elaboration; collisions with them use the hash form or report an error
+if that is also occupied. Source identifiers themselves are never truncated.
+SystemVerilog interface port bindings also contribute their resolved types and
+alias relationships to identity; these implicit specializations use hash names.
+
+Resolved values and the original source identifier are available from the raw
+API; see :doc:`raw_api`. Names do not replace that metadata. Supported generic
+types remain subject to each frontend's language subset. VHDL logic generics
+preserve supported X/Z constants; other std_ulogic states and unsupported composite generic types produce diagnostics.
+VHDL real generics support finite static real expressions; they do not imply
+real-valued hardware support. Enumeration generics use their declared literal names.
+
 Gate-level Verilog
 ------------------
 

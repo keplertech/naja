@@ -1040,6 +1040,33 @@ module top(input [8:0] a, b, output [8:0] y);
 endmodule
 """)
 
+    def test_elaborated_specialization_identity(self):
+        self.check_determinism("sv", """
+module tile #(parameter int SIZE=3, parameter logic[255:0] MASK=0,
+             parameter real RATE=1.0, parameter string LABEL="base", parameter bit EN=0)(input a,output y);
+  assign y=a;
+endmodule
+module top(input a,output [3:0] y);
+  tile #(.SIZE(5), .RATE(2.5), .LABEL("other-core"), .EN(1)) first(a,y[0]);
+  tile implicit_default(a,y[1]);
+  tile #(.SIZE(3)) explicit_default(a,y[2]);
+  tile #(.MASK(256'h123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0)) wide(a,y[3]);
+endmodule
+""")
+        self.check_determinism("vhd", """
+entity tile is generic(size:integer:=3;mask:bit_vector(255 downto 0):=(others=>'0');
+  rate:real:=1.0;label_value:string:="base";en:boolean:=false);
+  port(a:in bit;y:out bit);end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit;y:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(size=>5,rate=>2.5,label_value=>"other-core",en=>true) port map(a,y(0));
+  implicit_default:entity work.tile port map(a,y(1));
+  explicit_default:entity work.tile generic map(size=>3) port map(a,y(2));
+  wide:entity work.tile generic map(mask=>x"123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0") port map(a,y(3));
+end;
+""")
+
     def test_systemverilog_interfaces(self):
         self.check_determinism("sv", """
 interface lane_if #(parameter W = 3);

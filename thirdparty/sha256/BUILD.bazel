@@ -8,5 +8,5 @@ cc_library(
     srcs = ["sha-256.c"],
     hdrs = ["sha-256.h"],
     includes = ["."],
-    visibility = ["//src/nl/netlist:__pkg__"],
+    visibility = ["//src/nl/netlist:__pkg__", "//src/nl/formats/hdl:__pkg__"],
 )

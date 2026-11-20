@@ -19,6 +19,7 @@
 #include "SNLInstParameter.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLPrimitives.h"
+#include "SNLHDLSpecialization.h"
 #include "SNLRTLInfos.h"
 #include "SNLVRLDumper.h"
 #include "SNLScalarTerm.h"
@@ -5964,8 +5965,8 @@ end;
   ASSERT_NE(first, nullptr);
   ASSERT_NE(second, nullptr);
   EXPECT_NE(first->getModel(), second->getModel());
-  EXPECT_EQ(first->getModel()->getName(), NLName("leaf_extra_1_m_3_n_3"));
-  EXPECT_EQ(second->getModel()->getName(), NLName("leaf_extra_2_m_3_n_3"));
+  EXPECT_EQ(first->getModel()->getName(), NLName("leaf__n_3__m_3__extra_1"));
+  EXPECT_EQ(second->getModel()->getName(), NLName("leaf__n_3__m_3__extra_2"));
   EXPECT_EQ(first->getModel()->getBusTerm(NLName("a"))->getWidth(), 3);
   EXPECT_EQ(second->getModel()->getBusTerm(NLName("y"))->getWidth(), 3);
 }
@@ -5986,7 +5987,7 @@ end;
   EXPECT_THROW(VHDLConstructor(library_).construct(prefix, "top"), NLException);
   EXPECT_EQ(library_->getSNLDesigns().size(), 1);
   EXPECT_EQ(library_->getSNLDesign(NLName("blocked")), existing);
-  EXPECT_EQ(library_->getSNLDesign(NLName("leaf_n_3")), nullptr);
+  EXPECT_EQ(library_->getSNLDesign(NLName("leaf__n_3")), nullptr);
   EXPECT_EQ(library_->getSNLDesign(NLName("top")), nullptr);
   try {
     VHDLConstructor(library_).construct(R"(
@@ -5994,12 +5995,12 @@ entity grouped is generic(n, m : positive := 2); port(a : in bit; y : out bit); 
 architecture rtl of grouped is begin y <= a; end;
 entity top is port(a : in bit; y : out bit); end;
 architecture rtl of top is begin
-  u: entity work.grouped generic map(2, 3) port map(a, y);
+  u: entity work.grouped generic map(2, 0) port map(a, y);
 end;
 )", "top");
-    FAIL() << "expected grouped generic rejection";
+    FAIL() << "expected invalid positive generic rejection";
   } catch (const NLException& error) {
-    EXPECT_NE(std::string(error.what()).find("grouped generics with different actual values"),
+    EXPECT_NE(std::string(error.what()).find("generic value violates its subtype"),
         std::string::npos) << error.what();
   }
   EXPECT_EQ(library_->getSNLDesigns().size(), 1);
@@ -7814,7 +7815,7 @@ TEST_F(VHDLConstructorTest, StringGenericAttributesAndOrderingAreStatic) {
 TEST_F(VHDLConstructorTest, RTLValidationDiagnosticsRollBackDesigns) {
   library_->setName(NLName("design"));
   const std::vector<std::pair<std::string, std::string>> cases{
-    {"entity bad is generic(v : bit := '0'); end; architecture rtl of bad is begin end;",
+    {"entity bad is generic(v : time := 1); end; architecture rtl of bad is begin end;",
       "RTL generics require"},
     {"entity bad is generic(v : string := 7); end; architecture rtl of bad is begin end;",
       "string generic actual must be a static string"},
@@ -8580,4 +8581,48 @@ TEST_F(VHDLConstructorTest, NullArrayReadsRejectBeforeComputingElementStrides) {
     }
     EXPECT_TRUE(library_->getSNLDesigns().empty());
   }
+}
+
+TEST_F(VHDLConstructorTest, SharedSpecializationDigestCollisionsPromoteBothNames) {
+  // These independent integer values collide in the first 32 SHA-256 bits of
+  // the versioned canonical parameter record, but not in the first 64 bits.
+  const std::vector<SNLHDLParameter> first{{"tag", "integer:85019", "85019", std::nullopt, false}};
+  const std::vector<SNLHDLParameter> second{{"tag", "integer:135170", "135170", std::nullopt, false}};
+  auto* a = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", first, {})));
+  SNLHDLSpecialization::annotate(a, "cell", first);
+  EXPECT_EQ(a->getName().getString(), "cell__hc4c28cf5");
+  const auto secondName = SNLHDLSpecialization::name(library_, "cell", second, {});
+  EXPECT_EQ(secondName, "cell__hc4c28cf596ab9078");
+  EXPECT_EQ(a->getName().getString(), "cell__hc4c28cf51c2efecd");
+  auto* b = SNLDesign::create(library_, NLName(secondName));
+  SNLHDLSpecialization::annotate(b, "cell", second);
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", first, {}), a->getName().getString());
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", second, {}), b->getName().getString());
+  EXPECT_EQ(SNLHDLSpecialization::attribute(a, "naja.source_module"), "cell");
+  EXPECT_TRUE(SNLHDLSpecialization::isElaborated(a));
+  a->destroy();
+  b->destroy();
+  // Reversing discovery order gives the same final names.
+  b = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", second, {})));
+  SNLHDLSpecialization::annotate(b, "cell", second);
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", first, {}), "cell__hc4c28cf51c2efecd");
+  EXPECT_EQ(b->getName().getString(), "cell__hc4c28cf596ab9078");
+}
+
+TEST_F(VHDLConstructorTest, SharedSpecializationPolicyFormatsAndRejectsCollisions) {
+  EXPECT_EQ(SNLHDLSpecialization::integerValue("-1.5e-8"), "n1p5en8");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("00001"), "h01");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("1"), "h1");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("1", true), "1");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("01-XU"), "b01-xu");
+  const std::vector<SNLHDLParameter> values{{"mode", "enumeration:fast", "fast", "fast", false}};
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", values, {}), "cell__mode_fast");
+  const auto hashed = SNLHDLSpecialization::name(library_, "cell", values, {"cell__mode_fast"});
+  EXPECT_EQ(hashed.find("cell__h"), 0);
+  SNLDesign::create(library_, NLName(hashed));
+  EXPECT_THROW(SNLHDLSpecialization::name(library_, "cell", values, {"cell__mode_fast"}), NLException);
+  // Non-identifier logic states are represented in identity, never emitted in
+  // an unsafe readable name. Frontends still own value-domain validation.
+  const std::vector<SNLHDLParameter> unknown{{"mask", "logic:01-XU", "\"01-XU\"", "b01-xu", false}};
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "other", unknown, {}).find("other__h"), 0);
 }

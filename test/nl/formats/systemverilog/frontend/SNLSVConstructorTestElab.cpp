@@ -46,7 +46,7 @@ TEST_F(SNLSVConstructorTestElab, elaborateParameterizedPorts) {
   std::filesystem::path benchmarksPath(SNL_SV_BENCHMARKS_PATH);
   constructor.construct(benchmarksPath/"param_inst"/"param_inst.sv");
 
-  auto leaf = library_->getSNLDesign(NLName("leaf"));
+  auto leaf = library_->getSNLDesign(NLName("leaf__W_4"));
   auto top = library_->getSNLDesign(NLName("top"));
   ASSERT_NE(leaf, nullptr);
   ASSERT_NE(top, nullptr);
@@ -102,8 +102,11 @@ TEST_F(SNLSVConstructorTestElab, elaborateInstanceArrays) {
   auto leaf = library_->getSNLDesign(NLName("instance_array_leaf"));
   auto interfaceModel =
     library_->getSNLDesign(NLName("instance_array_if"));
-  auto sink = library_->getSNLDesign(NLName("instance_array_sink"));
   auto top = library_->getSNLDesign(NLName("instance_arrays_top"));
+  ASSERT_NE(top, nullptr);
+  auto* sinkInstance = top->getInstance(NLName("instance_arrays_top_gen_interfaces_0_sink"));
+  ASSERT_NE(sinkInstance, nullptr);
+  auto* sink = sinkInstance->getModel();
   ASSERT_NE(leaf, nullptr);
   ASSERT_NE(interfaceModel, nullptr);
   ASSERT_NE(sink, nullptr);

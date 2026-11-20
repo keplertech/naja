@@ -6,6 +6,34 @@ by ``SNLInstance.getInstParameters()`` iterate in lexical parameter-name order.
 This order is independent of name interning and is preserved across fresh-process
 NajaIF reloads.
 
+Elaborated RTL specializations
+------------------------------
+
+SystemVerilog and VHDL elaborated designs expose every resolved non-local
+parameter/generic through ``SNLDesign.getParameters()``. ``getValue()`` returns
+source-language literal text (including quotes on string literals), rather than
+an instance override. These parameters describe fixed elaborated circuitry;
+changing an instance parameter does not re-elaborate it. ``getInstParameters()``
+therefore remains empty for these RTL instances. Use the raw API directly when
+inspecting specialization metadata; high-level instance traversal still returns
+the same specialized model.
+
+The design attribute ``naja.source_module`` records the original module/entity
+identifier. It is available without retaining source intent or a live AST:
+
+.. code-block:: python
+
+   model = instance.getModel()
+   source_module = next(a.getValue() for a in model.getAttributes()
+                        if a.getName() == "naja.source_module")
+   resolved = {p.getName(): p.getValue() for p in model.getParameters()}
+
+The ``naja.elaboration_signature`` attribute is a versioned internal identity
+record; callers should treat it as opaque. Both attributes and resolved values
+survive NajaIF save/load, cloning and fresh-process reloads. Gate-level Verilog
+uses the specialized design names directly and omits these informational
+parameter declarations, including VHDL literal text.
+
 ``najaeda`` ships two Python API levels:
 
 * :mod:`najaeda.netlist` is the supported high-level API for most tools.
