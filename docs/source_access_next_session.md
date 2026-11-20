@@ -23,7 +23,7 @@ Read `docs/source_information_design.md` and verify the status before editing.
   survives deferred interface creation; grouped nets/ports and module instances
   retain attributes on each object. Implicit port nets share port source data
   until an explicit net declaration supplies their declaration.
-- `Config::yosysSourceAttributes_`, raw `NLDB.loadVerilog(...,
+- `Config::yosysSourceAttributes_`, raw `NLDB.loadGateLevelVerilog(...,
   yosys_source_attributes=True)` and high-level `VerilogConfig` explicitly select
   Yosys provenance; the default is false. There is no banner/filename heuristic.
 - `src` origins split on `|` and the last colon. Numeric coordinates are checked

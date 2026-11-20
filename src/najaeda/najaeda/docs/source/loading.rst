@@ -30,16 +30,16 @@ For Verilog or SystemVerilog RTL, use ``load_system_verilog`` with
 supported RTL subset through slang; it is not a full language implementation or
 a simulator. Choose the loader by the source's contents, not its file extension.
 
-The explicit gate-level names are preferred. Existing names remain compatibility
-aliases and emit a visible ``FutureWarning`` saying they **will be deprecated
-soon**, with the replacement to use. No removal version is scheduled yet.
+Use the explicit gate-level names below. The high-level snake_case names remain
+compatibility aliases and emit a visible ``FutureWarning`` naming the replacement.
+The former raw camelCase aliases have been removed.
 
 .. list-table:: Gate-level Verilog API migration
    :header-rows: 1
    :widths: 45 55
 
-   * - Compatibility name
-     - Preferred name
+   * - Former name
+     - Current name
    * - ``netlist.load_verilog``
      - ``netlist.load_gate_level_verilog``
    * - ``netlist.VerilogConfig``
@@ -54,6 +54,10 @@ soon**, with the replacement to use. No removal version is scheduled yet.
      - ``NLDB.dumpGateLevelVerilog``
    * - ``SNLDesign.dumpVerilog``
      - ``SNLDesign.dumpGateLevelVerilog``
+
+The raw ``NLDB.loadVerilog``, ``NLDB.dumpVerilog`` and
+``SNLDesign.dumpVerilog`` aliases have been removed; use their replacements
+listed above. The high-level snake_case compatibility aliases remain available.
 
 Arguments, defaults, return values and netlist behavior are unchanged. Existing
 configuration objects work with the new methods, and the compatibility methods

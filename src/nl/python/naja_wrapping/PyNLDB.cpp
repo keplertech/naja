@@ -485,14 +485,6 @@ static NLLibrary* hdlDestination(NLDB* db, const std::string& name) {
 }
 
 
-PyObject* PyNLDB_loadVerilog(PyNLDB* self, PyObject* args, PyObject* kwargs) {
-  if (PyErr_WarnEx(PyExc_FutureWarning,
-      "NLDB.loadVerilog will be deprecated soon; use NLDB.loadGateLevelVerilog instead.", 1) < 0) {
-    return nullptr;
-  }
-  return loadGateLevelVerilog(self, args, kwargs, "NLDB.loadVerilog");
-}
-
 static PyObject* PyNLDB_loadGateLevelVerilog(PyNLDB* self, PyObject* args, PyObject* kwargs) {
   return loadGateLevelVerilog(self, args, kwargs, "NLDB.loadGateLevelVerilog");
 }
@@ -948,14 +940,6 @@ static PyObject* PyNLDB_dumpGateLevelVerilog(PyNLDB* self, PyObject* args) {
   Py_RETURN_NONE;
 }
 
-PyObject* PyNLDB_dumpVerilog(PyNLDB* self, PyObject* args) {
-  if (PyErr_WarnEx(PyExc_FutureWarning,
-      "NLDB.dumpVerilog will be deprecated soon; use NLDB.dumpGateLevelVerilog instead.", 1) < 0) {
-    return nullptr;
-  }
-  return PyNLDB_dumpGateLevelVerilog(self, args);
-}
-
 PyObject* PyNLDB_getLibrary(PyNLDB* self, PyObject* arg) {
   NLLibrary* lib = nullptr;
   METHOD_HEAD("NLDB.getLibrary()")
@@ -1035,8 +1019,6 @@ PyMethodDef PyNLDB_Methods[] = {
     "dump this NLDB to NajaIF format."},
   { "loadLibertyPrimitives", (PyCFunction)PyNLDB_loadLibertyPrimitives, METH_VARARGS,
     "import primitives from Liberty format."},
-  { "loadVerilog", (PyCFunction)PyNLDB_loadVerilog, METH_VARARGS|METH_KEYWORDS,
-    "Compatibility alias for loadGateLevelVerilog; will be deprecated soon. Emits FutureWarning."},
   { "loadGateLevelVerilog", (PyCFunction)PyNLDB_loadGateLevelVerilog, METH_VARARGS|METH_KEYWORDS,
     "create a design from gate-level (structural) Verilog netlists.\n"
     "This loader does not support general behavioral RTL. Use loadSystemVerilog\n"
@@ -1082,8 +1064,6 @@ PyMethodDef PyNLDB_Methods[] = {
     "  blackbox_multi_writer_memories (bool, optional): blackbox entire modules with unsupported multi-writer memories (default False)\n"
     "  keep_ast_link (bool, optional): retain live frontend AST to SNL object links when supported "
     "(default False)."},
-  { "dumpVerilog", (PyCFunction)PyNLDB_dumpVerilog, METH_VARARGS,
-    "Compatibility alias for dumpGateLevelVerilog; will be deprecated soon. Emits FutureWarning."},
   { "dumpGateLevelVerilog", (PyCFunction)PyNLDB_dumpGateLevelVerilog, METH_VARARGS,
     "dump this NLDB as gate-level (structural) Verilog, not the original behavioral RTL."},
   { "getLibrary", (PyCFunction)PyNLDB_getLibrary, METH_O,

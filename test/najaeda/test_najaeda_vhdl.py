@@ -50,22 +50,21 @@ end;
                         if internal:
                             for bit in range(3, 7):
                                 self.assertEqual("Assign" + value, bus.getBit(bit).getTypeAsString())
-                        for dump in (top.dumpVerilog, top.dumpGateLevelVerilog):
-                            dump(directory, "output.v")
-                            text = (Path(directory) / "output.v").read_text()
-                            drivers = {bit: [] for bit in range(11)}
-                            pattern = (rf"assign {target}\[(\d+)(?::(\d+))?\]"
-                                       r"\s*=\s*(\d+)'b([01]+);")
-                            for match in re.finditer(pattern, text):
-                                first = int(match[1])
-                                last = int(match[2]) if match[2] else first
-                                bits = range(first, last - 1, -1)
-                                self.assertEqual(len(bits), int(match[3]))
-                                self.assertEqual(len(bits), len(match[4]))
-                                for bit, constant in zip(bits, match[4]):
-                                    drivers[bit].append(constant)
-                            for bit in range(11):
-                                self.assertEqual([value] if 3 <= bit <= 6 else [], drivers[bit])
+                        top.dumpGateLevelVerilog(directory, "output.v")
+                        text = (Path(directory) / "output.v").read_text()
+                        drivers = {bit: [] for bit in range(11)}
+                        pattern = (rf"assign {target}\[(\d+)(?::(\d+))?\]"
+                                   r"\s*=\s*(\d+)'b([01]+);")
+                        for match in re.finditer(pattern, text):
+                            first = int(match[1])
+                            last = int(match[2]) if match[2] else first
+                            bits = range(first, last - 1, -1)
+                            self.assertEqual(len(bits), int(match[3]))
+                            self.assertEqual(len(bits), len(match[4]))
+                            for bit, constant in zip(bits, match[4]):
+                                drivers[bit].append(constant)
+                        for bit in range(11):
+                            self.assertEqual([value] if 3 <= bit <= 6 else [], drivers[bit])
 
     def test_load_vhdl(self):
         source = """\

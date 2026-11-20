@@ -183,6 +183,9 @@ class SNLDBTest(unittest.TestCase):
     del db    
   
   def testGateLevelVerilogNames(self):
+    self.assertFalse(hasattr(naja.NLDB, "loadVerilog"))
+    self.assertFalse(hasattr(naja.NLDB, "dumpVerilog"))
+    self.assertFalse(hasattr(naja.SNLDesign, "dumpVerilog"))
     db = naja.NLDB.create(naja.NLUniverse.get())
     with tempfile.TemporaryDirectory() as directory:
       source = os.path.join(directory, "input.v")
