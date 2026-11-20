@@ -8616,6 +8616,7 @@ TEST_F(VHDLConstructorTest, SharedSpecializationPolicyFormatsAndRejectsCollision
   EXPECT_EQ(SNLHDLSpecialization::bitValue("1", true), "1");
   EXPECT_EQ(SNLHDLSpecialization::bitValue("01-XU"), "b01-xu");
   const std::vector<SNLHDLParameter> values{{"mode", "enumeration:fast", "fast", "fast", false}};
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", values, {}, {}, true), "cell");
   EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", values, {}), "cell__mode_fast");
   const auto hashed = SNLHDLSpecialization::name(library_, "cell", values, {"cell__mode_fast"});
   EXPECT_EQ(hashed.find("cell__h"), 0);

@@ -234,8 +234,13 @@ def worker(kind, source, output, run):
     universe = naja.NLUniverse.create()
     db = naja.NLDB.create(universe)
     universe.setTopDB(db)
-    if kind in ("sv", "sv_timing", "sv_resets"):
-        db.loadSystemVerilog([source], diagnostics_report_path=None)
+    if kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top"):
+        options = None
+        if kind == "sv_top":
+            options = {"slang": ["-GWIDTH=5"]}
+        elif kind == "sv_recursive_top":
+            options = {"slang": ["--top=top", "-GN=2"]}
+        db.loadSystemVerilog([source], diagnostics_report_path=None, frontend_options=options)
     elif kind == "v":
         db.loadGateLevelVerilog([source])
         from najaeda import naja
@@ -310,7 +315,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
-            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets") else kind))
+            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets", "sv_top", "sv_recursive_top") else kind))
             for name, contents in (files or {}).items():
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
@@ -1037,6 +1042,25 @@ module top(input [8:0] a, b, output [8:0] y);
   branch u0(a[2:0], b[2:0], y[2:0]);
   branch u1(a[5:3], b[5:3], y[5:3]);
   branch u2(a[8:6], b[8:6], y[8:6]);
+endmodule
+""")
+
+    def test_selected_top_name_with_parameter_override(self):
+        self.check_determinism("sv_top", """
+module tile #(parameter int WIDTH=3)(input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  assign y=a;
+endmodule
+module top #(parameter int WIDTH=3)(input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  tile #(.WIDTH(WIDTH)) only_child(a,y);
+endmodule
+""")
+
+    def test_selected_top_name_in_finite_recursive_hierarchy(self):
+        self.check_determinism("sv_recursive_top", """
+module top #(parameter int N=0)(input a,output y);
+  if(N>0) begin:branch
+    top #(.N(N-1)) inner(a,y);
+  end else assign y=a;
 endmodule
 """)
 

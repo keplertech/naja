@@ -10,7 +10,9 @@ Elaborated RTL specializations
 ------------------------------
 
 SystemVerilog and VHDL elaborated designs expose every resolved non-local
-parameter/generic through ``SNLDesign.getParameters()``. ``getValue()`` returns
+parameter/generic through ``SNLDesign.getParameters()``. The selected top retains
+its source name even with non-default parameters; child models use specialization
+names. Both expose the resolved values. ``getValue()`` returns
 source-language literal text (including quotes on string literals), rather than
 an instance override. These parameters describe fixed elaborated circuitry;
 changing an instance parameter does not re-elaborate it. ``getInstParameters()``

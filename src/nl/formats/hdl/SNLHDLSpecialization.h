@@ -26,7 +26,8 @@ class SNLHDLSpecialization {
   static std::string signature(const std::vector<SNLHDLParameter>& parameters, const std::string& context = {});
   static std::string name(NLLibrary* library, const std::string& source,
       const std::vector<SNLHDLParameter>& parameters,
-      const std::set<std::string>& sourceNames, const std::string& context = {});
+      const std::set<std::string>& sourceNames, const std::string& context = {},
+      bool isTop = false);
   static void annotate(SNLDesign* design, const std::string& source,
       const std::vector<SNLHDLParameter>& parameters, const std::string& context = {});
   static bool isElaborated(const SNLDesign* design);

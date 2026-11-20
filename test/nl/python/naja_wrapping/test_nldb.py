@@ -56,7 +56,7 @@ endmodule
 """
 
 class SNLDBTest(unittest.TestCase):
-  def _load_specializations(self, language, source, reserved=None):
+  def _load_specializations(self, language, source, reserved=None, **sv_options):
     if naja.NLUniverse.get():
       naja.NLUniverse.get().destroy()
     universe = naja.NLUniverse.create()
@@ -69,10 +69,68 @@ class SNLDBTest(unittest.TestCase):
       with open(path, "w") as stream:
         stream.write(source)
       if language == "sv":
-        top = db.loadSystemVerilog([path], diagnostics_report_path=None)
+        top = db.loadSystemVerilog([path], diagnostics_report_path=None, **sv_options)
       else:
         top = db.loadVHDL([path], top="top")
     return db, top
+
+  def test_selected_top_retains_source_name_with_parameter_overrides(self):
+    source = """
+module tile #(parameter int WIDTH=3)(input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  assign y=a;
+endmodule
+module top #(parameter int WIDTH=3, parameter logic [255:0] MASK=0)
+            (input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  tile #(.WIDTH(WIDTH)) only_child(a,y);
+endmodule
+"""
+    wide = "256'h" + "123456789ABCDEF0" * 4
+    for options, width in (([], 3), (["-GWIDTH=5"], 5),
+                           (["-GWIDTH=5", "-GMASK=" + wide], 5)):
+      with self.subTest(options=options):
+        db, top = self._load_specializations(
+            "sv", source, frontend_options={"slang": ["--top=top", *options]})
+        self.assertEqual("top", top.getName())
+        self.assertEqual(str(width), top.getParameter("WIDTH").getValue())
+        self.assertEqual(width, top.getBusTerm("a").getWidth())
+        self.assertEqual("top", dict((a.getName(),a.getValue()) for a in top.getAttributes())["naja.source_module"])
+        child = top.getInstance("only_child").getModel()
+        self.assertEqual("tile" if width == 3 else "tile__WIDTH_5", child.getName())
+        if len(options) == 2:
+          self.assertEqual(wide, top.getParameter("MASK").getValue())
+        with tempfile.TemporaryDirectory() as directory:
+          top.dumpGateLevelVerilog(directory, "netlist.v")
+          with open(os.path.join(directory, "netlist.v")) as stream:
+            dumped = stream.read()
+          self.assertRegex(dumped, r"(?m)^module top\(")
+          self.assertNotIn("module top__", dumped)
+          snapshot = os.path.join(directory, "snapshot")
+          db.dumpNajaIF(snapshot)
+          naja.NLUniverse.get().destroy()
+          naja.NLUniverse.create()
+          restored = naja.NLDB.loadNajaIF(snapshot).getTopDesign()
+          self.assertEqual("top", restored.getName())
+          self.assertEqual(str(width), restored.getParameter("WIDTH").getValue())
+          self.assertEqual("tile" if width == 3 else "tile__WIDTH_5",
+                           restored.getInstance("only_child").getModel().getName())
+
+  def test_selected_top_reserves_source_name_in_finite_recursive_hierarchy(self):
+    source = """
+module top #(parameter int N=0)(input a,output y);
+  if(N>0) begin:branch
+    top #(.N(N-1)) inner(a,y);
+  end else assign y=a;
+endmodule
+"""
+    _, top = self._load_specializations(
+        "sv", source, frontend_options={"slang": ["--top=top", "-GN=2"]})
+    self.assertEqual("top", top.getName())
+    child = next(iter(top.getNonPrimitiveInstances())).getModel()
+    self.assertEqual("top__N_1", child.getName())
+    default_child = next(iter(child.getNonPrimitiveInstances())).getModel()
+    self.assertEqual("0", default_child.getParameter("N").getValue())
+    self.assertRegex(default_child.getName(), r"^top__h[0-9a-f]{8}$")
+    self.assertEqual(0, len(list(default_child.getNonPrimitiveInstances())))
 
   def test_elaborated_specializations_share_names_and_values(self):
     sources = {

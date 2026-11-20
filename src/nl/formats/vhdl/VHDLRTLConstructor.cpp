@@ -6533,7 +6533,8 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     std::set<std::string> sourceNames;
     for (const auto& candidate : syntax.entities)
       if (context.owner(candidate.span.start.offset) == owner) sourceNames.insert(key(candidate.name));
-    const auto modelName = SNLHDLSpecialization::name(owner, key(entity->name), parameters, sourceNames);
+    const auto modelName = SNLHDLSpecialization::name(
+        owner, key(entity->name), parameters, sourceNames, {}, owner == library && name == selected);
     const auto signature = std::string(source.substr(context.start(owner),
         std::max(entity->span.end.offset, architecture->span.end.offset) - context.start(owner))) + SNLHDLSpecialization::signature(parameters);
     if (auto* existing = owner->getSNLDesign(NLName(modelName))) {

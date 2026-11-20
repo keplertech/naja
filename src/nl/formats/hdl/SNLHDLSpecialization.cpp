@@ -49,7 +49,7 @@ bool SNLHDLSpecialization::isElaborated(const SNLDesign* design) {
 
 std::string SNLHDLSpecialization::name(NLLibrary* library, const std::string& source,
     const std::vector<SNLHDLParameter>& parameters, const std::set<std::string>& sourceNames,
-    const std::string& context) {
+    const std::string& context, bool isTop) {
   const auto identity = signature(parameters, context);
   auto candidate = source;
   bool defaults = context.empty(), readable = context.empty();
@@ -73,9 +73,15 @@ std::string SNLHDLSpecialization::name(NLLibrary* library, const std::string& so
     auto* existing = library->getSNLDesign(NLName(value));
     return (!existing || matches(existing)) && (value == source || !sourceNames.contains(value));
   };
-  if (defaults) {
-    if (!available(source)) throw NLException("Conflicting default HDL specialization: " + source);
-    return source;
+  // The selected root is an external interface. Parameter specialization only
+  // changes child model names; root metadata still records the resolved values.
+  if (isTop || defaults) {
+    if (available(source)) return source;
+    auto* existing = library->getSNLDesign(NLName(source));
+    if (isTop || !existing || attribute(existing, sourceAttribute) != source)
+      throw NLException("Conflicting HDL source design name: " + source);
+    // A non-default root may own the plain name in a finite recursive
+    // hierarchy. Its default-valued child follows the usual hash fallback.
   }
   if (readable && candidate.size() <= 64 && available(candidate)) return candidate;
   const auto hash = digest(identity);

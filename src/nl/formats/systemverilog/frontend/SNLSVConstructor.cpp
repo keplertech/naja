@@ -1536,7 +1536,7 @@ class SNLSVConstructorImpl {
             ++svPerfReport_.topInstanceBuildsStarted;
             noteSVPerfProgress();
 #endif
-            buildDesign(top->body);
+            buildDesign(top->body, true);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
             ++svPerfReport_.topInstanceBuildsCompleted;
             maybeWriteSVPerfReportSnapshot();
@@ -3547,7 +3547,7 @@ endmodule
       return context;
     }
 
-    SNLDesign* buildDesign(const InstanceBodySymbol& body) {
+    SNLDesign* buildDesign(const InstanceBodySymbol& body, bool isTop = false) {
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
       ++svPerfReport_.buildDesignCalls;
       noteSVPerfProgress();
@@ -3625,7 +3625,7 @@ endmodule
       const auto context = specializationContext(body);
       std::set<std::string> sourceNames;
       for (const auto* symbol : compilation_->getDefinitions()) sourceNames.emplace(symbol->name);
-      const auto name = SNLHDLSpecialization::name(library_, defName, parameters, sourceNames, context);
+      const auto name = SNLHDLSpecialization::name(library_, defName, parameters, sourceNames, context, isTop);
       if (auto* existing = library_->getSNLDesign(NLName(name)); existing && hasInterfacePorts) {
         bodyToDesign_[&body] = existing;
         representativeBodies.push_back(&body);
