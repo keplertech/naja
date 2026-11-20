@@ -17,6 +17,7 @@
 #include "SNLInstance.h"
 #include "SNLEquipotential.h"
 #include "SNLInstParameter.h"
+#include "SNLParameter.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLPrimitives.h"
 #include "SNLHDLSpecialization.h"
@@ -30,6 +31,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <cstdlib>
 #include <stdexcept>
 #include <tuple>
@@ -8626,4 +8628,44 @@ TEST_F(VHDLConstructorTest, SharedSpecializationPolicyFormatsAndRejectsCollision
   // an unsafe readable name. Frontends still own value-domain validation.
   const std::vector<SNLHDLParameter> unknown{{"mask", "logic:01-XU", "\"01-XU\"", "b01-xu", false}};
   EXPECT_EQ(SNLHDLSpecialization::name(library_, "other", unknown, {}).find("other__h"), 0);
+}
+
+TEST_F(VHDLConstructorTest, RealGenericLiteralsPreserveRangeAndIgnoreGlobalLocale) {
+  struct CommaDecimalPoint : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+  };
+  struct RestoreLocale {
+    std::locale previous = std::locale();
+    ~RestoreLocale() { std::locale::global(previous); }
+  } restoreLocale;
+  std::locale::global(std::locale(std::locale::classic(), new CommaDecimalPoint));
+  const auto source = [](const std::string& value) {
+    return "entity probe is generic(rate:real:=" + value + ");end;"
+        "architecture rtl of probe is begin end;";
+  };
+  for (const auto& [literal, expected] : std::vector<std::pair<std::string, std::string>>{
+      {"1.2_5", "1.25"}, {"1.25e+2", "125.0"}, {"-1.25E-2", "-0.0125"},
+      {"0.0e-999", "0.0"}, {"-0.0", "0.0"},
+      {"4.9406564584124654e-324", "5.0e-324"}, {"1.0e-320", "1.0e-320"},
+      {"2.2250738585072014e-308", "2.2250738585072014e-308"},
+      {"1.7976931348623157e308", "1.7976931348623157e+308"}}) {
+    SCOPED_TRACE(literal);
+    auto* design = VHDLConstructor(library_).construct(source(literal), "probe");
+    ASSERT_NE(design, nullptr);
+    auto* parameter = design->getParameter(NLName("rate"));
+    ASSERT_NE(parameter, nullptr);
+    EXPECT_EQ(parameter->getValue(), expected);
+    design->destroy();
+  }
+  for (const auto& literal : {"1.0e309", "-1.0e309", "1.0e-999", "16#1.8#"}) {
+    SCOPED_TRACE(literal);
+    try {
+      VHDLConstructor(library_).construct(source(literal), "probe");
+      FAIL() << "expected invalid or out-of-range real literal rejection";
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find("unsupported real generic literal"), std::string::npos)
+          << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
 }

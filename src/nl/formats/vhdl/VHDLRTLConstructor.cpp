@@ -38,10 +38,12 @@
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <locale>
 #include <map>
 #include <memory>
 #include <set>
 #include <span>
+#include <sstream>
 #include <tuple>
 #include <utility>
 
@@ -467,8 +469,18 @@ class RTLConstructor {
     if (expr.kind == Expr::Kind::RealLiteral) {
       std::string text;
       for (char c : expr.text) if (c != '_') text += c;
-      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-      if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+      // Floating-point from_chars is unavailable in older supported libc++.
+      // The classic locale keeps source literals independent of the host locale.
+      std::istringstream literal(text);
+      literal.imbue(std::locale::classic());
+      value = 0;
+      literal >> std::noskipws >> value;
+      // Some libraries set failbit for representable subnormals, including
+      // values rounding to the smallest normal. Preserve those, but reject
+      // overflow and nonzero literals that underflow to zero.
+      const bool representableTinyValue = value != 0 &&
+          std::abs(value) <= std::numeric_limits<double>::min();
+      if (!literal.eof() || literal.bad() || (literal.fail() && !representableTinyValue))
         fail("unsupported real generic literal");
     } else if (expr.kind == Expr::Kind::Name && reals_.contains(key(expr))) value = reals_.at(key(expr));
     else if (expr.kind == Expr::Kind::Unary && (expr.text == "+" || expr.text == "-"))
