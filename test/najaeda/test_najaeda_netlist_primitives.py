@@ -166,6 +166,13 @@ class NajaNetlistTestPrimitives(unittest.TestCase):
             self.assertEqual("flip_flop", model["kind"])
             self.assertEqual(("term", primitive.getScalarTerm("C")), model["clocked_on"])
             state = model["states"][0]
+            self.assertEqual({"parameter": "INIT", "bit": 0}, state["init_from"])
+            self.assertEqual([1 if name == "FDPE" else 0],
+                             instance.getSequentialInitialValues())
+            override = naja.SNLInstParameter.create(instance, primitive.getParameter("INIT"), "1'b1")
+            self.assertEqual([1], instance.getSequentialInitialValues())
+            override.setValue("1'bx")
+            self.assertEqual([None], instance.getSequentialInitialValues())
             if name == "FDCE":
                 self.assertEqual(("term", primitive.getScalarTerm("CLR")), state["clear"])
             elif name == "FDPE":

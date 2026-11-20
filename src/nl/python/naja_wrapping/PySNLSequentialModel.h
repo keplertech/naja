@@ -16,6 +16,7 @@ PyObject* PySNLDesign_hasSequentialModelFromParameters(PySNLDesign* self);
 PyObject* PySNLDesign_setSequentialModelFromParameters(
     PySNLDesign* self, PyObject* args, PyObject* kwargs);
 PyObject* PySNLDesign_getSequentialModel(PySNLDesign* self);
+PyObject* PySNLInstance_getSequentialInitialValues(PySNLInstance* self);
 PyObject* PySNLInstance_getSequentialModel(PySNLInstance* self);
 
 }  // namespace PYNAJA

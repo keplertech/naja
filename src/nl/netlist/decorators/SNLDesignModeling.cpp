@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <iomanip>
 #include <sstream>
 
 #include "NLBitDependencies.h"
@@ -1858,6 +1859,297 @@ void SNLDesignModeling::setMemoryInterface(
   property->getModeling()->setMemoryInterface_(memInterface);
 }
 
+namespace {
+// Sequential models use the existing dumpable-property transport, so NajaIF
+// does not need a parallel schema for expression graphs. Version this payload
+// independently and encode terminal identity rather than process-local pointers.
+const std::string sequentialPropertyName = "SNLSequentialModels";
+using Modeling = SNLDesignModeling;
+using Expression = Modeling::BooleanExpression;
+
+void writeSequentialExpression(std::ostream& out, const Expression& expression) {
+  out << expression.root << ' ' << expression.nodes.size() << ' ';
+  for (const auto& node : expression.nodes) {
+    out << static_cast<int>(node.operation) << ' ' << node.constant << ' '
+        << node.state << ' ' << bool(node.term) << ' ';
+    if (node.term) out << node.term->getID() << ' ' << node.term->getBit() << ' ';
+    out << node.operands.size() << ' ';
+    for (auto operand : node.operands) out << operand << ' ';
+  }
+}
+
+Expression readSequentialExpression(std::istream& in, SNLDesign* design) {
+  Expression expression;
+  size_t count = 0;
+  in >> expression.root >> count;
+  for (size_t i = 0; i < count && in; ++i) {
+    Expression::Node node;
+    int operation = 0;
+    bool hasTerm = false;
+    in >> operation >> node.constant >> node.state >> hasTerm;
+    if (operation < 0 || operation > static_cast<int>(Expression::Operator::Xor)) {
+      throw NLException("Invalid serialized sequential expression operator");
+    }
+    node.operation = static_cast<Expression::Operator>(operation);
+    if (hasTerm) {
+      NLID::DesignObjectID id = 0;
+      NLID::Bit bit = 0;
+      in >> id >> bit;
+      node.term = design->getBitTerm(id, bit);
+      if (!node.term) throw NLException("Missing serialized sequential model terminal");
+    }
+    size_t operands = 0;
+    in >> operands;
+    for (size_t j = 0; j < operands && in; ++j) {
+      size_t operand = 0;
+      in >> operand;
+      node.operands.push_back(operand);
+    }
+    expression.nodes.push_back(std::move(node));
+  }
+  return expression;
+}
+
+void writeSequentialModel(std::ostream& out, const Modeling::SequentialModel& model) {
+  out << static_cast<int>(model.kind) << ' ';
+  writeSequentialExpression(out, model.clockedOn);
+  out << model.states.size() << ' ';
+  for (const auto& state : model.states) {
+    out << (state.init ? (*state.init ? 1 : 0) : -1) << ' ' << bool(state.initFrom) << ' ';
+    if (state.initFrom) out << std::quoted(state.initFrom->parameter) << ' ' << state.initFrom->bit << ' ';
+    out << static_cast<int>(state.clearPresetValue) << ' ';
+    writeSequentialExpression(out, state.nextState);
+    for (const auto* expression : {&state.clear, &state.preset}) {
+      out << bool(*expression) << ' ';
+      if (*expression) writeSequentialExpression(out, **expression);
+    }
+  }
+  out << model.outputs.size() << ' ';
+  for (const auto& output : model.outputs) {
+    out << output.term->getID() << ' ' << output.term->getBit() << ' ';
+    writeSequentialExpression(out, output.function);
+  }
+}
+
+Modeling::SequentialModel readSequentialModel(std::istream& in, SNLDesign* design) {
+  Modeling::SequentialModel model;
+  int kind = 0;
+  in >> kind;
+  model.kind = static_cast<Modeling::SequentialModel::Kind>(kind);
+  model.clockedOn = readSequentialExpression(in, design);
+  size_t count = 0;
+  in >> count;
+  for (size_t i = 0; i < count && in; ++i) {
+    Modeling::SequentialState state;
+    int init = -1;
+    bool fromParameter = false;
+    in >> init >> fromParameter;
+    if (init < -1 || init > 1) throw NLException("Invalid serialized sequential initial value");
+    if (init != -1) state.init = init != 0;
+    if (fromParameter) {
+      Modeling::SequentialState::InitialValueParameter source;
+      in >> std::quoted(source.parameter) >> source.bit;
+      state.initFrom = std::move(source);
+    }
+    int clearPresetValue = 0;
+    in >> clearPresetValue;
+    state.clearPresetValue = static_cast<Modeling::SequentialState::ClearPresetValue>(clearPresetValue);
+    state.nextState = readSequentialExpression(in, design);
+    for (auto* expression : {&state.clear, &state.preset}) {
+      bool present = false;
+      in >> present;
+      if (present) *expression = readSequentialExpression(in, design);
+    }
+    model.states.push_back(std::move(state));
+  }
+  in >> count;
+  for (size_t i = 0; i < count && in; ++i) {
+    NLID::DesignObjectID id = 0;
+    NLID::Bit bit = 0;
+    in >> id >> bit;
+    auto* term = design->getBitTerm(id, bit);
+    if (!term) throw NLException("Missing serialized sequential output terminal");
+    model.outputs.push_back({term, readSequentialExpression(in, design)});
+  }
+  return model;
+}
+
+void validateSerializableSequentialModel(const SNLDesign* design,
+    const Modeling::SequentialModel& model) {
+  const auto fail = [design]() {
+    throw NLException("Cannot serialize sequential model with missing or foreign terminals: " +
+        design->getDescription());
+  };
+  for (const auto& output : model.outputs) {
+    if (!output.term || output.term->getDesign() != design) fail();
+  }
+  const auto localTerms = [design](const Expression& expression) {
+    return std::all_of(expression.nodes.begin(), expression.nodes.end(), [design](const auto& node) {
+      return node.operation != Expression::Operator::Term ||
+          (node.term && node.term->getDesign() == design);
+    });
+  };
+  if (!localTerms(model.clockedOn)) fail();
+  for (const auto& state : model.states) {
+    if (!localTerms(state.nextState) || (state.clear && !localTerms(*state.clear)) ||
+        (state.preset && !localTerms(*state.preset))) fail();
+  }
+  for (const auto& output : model.outputs) if (!localTerms(output.function)) fail();
+}
+
+void validateSequentialInitialValues(const SNLDesign* design,
+    const SNLDesignModeling::SequentialModel& model) {
+  for (const auto& state : model.states) {
+    if (state.init && state.initFrom) {
+      throw NLException("Sequential state cannot specify both init and init_from");
+    }
+    if (state.initFrom && !design->getParameter(NLName(state.initFrom->parameter))) {
+      throw NLException("Unknown sequential initial-value parameter <" + state.initFrom->parameter + ">");
+    }
+  }
+}
+
+std::optional<bool> parseSequentialInitialBit(const std::string& literal, size_t bit) {
+  std::string text;
+  for (unsigned char c : literal) {
+    if (!std::isspace(c) && c != '_') text.push_back(std::tolower(c));
+  }
+  if (text.empty()) return std::nullopt;
+  // VHDL-style quoted scalar bits, also commonly used by primitive libraries.
+  if (text.size() == 3 && text.front() == '\'' && text.back() == '\'') {
+    if (std::string("01xuz").find(text[1]) == std::string::npos) {
+      throw NLException("Invalid sequential initial value <" + literal + ">");
+    }
+    if (bit != 0 || (text[1] != '0' && text[1] != '1')) return std::nullopt;
+    return text[1] == '1';
+  }
+  unsigned base = 10;
+  std::optional<size_t> width;
+  auto quote = text.find('\'');
+  if (quote != std::string::npos) {
+    if (quote > 0) {
+      width = static_cast<size_t>(parseUnsignedDigits(text.substr(0, quote), 10, literal));
+      if (*width == 0) throw NLException("Zero-width sequential initial value <" + literal + ">");
+    }
+    auto position = quote + 1;
+    if (position < text.size() && text[position] == 's') ++position;
+    if (position >= text.size() || (text[position] != 'b' && text[position] != 'd')) {
+      throw NLException("Invalid sequential initial value <" + literal + ">");
+    }
+    base = text[position] == 'b' ? 2 : 10;
+    text = text.substr(position + 1);
+  }
+  if (text.empty()) return std::nullopt;
+  for (char c : text) {
+    if (c != 'x' && c != 'u' && c != 'z' &&
+        (c < '0' || c > (base == 2 ? '1' : '9'))) {
+      throw NLException("Invalid sequential initial value <" + literal + ">");
+    }
+  }
+  if (width && bit >= *width) return std::nullopt;
+  if (base == 2) {
+    // Unknown digits affect only their own bit. Short values are zero-extended,
+    // except for an unknown leading digit, which extends that unknown value.
+    char digit = bit < text.size() ? text[text.size() - 1 - bit] :
+        (text.front() == '0' || text.front() == '1' ? '0' : text.front());
+    if (digit != '0' && digit != '1') return std::nullopt;
+    return digit == '1';
+  }
+  if (text.find_first_of("xuz") != std::string::npos) return std::nullopt;
+  // Decimal division avoids a host integer width limit for wide parameters.
+  for (size_t index = 0; ; ++index) {
+    unsigned carry = 0;
+    for (char& digit : text) {
+      unsigned value = carry * 10 + static_cast<unsigned>(digit - '0');
+      digit = static_cast<char>('0' + value / 2);
+      carry = value % 2;
+    }
+    if (index == bit) return carry != 0;
+    auto first = text.find_first_not_of('0');
+    if (first == std::string::npos) return false;
+    text.erase(0, first);
+  }
+}
+} // namespace
+
+std::string SNLDesignModeling::serializeSequentialModels(const SNLDesign* design) {
+  auto* property = design ? getProperty(design) : nullptr;
+  if (!property || !property->getModeling()->hasSequentialModel_()) return {};
+  auto* modeling = property->getModeling();
+  std::lock_guard<std::mutex> lock(modeling->instanceSequentialModelsMutex_);
+  std::ostringstream out;
+  out << 1 << ' ' << modeling->sequentialParameters_.size() << ' ';
+  for (const auto& name : modeling->sequentialParameters_) out << std::quoted(name) << ' ';
+  if (modeling->sequentialModel_) {
+    out << 1 << ' ';
+    validateSerializableSequentialModel(design, *modeling->sequentialModel_);
+    writeSequentialModel(out, *modeling->sequentialModel_);
+  } else {
+    out << modeling->sequentialModels_.size() << ' ';
+    for (const auto& [key, model] : modeling->sequentialModels_) {
+      validateSerializableSequentialModel(design, model);
+      for (auto value : key) out << value << ' ';
+      writeSequentialModel(out, model);
+    }
+  }
+  return out.str();
+}
+
+void SNLDesignModeling::restoreSequentialModels(SNLDesign* design) {
+  auto* property = dynamic_cast<naja::NajaDumpableProperty*>(design->getProperty(sequentialPropertyName));
+  if (!property) return;
+  std::istringstream in(property->getStringValue(0));
+  unsigned version = 0;
+  size_t count = 0;
+  in >> version >> count;
+  if (version != 1) throw NLException("Unsupported serialized sequential model version");
+  std::vector<std::string> parameters;
+  for (size_t i = 0; i < count && in; ++i) {
+    std::string name;
+    in >> std::quoted(name);
+    parameters.push_back(std::move(name));
+  }
+  SequentialModelTable models;
+  in >> count;
+  for (size_t i = 0; i < count && in; ++i) {
+    std::vector<uint64_t> key(parameters.size());
+    for (auto& value : key) in >> value;
+    auto model = readSequentialModel(in, design);
+    if (!models.emplace(key, std::move(model)).second) throw NLException("Duplicate serialized sequential model key");
+  }
+  if (!in || (in >> std::ws, !in.eof()) || models.empty()) {
+    throw NLException("Invalid serialized sequential model payload");
+  }
+  property->destroy(); // The wire payload is transient; the model owns the live state.
+  if (parameters.empty()) {
+    if (models.size() != 1) throw NLException("Invalid static sequential model payload");
+    setSequentialModel(design, models.begin()->second);
+  } else {
+    setSequentialModelFromParameters(design, parameters, models);
+  }
+}
+
+std::vector<std::optional<bool>> SNLDesignModeling::getSequentialInitialValues(
+    const SNLInstance* instance) {
+  const auto& model = getSequentialModel(instance);
+  std::vector<std::optional<bool>> values;
+  values.reserve(model.states.size());
+  for (const auto& state : model.states) {
+    auto value = state.init;
+    if (state.initFrom) {
+      const auto& source = *state.initFrom;
+      auto* parameter = instance->getModel()->getParameter(NLName(source.parameter));
+      if (!parameter) throw NLException("Unknown sequential initial-value parameter <" + source.parameter + ">");
+      auto* override = instance->getInstParameter(NLName(source.parameter));
+      if (override || parameter->hasDefaultValue()) {
+        value = parseSequentialInitialBit(override ? override->getValue() : parameter->getValue(), source.bit);
+      }
+    }
+    values.push_back(value);
+  }
+  return values;
+}
+
 void SNLDesignModeling::setSequentialModel(
     SNLDesign* design,
     const SequentialModel& model) {
@@ -1867,6 +2159,7 @@ void SNLDesignModeling::setSequentialModel(
   if (!model.isValid()) {
     throw NLException("Cannot add invalid sequential model");
   }
+  validateSequentialInitialValues(design, model);
   auto property = getOrCreateProperty(design, NO_PARAMETER);
   std::lock_guard<std::mutex> lock(property->getModeling()->instanceSequentialModelsMutex_);
   property->getModeling()->setSequentialModel_(model);
@@ -1971,6 +2264,7 @@ void SNLDesignModeling::setSequentialModelFromParameters(
         }
       }
     };
+    validateSequentialInitialValues(design, model);
     validateExpression(model.clockedOn, "clocked_on");
     for (size_t i = 0; i < model.states.size(); ++i) {
       const auto& state = model.states[i];

@@ -166,6 +166,41 @@ bool parseSequentialModel(const SNLDesign* selfObject, const char* clockedOn,
     if (nextState == nullptr) return false;
 
     SNLDesignModeling::SequentialState state;
+    auto* init = PyDict_GetItemString(stateObject, "init");
+    auto* initFrom = PyDict_GetItemString(stateObject, "init_from");
+    if (init && initFrom) {
+      setError("Sequential state cannot specify both init and init_from");
+      return false;
+    }
+    if (init) {
+      if (!PyLong_Check(init)) {
+        setError("Sequential state init must be 0 or 1");
+        return false;
+      }
+      long value = PyLong_AsLong(init);
+      if (PyErr_Occurred() || (value != 0 && value != 1)) {
+        PyErr_Clear();
+        setError("Sequential state init must be 0 or 1");
+        return false;
+      }
+      state.init = value != 0;
+    }
+    if (initFrom) {
+      if (!PyDict_Check(initFrom)) {
+        setError("Sequential state init_from must be a dictionary");
+        return false;
+      }
+      const char* parameter = getStringField(initFrom, "parameter", true);
+      if (!parameter) return false;
+      auto* bitObject = PyDict_GetItemString(initFrom, "bit");
+      if (!bitObject || !PyLong_Check(bitObject)) {
+        setError("Sequential state init_from.bit must be a nonnegative integer");
+        return false;
+      }
+      size_t bit = PyLong_AsSize_t(bitObject);
+      if (PyErr_Occurred()) return false;
+      state.initFrom = SNLDesignModeling::SequentialState::InitialValueParameter{parameter, bit};
+    }
     state.nextState = parseExpression(
         selfObject, nextState, stateIdentifiers);
     if (fieldPath) *fieldPath = "states[" + std::to_string(i) + "].clear";
@@ -396,6 +431,15 @@ PyObject* modelToPython(const SNLDesignModeling::SequentialModel& model) {
         "clear", optionalExpressionToPython(state.clear),
         "preset", optionalExpressionToPython(state.preset),
         "clear_preset_value", values[static_cast<size_t>(state.clearPresetValue)]);
+    if (entry && (state.init || state.initFrom)) {
+      auto* value = state.init ? PyLong_FromLong(*state.init) :
+          Py_BuildValue("{s:s,s:K}", "parameter", state.initFrom->parameter.c_str(),
+              "bit", static_cast<unsigned long long>(state.initFrom->bit));
+      if (!value || PyDict_SetItemString(entry, state.init ? "init" : "init_from", value) < 0) {
+        Py_XDECREF(value); Py_DECREF(entry); Py_DECREF(states); Py_DECREF(outputs); return nullptr;
+      }
+      Py_DECREF(value);
+    }
     if (!entry || PyList_Append(states, entry) < 0) {
       // LCOV_EXCL_START: Python allocation failure cleanup.
       Py_XDECREF(entry); Py_DECREF(states); Py_DECREF(outputs); return nullptr;
@@ -436,6 +480,23 @@ PyObject* PySNLInstance_getSequentialModel(PySNLInstance* self) {
   }
   TRY
   return modelToPython(SNLDesignModeling::getSequentialModel(selfObject));
+  NLCATCH
+}
+
+PyObject* PySNLInstance_getSequentialInitialValues(PySNLInstance* self) {
+  auto* selfObject = PYSNLInstance_O(self);
+  if (!selfObject) {
+    setError("SNLInstance.getSequentialInitialValues(): destroyed instance");
+    return nullptr;
+  }
+  TRY
+  const auto values = SNLDesignModeling::getSequentialInitialValues(selfObject);
+  auto* result = PyList_New(values.size());
+  if (!result) return nullptr;
+  for (size_t i = 0; i < values.size(); ++i) {
+    PyList_SET_ITEM(result, i, values[i] ? PyLong_FromLong(*values[i]) : Py_NewRef(Py_None));
+  }
+  return result;
   NLCATCH
 }
 

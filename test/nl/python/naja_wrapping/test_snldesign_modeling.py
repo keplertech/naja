@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import warnings
@@ -20,6 +22,114 @@ class SNLDesignModelingTest(unittest.TestCase):
     del self.primitives
     if naja.NLUniverse.get():
       naja.NLUniverse.get().destroy()
+
+  def testSequentialInitialValues(self):
+    reg = naja.SNLDesign.createPrimitive(self.primitives, "initial_model")
+    for name in ("C", "D"):
+      naja.SNLScalarTerm.create(reg, naja.SNLTerm.Direction.Input, name)
+    q = naja.SNLScalarTerm.create(reg, naja.SNLTerm.Direction.Output, "Q")
+    parameter = naja.SNLParameter.createString(reg, "INIT_VAL", "4'b0001")
+    required = naja.SNLParameter.createDecimal(reg, "REQUIRED")
+    mode = naja.SNLParameter.createDecimal(reg, "MODE", 0)
+    top = naja.SNLDesign.create(self.designs, "initial_top")
+    instance = naja.SNLInstance.create(top, reg, "ff")
+
+    def define(fields, table=False):
+      state = dict(name="S", next_state="D", **fields)
+      if table:
+        reg.setSequentialModelFromParameters(["MODE"], [dict(
+          values=[0], clocked_on="C", states=[state], outputs=[(q, "S")])])
+      else:
+        reg.setSequentialModel("C", [state], [(q, "S")])
+
+    for table in (False, True):
+      for value in (0, 1):
+        define(dict(init=value), table)
+        self.assertEqual([value], instance.getSequentialInitialValues())
+        self.assertEqual(value, instance.getSequentialModel()["states"][0]["init"])
+        if not table:
+          self.assertEqual(value, reg.getSequentialModel()["states"][0]["init"])
+      source = dict(parameter="INIT_VAL", bit=0)
+      define(dict(init_from=source), table)
+      self.assertEqual(source, instance.getSequentialModel()["states"][0]["init_from"])
+      self.assertEqual([1], instance.getSequentialInitialValues())
+      override = naja.SNLInstParameter.create(instance, parameter, "0")
+      for text, expected in (("1'b1", 1), ("4'b0001", 1), ("4'd1", 1),
+                             ("1", 1), ("'0'", 0), ("'1'", 1), ("0", 0),
+                             ("1'bx", None), ("1'bu", None), ("1'bz", None),
+                             ("'X'", None), ("'U'", None), ("'Z'", None),
+                             ("4'dx", None), ("", None)):
+        with self.subTest(table=table, text=text):
+          override.setValue(text)
+          self.assertEqual([expected], instance.getSequentialInitialValues())
+      for text in ("'2'", "1'b2", "4'd12a", "4'h1"):
+        override.setValue(text)
+        with self.assertRaisesRegex(RuntimeError, "Invalid sequential initial value"):
+          instance.getSequentialInitialValues()
+      define(dict(init_from=dict(parameter="INIT_VAL", bit=3)), table)
+      for text, expected in (("4'b1000", 1), ("4'd8", 1), ("4'b0001", 0),
+                             ("4'bx001", None), ("4'b1x01", 1), ("1'b1", None)):
+        override.setValue(text)
+        self.assertEqual([expected], instance.getSequentialInitialValues())
+      define(dict(init_from=dict(parameter="INIT_VAL", bit=80)), table)
+      override.setValue("81'd1208925819614629174706176")
+      self.assertEqual([1], instance.getSequentialInitialValues())
+      override.destroy()
+      define(dict(init_from=dict(parameter="REQUIRED", bit=0)), table)
+      self.assertEqual([None], instance.getSequentialInitialValues())
+      for fields in (dict(init_from=dict(parameter="MISSING", bit=0)),
+                     dict(init=0, init_from=source), dict(init=2), dict(init="1"),
+                     dict(init_from=dict(parameter="INIT_VAL", bit=-1)),
+                     dict(init_from=dict(parameter="INIT_VAL", bit="0"))):
+        with self.assertRaises((RuntimeError, OverflowError)):
+          define(fields, table)
+
+  def testSequentialInitialValuesSnapshot(self):
+    for table in (False, True):
+      with self.subTest(table=table), tempfile.TemporaryDirectory() as directory:
+        reg = naja.SNLDesign.createPrimitive(self.primitives, "snapshot_" + str(table))
+        c = naja.SNLScalarTerm.create(reg, naja.SNLTerm.Direction.Input, "C")
+        d = naja.SNLScalarTerm.create(reg, naja.SNLTerm.Direction.Input, "D")
+        q = naja.SNLBusTerm.create(reg, naja.SNLTerm.Direction.Output, 1, 0, "Q")
+        parameter = naja.SNLParameter.createString(reg, "INIT_VAL", "2'b10")
+        naja.SNLParameter.createDecimal(reg, "MODE", 0)
+        states = [dict(name="S", next_state="D", init=0),
+                  dict(name="T", next_state="!S", clear="!C", preset="D",
+                       clear_preset_value="hold",
+                       init_from=dict(parameter="INIT_VAL", bit=1))]
+        outputs = [(q.getBusTermBit(0), "S"), (q.getBusTermBit(1), "!T")]
+        if table:
+          reg.setSequentialModelFromParameters(["MODE"], [dict(
+            values=[0], clocked_on="C", states=states, outputs=outputs)])
+        else:
+          reg.setSequentialModel("C", states, outputs)
+        top = naja.SNLDesign.create(self.designs, "snapshot_top_" + str(table))
+        instance = naja.SNLInstance.create(top, reg, "ff")
+        naja.SNLInstParameter.create(instance, parameter, "2'd0")
+        naja.NLUniverse.get().setTopDesign(top)
+        self.db.dumpNajaIF(directory)
+        # A fresh process has no primitive construction or process-local cache.
+        script = """
+import naja, sys
+universe = naja.NLUniverse.create()
+db = naja.NLDB.loadNajaIF(sys.argv[1])
+reg = db.getLibrary(int(sys.argv[2])).getSNLDesign(sys.argv[3])
+top = db.getLibrary(int(sys.argv[4])).getSNLDesign(sys.argv[5])
+instance = top.getInstance("ff")
+assert instance.getSequentialInitialValues() == [0, 0]
+model = instance.getSequentialModel()
+assert model['states'][0]['init'] == 0
+assert model['states'][1]['init_from'] == {'parameter': 'INIT_VAL', 'bit': 1}
+assert model['states'][1]['clear_preset_value'] == 'hold'
+assert model['outputs'][1][1] == ('not', ('state', 1))
+instance.getInstParameter('INIT_VAL').destroy()
+assert instance.getSequentialInitialValues() == [0, 1]
+universe.destroy()
+"""
+        result = subprocess.run([sys.executable, "-X", "faulthandler", "-c", script, directory,
+          str(self.primitives.getID()), reg.getName(), str(self.designs.getID()),
+          top.getName()], capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
   def testDeprecatedRoleAliases(self):
     model = naja.SNLDesign.createPrimitive(self.primitives, "alias_model")

@@ -169,6 +169,12 @@ def dump_state(output, timing=False, resets=False):
                 [[t.getNLID().toTuple(), attributes(t)] for t in design.getBitTerms()],
                 [[n.getNLID().toTuple(), attributes(n)] for n in design.getBitNets()],
             ])
+            for instance in design.getInstances():
+                if instance.getModel().hasSequentialModel():
+                    model = instance.getSequentialModel()
+                    state.append(["sequential_initial_values", instance.getNLID().toTuple(),
+                                  instance.getSequentialInitialValues(),
+                                  [[row.get("init"), row.get("init_from")] for row in model["states"]]])
         for child in library.getLibraries():
             visit(child)
 
@@ -236,6 +242,9 @@ def worker(kind, source, output, run):
     universe.setTopDB(db)
     if kind in ("sv", "sv_timing", "sv_resets"):
         db.loadSystemVerilog([source], diagnostics_report_path=None)
+    elif kind == "seq":
+        exec(compile(Path(source).read_text(), source, "exec"),
+             {"naja": naja, "db": db, "universe": universe})
     elif kind == "v":
         db.loadGateLevelVerilog([source])
         from najaeda import naja
@@ -352,6 +361,33 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 else:
                     with self.subTest(language=kind, run=run, phase="fresh process"):
                         self.assert_artifacts_equal(baseline, original)
+
+    def test_primitive_sequential_initial_values(self):
+        self.check_determinism("seq", """
+primitives = naja.NLLibrary.createPrimitives(db, "PRIMS")
+designs = naja.NLLibrary.create(db, "DESIGN")
+top = naja.SNLDesign.create(designs, "top")
+universe.setTopDesign(top)
+for table in (False, True):
+    model = naja.SNLDesign.createPrimitive(primitives, "FF_" + str(table))
+    c = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.Input, "C")
+    d = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.Input, "D")
+    q = naja.SNLBusTerm.create(model, naja.SNLTerm.Direction.Output, 1, 0, "Q")
+    naja.SNLParameter.createBinary(model, "MODE", 1, 0)
+    init = naja.SNLParameter.createBinary(model, "INIT_VAL", 2, 2)
+    states = [dict(name="S", next_state="D", init=0),
+              dict(name="T", next_state="!S", init_from=dict(parameter="INIT_VAL", bit=1))]
+    outputs = [(q.getBusTermBit(0), "S"), (q.getBusTermBit(1), "!T")]
+    if table:
+        model.setSequentialModelFromParameters(["MODE"], [dict(
+            values=[mode], clocked_on="!C" if mode else "C", states=states, outputs=outputs)
+            for mode in (0, 1)])
+    else:
+        model.setSequentialModel("C", states, outputs)
+    for number, value in enumerate(("2'b00", "2'b10", "2'bx0")):
+        instance = naja.SNLInstance.create(top, model, "ff_" + str(table) + str(number))
+        naja.SNLInstParameter.create(instance, init, value)
+""")
 
     def test_canonical_db0_families(self):
         binary = os.environ.get("NAJA_DB0_AUDIT_BINARY")

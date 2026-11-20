@@ -14,6 +14,7 @@ using ::testing::Property;
 #include "NLUniverse.h"
 #include "NLDB.h"
 #include "SNLScalarTerm.h"
+#include "SNLDesignModeling.h"
 #include "SNLBusTerm.h"
 #include "SNLBusTermBit.h"
 #include "SNLScalarNet.h"
@@ -433,4 +434,30 @@ TEST_F(SNLCapNpTest0, incompatibleDB0LibraryIDsThrowBeforePayloadLoad) {
         ::testing::HasSubstr("Incompatible SNL snapshot DB0 library ID version"));
     }
   }
+}
+
+TEST_F(SNLCapNpTest0, RejectsSequentialModelsWithForeignTerminals) {
+  auto* library = NLLibrary::create(db_, NLLibrary::Type::Primitives);
+  auto* model = SNLDesign::create(library, SNLDesign::Type::Primitive, NLName("FF"));
+  auto* foreign = SNLDesign::create(library, SNLDesign::Type::Primitive, NLName("OTHER"));
+  auto* c = SNLScalarTerm::create(model, SNLTerm::Direction::Input, NLName("C"));
+  auto* q = SNLScalarTerm::create(model, SNLTerm::Direction::Output, NLName("Q"));
+  auto* other = SNLScalarTerm::create(foreign, SNLTerm::Direction::Output, NLName("Q"));
+  SNLDesignModeling::SequentialModel sequence;
+  sequence.clockedOn.root = sequence.clockedOn.addTerm(c);
+  SNLDesignModeling::SequentialState state;
+  state.nextState.root = state.nextState.addConstant(false);
+  sequence.states.push_back(state);
+  SNLDesignModeling::BooleanExpression function;
+  function.root = function.addState(0);
+  sequence.outputs.push_back({other, function});
+  const auto path = std::filesystem::path(SNL_CAPNP_TEST_PATH) / "foreignSequentialTerm.snl";
+  // In-memory models remain available for consumer diagnostics, while snapshot
+  // writing must never turn the foreign pointer into an unrelated local pin.
+  EXPECT_NO_THROW(SNLDesignModeling::setSequentialModel(model, sequence));
+  EXPECT_THROW(SNLCapnP::dump(db_, path), NajaException);
+  sequence.outputs[0].term = q;
+  sequence.states[0].nextState.root = sequence.states[0].nextState.addTerm(other);
+  EXPECT_NO_THROW(SNLDesignModeling::setSequentialModel(model, sequence));
+  EXPECT_THROW(SNLCapnP::dump(db_, path), NajaException);
 }
