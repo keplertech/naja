@@ -1493,17 +1493,15 @@ private:
             } else if (startsIgnoredDiagnostic()) {
                 if (!parseIgnoredDiagnostic()) return false;
                 statement.kind = SequentialStatement::Kind::Null;
-            } else if (acceptWord("exit")) {
-                if (!functionBody) {
-                    error("exit is currently supported only in function loops", start);
-                    return false;
-                }
-                statement.kind = SequentialStatement::Kind::Exit;
+            } else if (word("exit") || word("next")) {
+                const bool exiting = word("exit");
+                advance();
+                statement.kind = exiting ? SequentialStatement::Kind::Exit : SequentialStatement::Kind::Next;
                 if (acceptWord("when")) {
                     statement.condition = parseExpression(0);
                     if (!statement.condition) return false;
                 } else if (!symbol(";")) {
-                    error("labeled exit is not supported", current().span);
+                    error("labeled exit/next is not supported", current().span);
                     return false;
                 }
                 if (!expectSymbol(";")) return false;

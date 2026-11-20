@@ -141,7 +141,8 @@ struct Shape {
     }
     for (const auto& range : ranges) {
       const auto width = range.size();
-      if (!width || size > maximumHardwareBits / width) fail("null or oversized hardware array");
+      if (!width) return 0;
+      if (size > maximumHardwareBits / width) fail("oversized hardware array");
       size *= width;
     }
     return size;
@@ -184,7 +185,13 @@ struct VariableChoice {
   SNLBitNet* condition = nullptr;
   std::shared_ptr<VariableChoice> yes, no;
 };
+// Branch merging preserves loop activity; iteration activity resets on each unroll.
+struct LoopControl {
+  SNLBitNet* active;
+  SNLBitNet* iteration;
+};
 struct State {
+  std::vector<LoopControl> loops;
   std::map<SNLBitNet*, bool> assumptions;
   std::map<std::string, std::vector<std::shared_ptr<VariableChoice>>> variableChoices;
   std::map<std::string, MemoryWrite> memoryWrites;
@@ -918,7 +925,7 @@ class RTLConstructor {
       if ((names && !names->contains(name)) || memories_.contains(name)) continue;
       const auto& type = object.value.shape;
       if (object.input || object.output || object.variable || object.constant ||
-          !type.fields.empty() || type.ranges.empty() || type.ranges.front().indexEnumeration || type.ranges.size() > 2 ||
+          !type.fields.empty() || type.ranges.empty() || !type.size() || type.ranges.front().indexEnumeration || type.ranges.size() > 2 ||
           !arrays_.contains(type.types.front()) ||
           std::min(type.ranges.front().left, type.ranges.front().right) < 0 ||
           std::max(type.ranges.front().left, type.ranges.front().right) > INT32_MAX ||
@@ -1347,8 +1354,8 @@ class RTLConstructor {
       ordered.emplace(array.span.start.offset, [&array, this, bindings] { addArray(array); if (bindings) bindings->names.insert(key(array.name)); });
     for (const auto& constant : constants)
       ordered.emplace(constant.object.span.start.offset, [&constant, this, bindings] {
+        if (bindings) for (const auto& name : constant.object.names) bindings->declare(key(name));
         addConstant(constant);
-        if (bindings) for (const auto& name : constant.object.names) bindings->names.insert(key(name));
       });
     for (const auto& record : records)
       ordered.emplace(record.span.start.offset, [&record, this, bindings] { addRecord(record); if (bindings) bindings->names.insert(key(record.name)); });
@@ -2268,8 +2275,8 @@ class RTLConstructor {
             !statement.assignment.indices.empty() || !variables.contains(key(statement.assignment.target)))
           fail("function assignment requires a local scalar variable");
       }
-      if (statement.kind == Statement::Kind::Exit && !loopDepth)
-        fail("exit requires an enclosing function loop");
+      if ((statement.kind == Statement::Kind::Exit || statement.kind == Statement::Kind::Next) && !loopDepth)
+        fail("exit/next requires an enclosing function loop");
       if (statement.kind == Statement::Kind::Case)
         fail("case in static function bodies is not yet supported");
       auto nestedVariables = variables;
@@ -2283,7 +2290,8 @@ class RTLConstructor {
   struct StaticFlow {
     std::optional<StaticScalar> returned;
     bool exited = false;
-    explicit operator bool() const { return returned.has_value() || exited; }
+    bool continued = false;
+    explicit operator bool() const { return returned.has_value() || exited || continued; }
   };
 
   StaticFlow staticStatements(const std::vector<Statement>& statements, StaticScope& scope) {
@@ -2292,11 +2300,12 @@ class RTLConstructor {
       if (++steps_ > 100000) fail("static function evaluation limit exceeded");
       if (statement.kind == Statement::Kind::Null) continue;
       if (statement.kind == Statement::Kind::Return) return {scalar(*statement.returnValue, &scope)};
-      if (statement.kind == Statement::Kind::Exit) {
-        if (!statement.condition) return {std::nullopt, true};
+      if (statement.kind == Statement::Kind::Exit || statement.kind == Statement::Kind::Next) {
+        const bool exiting = statement.kind == Statement::Kind::Exit;
+        if (!statement.condition) return {std::nullopt, exiting, !exiting};
         const auto condition = scalar(*statement.condition, &scope);
-        if (!condition.boolean) fail("exit condition must be boolean");
-        if (condition.value) return {std::nullopt, true};
+        if (!condition.boolean) fail("exit/next condition must be boolean");
+        if (condition.value) return {std::nullopt, exiting, !exiting};
         continue;
       }
       if (statement.kind == Statement::Kind::If) {
@@ -2493,6 +2502,27 @@ class RTLConstructor {
     return {shape, mux(condition, yes.bits, no.bits)};
   }
 
+  void validateLoopControl(std::span<const Statement> body, size_t depth = 0) {
+    for (const auto& statement : body) {
+      DiagnosticScope location(statement.span);
+      if ((statement.kind == Statement::Kind::Exit || statement.kind == Statement::Kind::Next) && !depth)
+        fail("exit/next requires an enclosing loop");
+      const auto nested = depth + (statement.kind == Statement::Kind::For || statement.kind == Statement::Kind::While);
+      validateLoopControl(statement.statements, nested);
+      validateLoopControl(statement.alternative, depth);
+      for (const auto& branch : statement.caseBodies) validateLoopControl(branch, depth);
+    }
+  }
+
+  void loopTransfer(const Statement& statement, State& state) {
+    if (state.loops.empty()) fail("exit/next requires an enclosing loop");
+    auto* taken = statement.condition ? conditionValue(expression(*statement.condition, state)).bits.front() : constant(true);
+    auto* remaining = gate("not", taken);
+    auto& loop = state.loops.back();
+    loop.iteration = gate("and", loop.iteration, remaining);
+    if (statement.kind == Statement::Kind::Exit) loop.active = gate("and", loop.active, remaining);
+  }
+
   using RuntimeContinuation = std::function<std::optional<Value>(State&)>;
 
   std::optional<Value> runtimeStatements(std::span<const Statement> statements, State& state,
@@ -2512,13 +2542,32 @@ class RTLConstructor {
         auto result = runtimeStatements(statements.subspan(position+1), branch, continuation);
         return result || !continuation ? result : continuation(branch);
       };
+      if (!state.loops.empty()) {
+        auto* enabled = state.loops.back().iteration;
+        const auto known = knownCondition(enabled, state);
+        if (known && !*known) continue;
+        if (!known) {
+          auto yes = state, no = state;
+          assume(yes, enabled, true); assume(no, enabled, false);
+          auto result = runtimeStatements(statements.subspan(position, 1), yes, tail);
+          if (result) {
+            auto skipped = tail(no);
+            if (!skipped) fail("runtime function has a path without a return");
+            return mergeRuntimeResults(enabled, *result, *skipped);
+          }
+          merge(state, yes, no, enabled);
+          continue;
+        }
+      }
       if (statement.kind == Statement::Kind::Return) {
         if (!statement.returnValue) fail("function return requires a value");
         if (runtimeReturnShape_ && runtimeReturnShape_->integerWidth && isStatic(*statement.returnValue))
           checkInteger(integer(*statement.returnValue), *runtimeReturnType_);
         return expression(*statement.returnValue, state, runtimeReturnShape_ ? &*runtimeReturnShape_ : nullptr);
       }
-      if (statement.kind == Statement::Kind::Call) {
+      if (statement.kind == Statement::Kind::Exit || statement.kind == Statement::Kind::Next) {
+        loopTransfer(statement, state);
+      } else if (statement.kind == Statement::Kind::Call) {
         callRuntime(*statement.procedureCall, state, &state);
       } else if (statement.kind == Statement::Kind::Assignment) {
         const auto& assignment = statement.assignment;
@@ -2533,15 +2582,20 @@ class RTLConstructor {
         const auto name = key(statement.iterator);
         if (integers_.contains(name) || booleans_.contains(name) || objects_.contains(name))
           fail("shadowed runtime function loop parameters are unsupported");
+        state.loops.push_back({constant(true), constant(true)});
+        const auto loopIndex = state.loops.size()-1;
         std::function<std::optional<Value>(size_t, State&)> iterations;
         iterations = [&](size_t first, State& current) -> std::optional<Value> {
           for (size_t i = first; i < bounds.size(); ++i) {
+            current.loops[loopIndex].iteration = current.loops[loopIndex].active;
             integers_[name] = bounds.ascending ? bounds.left + int64_t(i) : bounds.left - int64_t(i);
             const RuntimeContinuation next = [&, i](State& branch) {
               IntegerFacts bindings(*this, branch);
               auto result = iterations(i+1, branch);
               integers_.erase(name);
-              return result ? result : tail(branch);
+              if (result) return result;
+              branch.loops.pop_back();
+              return tail(branch);
             };
             if (auto result = runtimeStatements(statement.statements, current, next)) return result;
           }
@@ -2550,6 +2604,7 @@ class RTLConstructor {
         };
         auto result = iterations(0, state);
         integers_.erase(name);
+        state.loops.pop_back();
         if (result) return result;
       } else if (statement.kind == Statement::Kind::If) {
         const auto condition = conditionValue(expression(*statement.condition, state));
@@ -2647,6 +2702,7 @@ class RTLConstructor {
   struct InitializerFlow {
     std::optional<Value> returned;
     bool exited = false;
+    bool continued = false;
   };
 
   bool initializerCondition(const Expr& condition, const State& state) {
@@ -2670,8 +2726,9 @@ class RTLConstructor {
         for (auto* bit : value.bits) if (!bit || !bit->isConstant()) fail("initializer function must return a static value");
         return {std::move(value)};
       }
-      if (statement.kind == Statement::Kind::Exit) {
-        if (!statement.condition || initializerCondition(*statement.condition, state)) return {std::nullopt, true};
+      if (statement.kind == Statement::Kind::Exit || statement.kind == Statement::Kind::Next) {
+        const bool exiting = statement.kind == Statement::Kind::Exit;
+        if (!statement.condition || initializerCondition(*statement.condition, state)) return {std::nullopt, exiting, !exiting};
       } else if (statement.kind == Statement::Kind::Call) {
         if (!initializerProcedure(*statement.procedureCall, state)) callRuntime(*statement.procedureCall, state, &state);
       } else if (statement.kind == Statement::Kind::Assignment) {
@@ -2683,7 +2740,7 @@ class RTLConstructor {
       } else if (statement.kind == Statement::Kind::If) {
         const auto flow = initializerStatements(initializerCondition(*statement.condition, state) ?
             statement.statements : statement.alternative, state);
-        if (flow.returned || flow.exited) return flow;
+        if (flow.returned || flow.exited || flow.continued) return flow;
       } else if (statement.kind == Statement::Kind::Case) {
         const auto selector = expression(*statement.condition, state);
         const auto matches = selectionMatches(selector, statement.choices);
@@ -2692,7 +2749,7 @@ class RTLConstructor {
           if (!known) fail("initializer case selector must be static");
           if (*known) {
             const auto flow = initializerStatements(statement.caseBodies[i], state);
-            if (flow.returned || flow.exited) return flow;
+            if (flow.returned || flow.exited || flow.continued) return flow;
             break;
           }
         }
@@ -2959,6 +3016,7 @@ class RTLConstructor {
       }
     }
     openFiles(std::numeric_limits<size_t>::max());
+    frame.validateLoopControl(body.statements);
     const auto result = initializerContext_ ? frame.initializerStatements(body.statements, state).returned :
         frame.runtimeStatements(body.statements, state);
     if (declaration.procedure) {
@@ -3068,6 +3126,7 @@ class RTLConstructor {
       size_t offset = 0, stride = selected->object->value.shape.size();
       for (size_t i = 0; i < selected->indices.size(); ++i) {
         const auto& bounds = selected->object->value.shape.ranges[i];
+        if (!bounds.size()) fail("cannot index a null array");
         stride /= bounds.size();
         if (scope && bounds.indexEnumeration) fail("enumeration-indexed arrays in static functions are unsupported");
         const auto index = scope ? staticInteger(*selected->indices[i], scope) : arrayIndex(*selected->indices[i], bounds);
@@ -3421,6 +3480,8 @@ class RTLConstructor {
       fail("duplicate or shadowing object: " + id);
     Bits bits;
     const auto size = type.size();
+    // A null internal array has a type and bounds, but no physical nets.
+    if (port && !size) fail("null RTL ports are unsupported");
     if (deferred) {} // Inference materializes only arrays that require registers.
     else if (variable) bits.resize(size, nullptr);
     else if (!type.ranges.empty() || type.integerWidth || type.enumeration || !type.fields.empty()) {
@@ -3954,6 +4015,7 @@ class RTLConstructor {
     if (value.shape.dynamicBounds) fail("indexing runtime-dependent slice bounds is unsupported");
     if (value.shape.ranges.empty()) fail("cannot index a scalar object");
     const auto bounds = value.shape.ranges.front();
+    if (!bounds.size()) fail("cannot index a null array");
     const auto stride = value.shape.size() / bounds.size();
     if (indexExpr.kind == Expr::Kind::Range && (!isStaticIndex(*indexExpr.left) || !isStaticIndex(*indexExpr.right)))
       return readDynamicSlice(std::move(value), indexExpr, state);
@@ -4215,6 +4277,88 @@ class RTLConstructor {
     return {{{"boolean"}, {}}, {matches}};
   }
 
+  static bool logicConversionName(const std::string& name) {
+    return name == "to_bit" || name == "to_stdulogic" || name == "to_bitvector" ||
+        name == "to_stdlogicvector" || name == "to_stdulogicvector";
+  }
+
+  Value logicConversion(const Expr& call, const State& state) {
+    const auto name = key(*call.left);
+    if (!stdLogic_ || objects_.contains(name) || integers_.contains(name) || booleans_.contains(name) ||
+        strings_.contains(name) || subtypes_.contains(name)) fail("unsupported or invisible logic conversion: " + name);
+    const bool toBit = name == "to_bit" || name == "to_bitvector";
+    const bool vector = name != "to_bit" && name != "to_stdulogic";
+    const Expr* source = nullptr;
+    const Expr* xmap = nullptr;
+    std::string sourceFormal;
+    bool named = false;
+    size_t position = 0;
+    const auto argument = [&](const Expr& actual) {
+      const Expr* value = &actual;
+      size_t destination = position++;
+      if (actual.kind == Expr::Kind::Association) {
+        named = true;
+        if (actual.left->kind != Expr::Kind::Name) fail("logic conversion formal must be a name");
+        const auto formal = key(*actual.left);
+        if (formal == "xmap" && toBit) destination = 1;
+        else if (formal == (toBit ? "s" : "b") || (!toBit && vector && formal == "s")) {
+          destination = 0;
+          sourceFormal = formal;
+        } else fail("unknown logic conversion formal: " + formal);
+        value = actual.right.get();
+      } else if (named) fail("positional logic conversion argument follows a named argument");
+      if (!destination) {
+        if (source) fail("duplicate logic conversion argument");
+        source = value;
+      } else if (destination == 1 && toBit) {
+        if (xmap) fail("duplicate logic conversion xmap");
+        xmap = value;
+      } else fail("too many logic conversion arguments");
+    };
+    if (call.kind == Expr::Kind::Indexed) argument(*call.right);
+    else for (const auto& actual : call.elements) argument(*actual);
+    if (!source) fail("missing logic conversion argument");
+    const Shape bitType{{"bit"}, {}};
+    const Shape logicType{{"std_logic"}, {}};
+    const auto fallback = xmap ? std::optional<Value>{expression(*xmap, state, &bitType)} : std::nullopt;
+    const auto unknownBit = [&] { return fallback ? fallback->bits.front() : constant(false); };
+    const auto conversionShape = [](size_t width, const std::string& scalar = "std_logic") {
+      return Shape{{scalar == "bit" ? "bit_vector" : "std_logic_vector", scalar},
+          {{int64_t(width)-1, 0, false}}};
+    };
+    Value operand;
+    const auto literal = matchLiteral(*source);
+    if (toBit && literal) {
+      if (vector == (source->kind == Expr::Kind::CharacterLiteral)) fail("logic conversion scalar/vector mismatch");
+      operand.shape = vector ? conversionShape(literal->size()) : logicType;
+      // Fold all IEEE literal states here without inventing runtime net values.
+      for (char digit : *literal) operand.bits.push_back(digit == '0' || digit == '1' ?
+          constant(digit == '1') : unknownBit());
+    } else {
+      std::optional<Shape> context;
+      if (!vector) context = toBit ? logicType : bitType;
+      else if (literal) {
+        if (sourceFormal.empty()) fail("ambiguous vector conversion literal requires a typed operand");
+        context = conversionShape(literal->size(), sourceFormal == "b" ? "bit" : "std_logic");
+      }
+      operand = expression(*source, state, context ? &*context : nullptr);
+      const auto& type = operand.shape;
+      const auto scalar = type.types.back();
+      if (type.integerWidth || type.enumeration || !type.fields.empty() || !type.declarations.empty() ||
+          type.ranges.size() != size_t(vector) ||
+          (toBit ? scalar != "std_logic" : scalar != "bit" && (!vector || scalar != "std_logic")) ||
+          (vector && type.types.front() != "bit_vector" && type.types.front() != "std_logic_vector"))
+        fail("logic conversion operand type mismatch");
+      if ((!sourceFormal.empty() && !toBit) &&
+          ((sourceFormal == "b") != (scalar == "bit"))) fail("logic conversion formal type mismatch");
+      if (toBit) for (auto*& bit : operand.bits)
+        if (bit->isConstantX() || bit->isConstantZ()) bit = unknownBit();
+    }
+    operand.shape = vector ? conversionShape(operand.bits.size(), toBit ? "bit" : "std_logic") :
+        toBit ? bitType : logicType;
+    return operand;
+  }
+
   // usedWidth limits construction, not the VHDL result subtype. Unused high
   // positions are placeholders and must never escape the consuming operation.
   Value expression(const Expr& expr, const State& state, const Shape* expected = nullptr,
@@ -4222,7 +4366,10 @@ class RTLConstructor {
     DiagnosticScope location(expr.span);
     Value value;
     Shape inferred;
-    if (initializerContext_ && expr.kind == Expr::Kind::Indexed && expr.left->kind == Expr::Kind::Name &&
+    if ((expr.kind == Expr::Kind::Indexed || expr.kind == Expr::Kind::Call) && expr.left->kind == Expr::Kind::Name &&
+        logicConversionName(key(*expr.left)) && !functions_.contains(key(*expr.left))) {
+      value = logicConversion(expr, state);
+    } else if (initializerContext_ && expr.kind == Expr::Kind::Indexed && expr.left->kind == Expr::Kind::Name &&
         key(*expr.left) == "endfile" && !functions_.contains("endfile")) {
       if (!textio_ || expr.right->kind != Expr::Kind::Name || !files_.contains(key(*expr.right)))
         fail("endfile requires a visible text file");
@@ -4535,6 +4682,7 @@ class RTLConstructor {
         const auto prefix = expression(*expr.left, state, nullptr, 0);
         if (prefix.shape.ranges.empty()) fail("expression selection requires an array");
         const auto bounds = prefix.shape.ranges.front();
+        if (!bounds.size()) fail("cannot index a null array");
         if (expr.right->kind == Expr::Kind::Range && (!isStaticIndex(*expr.right->left) || !isStaticIndex(*expr.right->right)))
           value = readDynamicSlice(expression(*expr.left, state), *expr.right, state);
         else {
@@ -5211,6 +5359,10 @@ class RTLConstructor {
       const std::set<std::string>& overwritten = {},
       PendingSelections* pending = nullptr, PendingSelections* yesPending = nullptr,
       PendingSelections* noPending = nullptr) {
+    for (size_t i = 0; i < state.loops.size(); ++i) {
+      state.loops[i].active = mux(condition, {yes.loops.at(i).active}, {no.loops.at(i).active}).front();
+      state.loops[i].iteration = mux(condition, {yes.loops.at(i).iteration}, {no.loops.at(i).iteration}).front();
+    }
     for (auto& [name, write] : state.memoryWrites) {
       const auto& a = yes.memoryWrites.at(name);
       const auto& b = no.memoryWrites.at(name);
@@ -5354,7 +5506,13 @@ class RTLConstructor {
         else returned = completion(result);
         if (!branchReturn || !returned) fail("runtime function case has a path without a return");
       }
-      if (returned) *returned = mergeRuntimeResults(matches[i], *branchReturn, *returned);
+      if (returned) {
+        // Returning continuations may already have left the enclosing loops.
+        // Only the value escapes, as in runtime if branches; their states must
+        // not be merged back into the still-active caller's loop stack.
+        *returned = mergeRuntimeResults(matches[i], *branchReturn, *returned);
+        continue;
+      }
       auto merged = state;
       PendingSelections next;
       merge(merged, alternative, result, matches[i], {},
@@ -5362,8 +5520,10 @@ class RTLConstructor {
       pending = std::move(next);
       result = std::move(merged);
     }
-    materializeSelections(result, pending);
-    state = std::move(result);
+    if (!returned) {
+      materializeSelections(result, pending);
+      state = std::move(result);
+    }
     return returned;
   }
 
@@ -5391,7 +5551,7 @@ class RTLConstructor {
 
   // Keep the first construction-time dead-value proof local to simple signal
   // writes and ifs. Variables, calls, loops, selections and memory use the old path.
-  bool simpleScheduledStatements(const std::vector<Statement>& statements) const {
+  bool simpleScheduledStatements(std::span<const Statement> statements) const {
     for (const auto& statement : statements) {
       if (statement.kind == Statement::Kind::Null) continue;
       if (statement.kind == Statement::Kind::If) {
@@ -5408,7 +5568,7 @@ class RTLConstructor {
     return true;
   }
 
-  void statements(const std::vector<Statement>& statements, State& state,
+  void statements(std::span<const Statement> statements, State& state,
       const std::set<std::string>& overwritten = {}, PendingSelections* pendingResult = nullptr) {
     PendingSelections pending;
     std::map<std::string, size_t> lastWrites;
@@ -5435,7 +5595,20 @@ class RTLConstructor {
       IntegerFacts integerFacts(*this, state);
       if (++steps_ > 100000) fail("static process elaboration limit exceeded");
       if (statement.kind == Statement::Kind::Null) continue;
-      if (statement.kind == Statement::Kind::Call) callRuntime(*statement.procedureCall, state, &state);
+      if (!state.loops.empty()) {
+        auto* enabled = state.loops.back().iteration;
+        const auto known = knownCondition(enabled, state);
+        if (known && !*known) continue;
+        if (!known) {
+          auto yes = state, no = state;
+          assume(yes, enabled, true); assume(no, enabled, false);
+          this->statements(std::span<const Statement>(&statement, 1), yes);
+          merge(state, yes, no, enabled);
+          continue;
+        }
+      }
+      if (statement.kind == Statement::Kind::Exit || statement.kind == Statement::Kind::Next) loopTransfer(statement, state);
+      else if (statement.kind == Statement::Kind::Call) callRuntime(*statement.procedureCall, state, &state);
       else if (statement.kind == Statement::Kind::Case) caseStatement(statement, state);
       else if (statement.kind == Statement::Kind::Assignment) assign(statement.assignment, state);
       else if (statement.kind == Statement::Kind::If) {
@@ -5458,11 +5631,14 @@ class RTLConstructor {
         const auto name = key(statement.iterator);
         if (integers_.contains(name) || objects_.contains(name))
           fail("shadowed loop parameters are not supported");
+        state.loops.push_back({constant(true), constant(true)});
         for (size_t i = 0; i < bounds.size(); ++i) {
+          state.loops.back().iteration = state.loops.back().active;
           integers_[name] = bounds.ascending ? bounds.left + static_cast<int64_t>(i)
                                             : bounds.left - static_cast<int64_t>(i);
           this->statements(statement.statements, state);
         }
+        state.loops.pop_back();
         integers_.erase(name);
       } else fail("return is only supported inside functions");
     }
@@ -5673,6 +5849,7 @@ class RTLConstructor {
             })) latchGuard = &guard;
     }
     SNLBitNet* latchEnable = nullptr;
+    validateLoopControl(process.statements);
     if (latchGuard) {
       latchEnable = conditionValue(expression(*latchGuard->condition, state)).bits.front();
       statements(latchGuard->statements, state);
@@ -5755,6 +5932,11 @@ class RTLConstructor {
     };
     for (const auto& declaration : process.variables) for (const auto& name : declaration.names) {
       auto& object = objects_.at(key(name));
+      if (!object.value.shape.size()) {
+        object.value.bits.clear();
+        variableStorage.emplace(key(name), Bits{});
+        continue;
+      }
       auto* storage = this->declaration(
           SNLBusNet::create(design_, object.value.shape.size()-1, 0), name.span);
       Bits bits;
@@ -5792,6 +5974,8 @@ class RTLConstructor {
     }
     auto resetState = state;
     SNLBitNet* resetActive = nullptr;
+    validateLoopControl(process.statements);
+    validateLoopControl(process.resetStatements);
     if (process.asynchronousReset) {
       resetActive = control(*process.resetSignal, process.resetLevel, state);
       statements(process.resetStatements, resetState);
