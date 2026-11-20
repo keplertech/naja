@@ -23,7 +23,7 @@ db.loadLibertyPrimitives(liberty_files)
 files = [path.join(benchmarks, 'verilog', 'tinyrocket.v')]
 start_time = time.time()
 logging.info(f"Loading verilog: {', '.join(files)}")
-db.loadVerilog(files)
+db.loadGateLevelVerilog(files)
 execution_time = time.time() - start_time
 logging.info(f"Loading done in {execution_time:.2f} seconds")
 top = db.getTopDesign()

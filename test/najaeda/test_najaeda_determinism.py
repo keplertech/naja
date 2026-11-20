@@ -1196,6 +1196,22 @@ entity top is port(a : in std_logic; y : out std_logic_vector(5 downto 0)); end;
 architecture rtl of top is begin u : entity work.source port map(a, y); end;
 """)
 
+    def test_vhdl_internal_constant_slices(self):
+        self.check_determinism("vhd", """
+entity top is port(s : in bit; a : in bit_vector(2 downto 0);
+                   y : out bit_vector(8 downto 0)); end;
+architecture rtl of top is
+  signal lane : bit_vector(8 downto 0);
+begin
+  process(s,a) begin
+    lane <= (others => '1');
+    if s='1' then lane(2 downto 0) <= a; lane(8 downto 6) <= not a; end if;
+    lane(4) <= '0';
+  end process;
+  y <= lane;
+end;
+""")
+
     def test_vhdl_memory(self):
         self.check_determinism("vhd", """
 library ieee;

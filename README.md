@@ -165,9 +165,11 @@ Choose the frontend by the source contents, including for `.v` files:
 
 Verilog export writes structural netlists.
 
-The former Python names (`load_verilog`, `VerilogConfig`, `dump_verilog`,
-`VerilogDumpConfig`, and raw `loadVerilog`/`dumpVerilog`) remain compatibility
-aliases and warn that they will be deprecated soon.
+The former high-level Python names (`load_verilog`, `VerilogConfig`,
+`dump_verilog`, and `VerilogDumpConfig`) remain compatibility aliases and warn
+that they will be deprecated soon. The raw `NLDB.loadVerilog`,
+`NLDB.dumpVerilog`, and `SNLDesign.dumpVerilog` aliases have been removed; use
+their `*GateLevelVerilog` replacements.
 
 ### Tutorials
 

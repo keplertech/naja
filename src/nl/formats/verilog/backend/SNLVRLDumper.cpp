@@ -1457,6 +1457,60 @@ void SNLVRLDumper::dumpNets(const SNLDesign* design, std::ostream& o, DesignInsi
   if (atLeastOne) {
     o << '\n';
   }
+  // Bit uses substitute literals, but whole-bus uses still reference the wire.
+  // Drive constant bits of mixed buses in declaration order, including holes
+  // and ascending ranges. Uniform constant nets need no wire at all.
+  bool assignedConstants = false;
+  for (auto net: design->getNets()) {
+    auto bus = dynamic_cast<const SNLBusNet*>(net);
+    if (not bus or bus->isAssignConstant()) {
+      continue;
+    }
+    auto port = design->getBusTerm(bus->getName());
+    const SNLBusNetBit* first = nullptr;
+    const SNLBusNetBit* last = nullptr;
+    size_t width = 0;
+    auto flush = [&]() {
+      if (not first) {
+        return;
+      }
+      o << "assign " << dumpName(getNetName(bus, naming).getString());
+      o << "[" << first->getBit();
+      if (width > 1) {
+        o << ":" << last->getBit();
+      }
+      o << "] = " << width << "'b"
+        << std::string(width, getAssignConstantBitValue(first)) << ";\n";
+      assignedConstants = true;
+      first = last = nullptr;
+      width = 0;
+    };
+    const auto step = bus->getMSB() > bus->getLSB() ? -1 : 1;
+    for (auto bitNet: bus->getBits()) {
+      auto bit = static_cast<const SNLBusNetBit*>(bitNet);
+      auto portBit = port ? port->getBit(bit->getBit()) : nullptr;
+      // dumpTermAssigns already drives a matching output port bit.
+      if (not bit->isAssignConstant() or
+          (portBit and portBit->getDirection() == SNLTerm::Direction::Output and
+           portBit->getNet() == bit)) {
+        flush();
+        continue;
+      }
+      if (last and (last->getType() != bit->getType() or
+          bit->getBit() != last->getBit() + step)) {
+        flush();
+      }
+      if (not first) {
+        first = bit;
+      }
+      last = bit;
+      ++width;
+    }
+    flush();
+  }
+  if (assignedConstants) {
+    o << '\n';
+  }
 }
 
 void SNLVRLDumper::collectUnusedWireNames(

@@ -189,14 +189,6 @@ static PyObject* PySNLDesign_dumpGateLevelVerilog(PySNLDesign* self, PyObject* a
   Py_RETURN_NONE;
 }
 
-static PyObject* PySNLDesign_dumpVerilog(PySNLDesign* self, PyObject* args, PyObject* kwargs) {
-  if (PyErr_WarnEx(PyExc_FutureWarning,
-      "SNLDesign.dumpVerilog will be deprecated soon; use SNLDesign.dumpGateLevelVerilog instead.", 1) < 0) {
-    return nullptr;
-  }
-  return PySNLDesign_dumpGateLevelVerilog(self, args, kwargs);
-}
-
 static PyObject* PySNLDesign_addCombinatorialArcs(PySNLDesign* self, PyObject* args) {
   const char* parameterValue = nullptr;
   PyObject* inputsObject = nullptr;
@@ -1128,8 +1120,6 @@ PyMethodDef PySNLDesign_Methods[] = {
     "destroy this SNLDesign."},
   { "clone", (PyCFunction)PySNLDesign_clone, METH_VARARGS,
     "clone this SNLDesign."},
-  { "dumpVerilog", (PyCFunction)PySNLDesign_dumpVerilog, METH_VARARGS|METH_KEYWORDS,
-    "Compatibility alias for dumpGateLevelVerilog; will be deprecated soon. Emits FutureWarning."},
   { "dumpGateLevelVerilog", (PyCFunction)PySNLDesign_dumpGateLevelVerilog, METH_VARARGS|METH_KEYWORDS,
     "dump this SNLDesign as gate-level (structural) Verilog, not the original behavioral RTL."},
   { "dumpFullDotFile", (PyCFunction)PySNLDesign_dumpFullDotFile, METH_VARARGS,
