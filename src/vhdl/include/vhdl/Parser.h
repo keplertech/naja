@@ -146,7 +146,7 @@ struct Assignment {
 };
 
 struct SequentialStatement {
-    enum class Kind { Assignment, If, For, Return, Case, Null, Exit, While, Wait, Call };
+    enum class Kind { Assignment, If, For, Return, Case, Null, Exit, Next, While, Wait, Call };
     Kind kind = Kind::Assignment;
     Assignment assignment;
     std::unique_ptr<Expression> condition;

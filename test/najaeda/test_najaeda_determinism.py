@@ -1228,6 +1228,69 @@ architecture rtl of top is begin
 end;
 """)
 
+    def test_vhdl_null_arrays_shadowing_and_logic_conversions(self):
+        self.check_determinism("vhd", """
+package defaults is constant mask : bit_vector(4 downto 0) := "00110"; end;
+library ieee; use ieee.std_logic_1164.all; use work.defaults.all;
+entity top is port(a : in std_ulogic_vector(5 to 9); fallback : in bit;
+  y : out std_ulogic_vector(4 downto 0); z : out bit_vector(4 downto 0); valid : out bit); end;
+architecture rtl of top is
+  constant mask : bit_vector(4 downto 0) := "10011";
+  type empty_t is array(0 downto 1) of bit_vector(2 downto 0);
+  signal empty_words : empty_t;
+  function normalized(v : bit_vector) return bit is
+  begin
+    if v'left = 4 and v'right = 0 and not v'ascending then return '1'; end if;
+    return '0';
+  end;
+begin
+  absent: for i in empty_words'range generate empty_words(i) <= (others => '1'); end generate;
+  y <= to_stdulogicvector(b => to_bitvector(a) xor mask);
+  z <= to_bitvector(s => "0XZ10", xmap => fallback);
+  valid <= normalized(to_bitvector(a)) when empty_words'length = 0 else '0';
+end;
+""")
+
+    def test_vhdl_runtime_loop_transfers(self):
+        self.check_determinism("vhd", """
+entity top is port(a : in bit_vector(6 downto 0); y, z : out natural); end;
+architecture rtl of top is
+  function prefix(v : bit_vector) return natural is
+    variable n : natural := 0;
+  begin
+    for i in v'range loop
+      exit when v(i) = '1';
+      n := n + 1;
+    end loop;
+    return n;
+  end;
+  function search(v : bit_vector) return natural is
+  begin
+    for i in v'range loop
+      case v(i) is
+        when '0' => next;
+        when '1' => return i;
+      end case;
+    end loop;
+    return 7;
+  end;
+begin
+  y <= prefix(a) + search(a);
+  process(all) variable n : natural;
+  begin
+    n := 0;
+    for i in 0 to 2 loop
+      for j in 0 to 1 loop
+        next when a(2*i+j) = '0';
+        n := n + 1;
+        exit when a(6) = '1';
+      end loop;
+    end loop;
+    z <= n;
+  end process;
+end;
+""")
+
     def test_vhdl_file_initialized_memory(self):
         self.check_determinism("vhd", """
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use std.textio.all;

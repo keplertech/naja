@@ -532,6 +532,23 @@ constant tables. Positional elements follow declaration order and may precede
 associations after ``others`` are rejected. Named array aggregates require
 explicit bounds; unconstrained bound inference remains positional-only.
 
+Static-range ``for`` loops in runtime functions, procedures, and processes support
+unlabeled ``exit`` and ``next``, optionally followed by ``when`` and a condition.
+``exit`` stops the innermost loop; ``next`` skips the rest of its current
+iteration. Conditions may depend on signals or local variables. Lowering guards
+later variable updates and scheduled signal assignments, including transfers
+inside nested ``if`` and ``case`` branches. Loop bounds retain their declared
+direction, and null ranges execute no iterations. Static function and initializer
+loops also support these transfers. Labeled transfers and runtime ``while``
+loops remain unsupported; transfers outside a loop are diagnosed.
+
+Null internal array signals and variables retain their declared type, bounds,
+and attributes while creating no hardware nets. Loops over their ranges execute no iterations;
+indexing a null array is an error. Null top-level ports remain unsupported.
+Architecture-local constants hide imported package constants, while duplicate
+declarations within the same local scope remain errors. Package functions
+continue to use their package's declarations.
+
 Boolean signals, ports, and arrays use one bit per element while retaining
 boolean type checking. Boolean array constants support static indexing in
 constants and generate conditions, and dynamic indexing through the existing
@@ -609,6 +626,15 @@ source ranges. Logic-vector conversions require ``std_logic_1164``;
 ``signed`` and ``unsigned`` type marks require ``numeric_std``. Conversions do
 not resize or sign-extend their operands. Constrained vector subtype marks
 check the length and supply the result bounds.
+
+The visible ``std_logic_1164`` functions ``to_bit``, ``to_stdulogic``,
+``to_bitvector``, ``to_stdlogicvector``, and ``to_stdulogicvector`` support
+positional and named arguments. Vector results have normalized bounds
+``length-1 downto 0`` and preserve element order. ``to_bit`` and ``to_bitvector``
+map explicit nonbinary literal values to the ``xmap`` argument (default ``'0'``),
+including X/Z constants; literal ``'L'`` and ``'H'`` map to zero and one.
+Dynamic inputs follow the frontend's two-state synthesis subset. Local
+subprograms with the same names retain normal name hiding and call semantics.
 
 Explicit conversions through visible scalar type or subtype marks preserve
 values and nominal type identity: ``std_logic`` and ``std_ulogic`` are
