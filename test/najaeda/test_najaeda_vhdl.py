@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -12,6 +13,59 @@ from najaeda import netlist
 class NajaEDAVHDLTest(unittest.TestCase):
     def tearDown(self):
         netlist.reset()
+
+    def test_dump_defaulted_bus_constants(self):
+        from najaeda import naja
+
+        for value in ("0", "1"):
+            for internal in (False, True):
+                with self.subTest(value=value, internal=internal):
+                    netlist.reset()
+                    target = "lane" if internal else "y"
+                    source = f"""
+entity top is port(s : in bit; a : in bit_vector(2 downto 0);
+  b : in bit_vector(3 downto 0); y : out bit_vector(10 downto 0)); end;
+architecture rtl of top is
+  {"signal lane : bit_vector(10 downto 0);" if internal else ""}
+begin
+  process(s, a, b) begin
+    {target} <= (others => '{value}');
+    if s = '1' then
+      {target}(2 downto 0) <= a;
+      {target}(10 downto 7) <= b;
+    end if;
+  end process;
+  {"y <= lane;" if internal else ""}
+end;
+"""
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "input.vhd"
+                        path.write_text(source, encoding="utf-8")
+                        universe = naja.NLUniverse.create()
+                        db = naja.NLDB.create(universe)
+                        db.loadVHDL(str(path), top="top", diagnostics_report_path=None)
+                        top = next(iter(db.getLibraries())).getSNLDesign("top")
+                        bus = top.getNet(target)
+                        self.assertIsNotNone(bus)
+                        if internal:
+                            for bit in range(3, 7):
+                                self.assertEqual("Assign" + value, bus.getBit(bit).getTypeAsString())
+                        for dump in (top.dumpVerilog, top.dumpGateLevelVerilog):
+                            dump(directory, "output.v")
+                            text = (Path(directory) / "output.v").read_text()
+                            drivers = {bit: [] for bit in range(11)}
+                            pattern = (rf"assign {target}\[(\d+)(?::(\d+))?\]"
+                                       r"\s*=\s*(\d+)'b([01]+);")
+                            for match in re.finditer(pattern, text):
+                                first = int(match[1])
+                                last = int(match[2]) if match[2] else first
+                                bits = range(first, last - 1, -1)
+                                self.assertEqual(len(bits), int(match[3]))
+                                self.assertEqual(len(bits), len(match[4]))
+                                for bit, constant in zip(bits, match[4]):
+                                    drivers[bit].append(constant)
+                            for bit in range(11):
+                                self.assertEqual([value] if 3 <= bit <= 6 else [], drivers[bit])
 
     def test_load_vhdl(self):
         source = """\

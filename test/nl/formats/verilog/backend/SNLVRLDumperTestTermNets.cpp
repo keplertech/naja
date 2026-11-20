@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <regex>
 #include <sstream>
 
 #include "SNLVRLDumper.h"
@@ -293,4 +295,88 @@ TEST_F(SNLVRLDumperTestTermNets, anonymousPortConnectionsUseEmittedNames) {
   EXPECT_NE(std::string::npos, text.find("assign " + scalarName + " = \\input.flag ;"));
   EXPECT_NE(std::string::npos, text.find("assign scalar_out[0] = " + scalarName + ";"));
   EXPECT_NE(std::string::npos, text.find("assign flag_out = " + scalarName + ";"));
+}
+
+TEST_F(SNLVRLDumperTestTermNets, mixedBusConstantsHaveExactlyOneDriver) {
+  // Exercise the representation independently of which HDL frontend made it.
+  for (bool ascending: {false, true}) {
+    for (bool outputPort: {false, true}) {
+      const auto name = std::string(ascending ? "up" : "down") +
+        (outputPort ? "_port" : "_internal");
+      auto bus = SNLBusNet::create(top_, ascending ? -3 : 5,
+        ascending ? 5 : -3, NLName(name));
+      if (outputPort) {
+        SNLBusTerm::create(top_, SNLTerm::Direction::Output,
+          bus->getMSB(), bus->getLSB(), NLName(name))->setNet(bus);
+      }
+      // Adjacent same-value constants, adjacent differing values, isolated
+      // bits and nonconstant gaps, including negative indices.
+      for (auto index: {-2, -1, 2, 4}) {
+        bus->getBit(index)->setType(SNLNet::Type::Assign0);
+      }
+      for (auto index: {0, 3}) {
+        bus->getBit(index)->setType(SNLNet::Type::Assign1);
+      }
+      auto alias = SNLBusTerm::create(top_, SNLTerm::Direction::Output,
+        bus->getMSB(), bus->getLSB(), NLName(name + "_alias"));
+      alias->setNet(bus);
+    }
+  }
+  SNLVRLDumper dumper;
+  std::ostringstream output;
+  dumper.dumpDesign(top_, output);
+  const auto text = output.str();
+  for (auto net: top_->getNets()) {
+    auto bus = static_cast<SNLBusNet*>(net);
+    auto name = bus->getName().getString();
+    std::map<int, std::string> drivers;
+    const std::regex assignment("assign " + name +
+      R"(\[(-?\d+)(?::(-?\d+))?\] = (\d+)'b([01]+);)");
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), assignment);
+         it != std::sregex_iterator(); ++it) {
+      const auto& match = *it;
+      const int first = std::stoi(match[1]);
+      const int last = match[2].matched ? std::stoi(match[2]) : first;
+      const int step = first <= last ? 1 : -1;
+      const auto value = match[4].str();
+      ASSERT_EQ(std::abs(last - first) + 1, std::stoi(match[3]));
+      ASSERT_EQ(std::stoi(match[3]), value.size());
+      for (int bit = first, pos = 0; ; bit += step, ++pos) {
+        drivers[bit] += value[pos];
+        if (bit == last) break;
+      }
+    }
+    for (auto bit: bus->getBits()) {
+      const auto index = static_cast<SNLBusNetBit*>(bit)->getBit();
+      EXPECT_EQ(bit->isAssign0() ? "0" : bit->isAssign1() ? "1" : "",
+        drivers[index]) << name << "[" << index << "]";
+    }
+  }
+  EXPECT_NE(std::string::npos, text.find("assign down_internal[-1:-2] = 2'b00;"));
+  EXPECT_NE(std::string::npos, text.find("assign up_internal[-2:-1] = 2'b00;"));
+}
+
+TEST_F(SNLVRLDumperTestTermNets, uniformConstantsAreSubstitutedWithoutWires) {
+  for (bool one: {false, true}) {
+    auto name = one ? "one" : "zero";
+    auto scalar = SNLScalarNet::create(top_, NLName(name));
+    scalar->setType(one ? SNLNet::Type::Assign1 : SNLNet::Type::Assign0);
+    SNLScalarTerm::create(top_, SNLTerm::Direction::Output,
+      NLName(std::string(name) + "_out"))->setNet(scalar);
+    auto bus = SNLBusNet::create(top_, 3, 0, NLName(std::string(name) + "_bus"));
+    bus->setType(scalar->getType());
+    SNLBusTerm::create(top_, SNLTerm::Direction::Output, 3, 0,
+      NLName(std::string(name) + "_word"))->setNet(bus);
+  }
+  SNLVRLDumper dumper;
+  std::ostringstream output;
+  dumper.dumpDesign(top_, output);
+  const auto text = output.str();
+  EXPECT_EQ(std::string::npos, text.find("wire "));
+  EXPECT_NE(std::string::npos, text.find("assign zero_out = 1'b0;"));
+  EXPECT_NE(std::string::npos, text.find("assign one_out = 1'b1;"));
+  for (int bit = 0; bit < 4; ++bit) {
+    EXPECT_NE(std::string::npos, text.find("assign zero_word[" + std::to_string(bit) + "] = 1'b0;"));
+    EXPECT_NE(std::string::npos, text.find("assign one_word[" + std::to_string(bit) + "] = 1'b1;"));
+  }
 }
