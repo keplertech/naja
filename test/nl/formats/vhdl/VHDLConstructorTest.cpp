@@ -8556,3 +8556,28 @@ begin y <= to_bit(a); end;
     EXPECT_EQ(evaluateRTL(design->getScalarTerm(NLName("y"))->getNet(), values, visiting), !input);
   }
 }
+
+TEST_F(VHDLConstructorTest, NullArrayReadsRejectBeforeComputingElementStrides) {
+  for (const auto& [declarations, expression] : std::vector<std::pair<std::string, std::string>>{
+      {"signal v : std_ulogic_vector(3 to 2);", "v(3)"},
+      {"signal v : std_ulogic_vector(0 downto 1);", "v(i)"},
+      {"signal v : std_ulogic_vector(3 to 2);", "v(3 to 3)(3)"},
+      {"signal v : std_ulogic_vector(0 downto 1);", "v(i downto 0)(0)"},
+      {"signal v : std_ulogic_vector(0 downto 1);", "to_stdulogic(to_bitvector(v)(0))"},
+      {"signal v : std_ulogic_vector(0 downto 1); "
+       "function copy(x : std_ulogic_vector) return std_ulogic_vector is begin return x; end;", "copy(v)(0)"},
+      {"type words_t is array(0 to 1) of std_ulogic_vector(1 to 0); signal v : words_t;", "v(0)(1)"}
+  }) {
+    SCOPED_TRACE(expression);
+    try {
+      VHDLConstructor(library_).construct(std::string(
+          "library ieee; use ieee.std_logic_1164.all; "
+          "entity bad_null is port(i : in natural range 0 to 3; y : out std_ulogic); end; "
+          "architecture rtl of bad_null is ") + declarations + " begin y <= " + expression + "; end;");
+      FAIL() << "expected null-array index diagnostic";
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find("cannot index a null array"), std::string::npos) << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+}

@@ -3126,6 +3126,7 @@ class RTLConstructor {
       size_t offset = 0, stride = selected->object->value.shape.size();
       for (size_t i = 0; i < selected->indices.size(); ++i) {
         const auto& bounds = selected->object->value.shape.ranges[i];
+        if (!bounds.size()) fail("cannot index a null array");
         stride /= bounds.size();
         if (scope && bounds.indexEnumeration) fail("enumeration-indexed arrays in static functions are unsupported");
         const auto index = scope ? staticInteger(*selected->indices[i], scope) : arrayIndex(*selected->indices[i], bounds);
@@ -4014,6 +4015,7 @@ class RTLConstructor {
     if (value.shape.dynamicBounds) fail("indexing runtime-dependent slice bounds is unsupported");
     if (value.shape.ranges.empty()) fail("cannot index a scalar object");
     const auto bounds = value.shape.ranges.front();
+    if (!bounds.size()) fail("cannot index a null array");
     const auto stride = value.shape.size() / bounds.size();
     if (indexExpr.kind == Expr::Kind::Range && (!isStaticIndex(*indexExpr.left) || !isStaticIndex(*indexExpr.right)))
       return readDynamicSlice(std::move(value), indexExpr, state);
@@ -4680,6 +4682,7 @@ class RTLConstructor {
         const auto prefix = expression(*expr.left, state, nullptr, 0);
         if (prefix.shape.ranges.empty()) fail("expression selection requires an array");
         const auto bounds = prefix.shape.ranges.front();
+        if (!bounds.size()) fail("cannot index a null array");
         if (expr.right->kind == Expr::Kind::Range && (!isStaticIndex(*expr.right->left) || !isStaticIndex(*expr.right->right)))
           value = readDynamicSlice(expression(*expr.left, state), *expr.right, state);
         else {
