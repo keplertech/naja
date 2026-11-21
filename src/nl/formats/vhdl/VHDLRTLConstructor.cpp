@@ -7,6 +7,7 @@
 #include "NLException.h"
 #include "NLDB0.h"
 #include "SNLHDLLibrary.h"
+#include "SNLHDLSpecialization.h"
 #include "SNLInstParameter.h"
 #include "NLLibrary.h"
 #include "NajaPrivateProperty.h"
@@ -34,12 +35,16 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <exception>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <map>
 #include <memory>
 #include <set>
 #include <span>
+#include <sstream>
 #include <tuple>
 #include <utility>
 
@@ -273,9 +278,10 @@ struct StaticScalar {
 };
 struct GenericValue {
   StaticScalar scalar;
-  // Binary bits in declaration order, independent of the caller's netlist.
+  // Logic bits in declaration order, independent of the caller's netlist.
   std::optional<std::string> bits;
   std::optional<std::string> text;
+  std::optional<double> real;
 };
 using GenericValues = std::map<std::string, GenericValue>;
 
@@ -300,13 +306,18 @@ class RTLConstructor {
       const auto type = key(generic.type.name);
       const bool vector = type == "bit_vector" || type == "std_logic_vector" ||
           type == "std_ulogic_vector" || type == "unsigned" || type == "signed";
-      if (!vector && type != "integer" && type != "natural" && type != "positive" && type != "boolean" && type != "string")
-        fail("RTL generics require an integer subtype, boolean, string, or constrained binary vector");
+      const bool logic = type == "bit" || type == "std_logic" || type == "std_ulogic";
+      const bool enumeration = enumerations_.contains(type);
+      if (!vector && !logic && !enumeration && type != "real" && type != "integer" && type != "natural" && type != "positive" && type != "boolean" && type != "string")
+        fail("RTL generics require an integer subtype, boolean, real, enumeration, string, bit, or constrained logic vector");
       std::optional<Shape> target;
       if (type == "string") {
         if (generic.type.constraint) fail("constrained string generics are unsupported");
         target = Shape{{"string"}, {}};
-      } else if (vector) {
+      } else if (type == "real") {
+        if (generic.type.constraint) fail("constrained real generics are unsupported");
+        target = Shape{{"real"}, {}};
+      } else if (vector || logic || enumeration) {
         target = shape(generic.type);
         target->size();
       }
@@ -326,7 +337,10 @@ class RTLConstructor {
           record["declared_type"] = declaredTypeIntent(generic.type, target ? &*target : nullptr);
           record["default_expression"] = expressionIntent(generic.defaultValue.get());
           record["overridden"] = genericOverrides_.contains(id);
-          if (value.text) record["effective_value"] = *value.text;
+          if (value.real) {
+            record["effective_value"] = realLiteral(*value.real);
+            record["value_format"] = "real_literal";
+          } else if (value.text) record["effective_value"] = *value.text;
           else if (value.bits) {
             record["effective_value"] = *value.bits;
             record["value_format"] = "bits_in_declaration_order";
@@ -347,18 +361,54 @@ class RTLConstructor {
           } else record["default_value_status"] = "unsupported_without_additional_elaboration";
           intentDeclarations_.emplace_back(record);
         }
+        SNLHDLParameter parameter;
+        parameter.name = id;
+        if (value.real) {
+          parameter.literal = realLiteral(*value.real);
+          parameter.nameValue = SNLHDLSpecialization::integerValue(parameter.literal);
+        } else if (value.text) {
+          parameter.literal = "\"";
+          for (const char c : *value.text) {
+            parameter.literal += c;
+            if (c == '"') parameter.literal += c;
+          }
+          parameter.literal += '"';
+          const auto readableString = SNLHDLSpecialization::identifierValue(*value.text);
+          if (readableString == *value.text) parameter.nameValue = readableString;
+        } else if (value.bits && enumeration) {
+          size_t index = 0;
+          for (const char bit : *value.bits) index = 2 * index + (bit == '1');
+          if (index >= target->enumeration->literals.size()) fail("invalid enumeration generic value");
+          parameter.literal = key(target->enumeration->literals[index]);
+          parameter.nameValue = parameter.literal;
+        } else if (value.bits) {
+          parameter.nameValue = SNLHDLSpecialization::bitValue(*value.bits, logic);
+          const bool binary = value.bits->find_first_not_of("01") == std::string::npos;
+          parameter.literal = logic ? "'" + *value.bits + "'" :
+              binary && value.bits->size() % 4 == 0 ?
+              "x\"" + parameter.nameValue->substr(1) + "\"" : "\"" + *value.bits + "\"";
+        } else {
+          parameter.literal = value.scalar.boolean ? (value.scalar.value ? "true" : "false") :
+              std::to_string(value.scalar.value);
+          parameter.nameValue = SNLHDLSpecialization::integerValue(parameter.literal);
+        }
+        parameter.identity = type + ":" + parameter.literal;
+        specializationParameters_.push_back(std::move(parameter));
         interfaceBindings_->declare(id);
         if (retainingIntent()) intentBindings_[id] = intentDeclarations_.back();
-        if (type == "string") {
+        if (type == "real") {
+          if (!value.real) fail("real generic requires a static real value: " + id);
+          reals_.emplace(id, *value.real);
+        } else if (type == "string") {
           if (!value.text) fail("string generic requires a static string value: " + id);
           strings_.emplace(id, *value.text);
-        } else if (vector) {
+        } else if (vector || logic || enumeration) {
           if (!value.bits || value.bits->size() != target->size()) fail("vector generic type or length mismatch: " + id);
           Value object{*target, {}};
-          for (char bit : *value.bits) object.bits.push_back(constant(bit == '1'));
+          for (char bit : *value.bits) object.bits.push_back(logicLiteral(bit, *target));
           objects_.emplace(id, Object{std::move(object), false, false, false, true});
         } else {
-          if (value.text || value.bits || value.scalar.boolean != (type == "boolean")) fail("generic value type mismatch: " + id);
+          if (value.real || value.text || value.bits || value.scalar.boolean != (type == "boolean")) fail("generic value type mismatch: " + id);
           if (type == "boolean" && generic.type.constraint) fail("boolean generic constraints are unsupported");
           if (generic.type.constraint) range(*generic.type.constraint).position(value.scalar.value);
           if ((type == "positive" && value.scalar.value < 1) || (type == "natural" && value.scalar.value < 0))
@@ -369,6 +419,8 @@ class RTLConstructor {
       }
     }
   }
+
+  const auto& specializationParameters() const { return specializationParameters_; }
 
   bool staticString(const Expr& expr) const {
     return expr.kind == Expr::Kind::StringLiteral ||
@@ -402,8 +454,89 @@ class RTLConstructor {
     fail("unsupported string generic attribute: " + name);
   }
 
+  static std::string realLiteral(double value) {
+    // Floating-point to_chars requires macOS 13.3. Find the shortest
+    // round-tripping precision using streams available on macOS 11 instead.
+    // Use the classic locale for both directions, including under a caller's
+    // custom global locale, and canonicalize negative zero.
+    value = value == 0 ? 0.0 : value;
+    std::ostringstream formatted;
+    formatted.imbue(std::locale::classic());
+    std::string scientific;
+    int precision = 0;
+    for (; precision < std::numeric_limits<double>::max_digits10; ++precision) {
+      formatted.str({});
+      formatted << std::scientific << std::setprecision(precision) << value;
+      scientific = formatted.str();
+      std::istringstream literal(scientific);
+      literal.imbue(std::locale::classic());
+      double roundTrip = 0;
+      literal >> roundTrip;
+      const bool representableTinyValue = roundTrip != 0 &&
+          std::abs(roundTrip) <= std::numeric_limits<double>::min();
+      if (roundTrip == value && (!literal.fail() || representableTinyValue)) break;
+    }
+    if (precision == std::numeric_limits<double>::max_digits10)
+      fail("cannot format real generic");
+    // Match to_chars' choice of the shorter fixed/scientific spelling, with
+    // fixed winning ties. Format fixed from the value itself so large integer
+    // values retain their exact digits rather than a rounded significand.
+    const auto decimalExponent = std::stoi(scientific.substr(scientific.find('e') + 1));
+    formatted.str({});
+    formatted << std::fixed << std::setprecision(std::max(0, precision - decimalExponent)) << value;
+    std::string text = formatted.str();
+    if (scientific.size() < text.size()) text = scientific;
+    const auto exponent = text.find_first_of("eE");
+    if (text.substr(0, exponent).find('.') == std::string::npos)
+      text.insert(exponent == std::string::npos ? text.size() : exponent, ".0");
+    return text;
+  }
+
+  double realValue(const Expr& expr) {
+    double value;
+    if (expr.kind == Expr::Kind::RealLiteral) {
+      std::string text;
+      for (char c : expr.text) if (c != '_') text += c;
+      // Floating-point from_chars is unavailable in older supported libc++.
+      // The classic locale keeps source literals independent of the host locale.
+      std::istringstream literal(text);
+      literal.imbue(std::locale::classic());
+      value = 0;
+      literal >> std::noskipws >> value;
+      // Some libraries set failbit for representable subnormals, including
+      // values rounding to the smallest normal. Preserve those, but reject
+      // overflow and nonzero literals that underflow to zero.
+      const bool representableTinyValue = value != 0 &&
+          std::abs(value) <= std::numeric_limits<double>::min();
+      // Other libraries underflow to zero without setting failbit. Exponent
+      // digits do not make an otherwise zero significand nonzero.
+      const auto significandEnd = text.begin() + std::min(text.find_first_of("eE"), text.size());
+      const bool nonzeroSignificand = std::any_of(text.begin(), significandEnd,
+          [](char digit) { return digit >= '1' && digit <= '9'; });
+      if (!literal.eof() || literal.bad() || (literal.fail() && !representableTinyValue) ||
+          (value == 0 && nonzeroSignificand))
+        fail("unsupported real generic literal");
+    } else if (expr.kind == Expr::Kind::Name && reals_.contains(key(expr))) value = reals_.at(key(expr));
+    else if (expr.kind == Expr::Kind::Unary && (expr.text == "+" || expr.text == "-"))
+      value = (expr.text == "-" ? -1 : 1) * realValue(*expr.left);
+    else if (expr.kind == Expr::Kind::Binary) {
+      const auto left = realValue(*expr.left), right = realValue(*expr.right);
+      if (expr.text == "+") value = left + right;
+      else if (expr.text == "-") value = left - right;
+      else if (expr.text == "*") value = left * right;
+      else if (expr.text == "/") {
+        if (right == 0) fail("division by zero in real generic");
+        value = left / right;
+      } else fail("unsupported real generic operator");
+    } else fail("real generic requires a static real expression");
+    if (!std::isfinite(value)) fail("non-finite real generic value");
+    return value;
+  }
+
   GenericValue genericValue(const Expr& actual, const Shape* expected) {
     DiagnosticScope location(actual.span);
+    if (expected && expected->types == std::vector<std::string>{"real"})
+      return {{}, {}, {}, realValue(actual)};
     if (expected && expected->types == std::vector<std::string>{"string"})
       return {{}, {}, stringValue(actual)};
     if (!expected) return {scalar(actual), {}};
@@ -411,8 +544,10 @@ class RTLConstructor {
     std::string bits;
     for (auto* bit : value.bits) {
       const auto binary = constantValue(bit);
-      if (!binary) fail("vector generic actual must be static and binary");
-      bits += *binary ? '1' : '0';
+      if (binary) bits += *binary ? '1' : '0';
+      else if (bit && bit->isConstantX()) bits += 'X';
+      else if (bit && bit->isConstantZ()) bits += 'Z';
+      else fail("logic generic actual must be static");
     }
     return {{}, std::move(bits)};
   }
@@ -1151,7 +1286,7 @@ class RTLConstructor {
   void addSubtype(const vhdl::SubtypeDeclaration& declaration) {
     DiagnosticScope location(declaration.span);
     const auto name = key(declaration.name);
-    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || objects_.contains(name) ||
+    if (reals_.contains(name) || strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || objects_.contains(name) ||
         integers_.contains(name) || booleans_.contains(name) || arrayDeclarations_.contains(name) ||
         records_.contains(name) || enumerations_.contains(name) || integerTables_.contains(name) ||
         name == "bit" || name == "bit_vector" || name == "boolean" || name == "integer" ||
@@ -1198,7 +1333,7 @@ class RTLConstructor {
   void addArray(const vhdl::ArrayTypeDeclaration& declaration) {
     DiagnosticScope location(declaration.span);
     const auto name = key(declaration.name);
-    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) || integerTables_.contains(name) || integers_.contains(name) || objects_.contains(name) ||
+    if (reals_.contains(name) || strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) || integerTables_.contains(name) || integers_.contains(name) || objects_.contains(name) ||
         name == "bit" || name == "bit_vector" || name == "std_logic" ||
         name == "std_logic_vector" || name == "std_ulogic" || name == "std_ulogic_vector" ||
         name == "unsigned" || name == "signed" || name == "integer" ||
@@ -1250,7 +1385,7 @@ class RTLConstructor {
   void addRecord(const vhdl::RecordTypeDeclaration& declaration) {
     DiagnosticScope location(declaration.span);
     const auto name = key(declaration.name);
-    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) ||
+    if (reals_.contains(name) || strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || booleans_.contains(name) || (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name) ||
         objects_.contains(name) || integers_.contains(name) || integerTables_.contains(name) ||
         name == "bit" || name == "bit_vector" || name == "std_logic" || name == "std_ulogic" ||
         name == "std_logic_vector" || name == "std_ulogic_vector" || name == "unsigned" ||
@@ -1489,7 +1624,7 @@ class RTLConstructor {
     const auto name = key(type.name);
     std::set<std::string> names;
     for (const auto& id : declaration.object.names)
-      if (strings_.contains(key(id)) || subtypes_.contains(key(id)) || functions_.contains(key(id)) || booleans_.contains(key(id)) || !names.insert(key(id)).second || objects_.contains(key(id)) || integers_.contains(key(id)) ||
+      if (reals_.contains(key(id)) || strings_.contains(key(id)) || subtypes_.contains(key(id)) || functions_.contains(key(id)) || booleans_.contains(key(id)) || !names.insert(key(id)).second || objects_.contains(key(id)) || integers_.contains(key(id)) ||
           integerTables_.contains(key(id)) || (enumerations_.contains(key(id)) || records_.contains(key(id))) || arrayDeclarations_.contains(key(id)))
         fail("duplicate constant: " + key(id));
     if (name == "string") {
@@ -1628,7 +1763,7 @@ class RTLConstructor {
       return;
     }
     auto name = key(generate.iterator);
-    if (integers_.contains(name) || objects_.contains(name) || integerTables_.contains(name) ||
+    if (reals_.contains(name) || integers_.contains(name) || objects_.contains(name) || integerTables_.contains(name) ||
         (enumerations_.contains(name) || records_.contains(name)) || arrayDeclarations_.contains(name)) fail("shadowed generate parameter");
     const auto bounds = range(generate.range);
     for (size_t i = 0; i < bounds.size(); ++i) {
@@ -1680,16 +1815,19 @@ class RTLConstructor {
     const auto parentIntegers = integers_;
     const auto parentBooleans = booleans_;
     const auto parentStrings = strings_;
+    const auto parentReals = reals_;
     for (const auto& generic : entity->generics)
       for (const auto& name : generic.names) {
         const auto id = key(name);
         integers_.erase(id);
         booleans_.erase(id);
         strings_.erase(id);
+        reals_.erase(id);
         objects_.erase(id);
         if (childScope.objects_.contains(id)) objects_[id] = childScope.objects_.at(id);
         else if (childScope.booleans_.contains(id)) booleans_[id] = childScope.booleans_.at(id);
         else if (childScope.strings_.contains(id)) strings_[id] = childScope.strings_.at(id);
+        else if (childScope.reals_.contains(id)) reals_[id] = childScope.reals_.at(id);
         else integers_[id] = childScope.integers_.at(id);
       }
     std::map<std::string, Shape> formalShapes;
@@ -1725,6 +1863,7 @@ class RTLConstructor {
     integers_ = parentIntegers;
     booleans_ = parentBooleans;
     strings_ = parentStrings;
+    reals_ = parentReals;
     auto* model = build_(targetLibrary, key(instance.entity), overrides);
     if (const auto* property = dynamic_cast<RTLSourceProperty*>(model->getProperty("VHDLRTLSource")))
       for (const auto& [path, content] : property->initializationFiles) {
@@ -2135,7 +2274,7 @@ class RTLConstructor {
   void addLocalFunction(const vhdl::FunctionDeclaration& function) {
     const auto name = key(function.name);
     if (!function.body) fail("architecture function forward declarations are unsupported: " + name);
-    if (strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || integers_.contains(name) || booleans_.contains(name) ||
+    if (reals_.contains(name) || strings_.contains(name) || subtypes_.contains(name) || functions_.contains(name) || integers_.contains(name) || booleans_.contains(name) ||
         (objects_.contains(name) && !enumLiterals_.contains(name)) || integerTables_.contains(name) || records_.contains(name) ||
         enumerations_.contains(name) || arrayDeclarations_.contains(name))
       fail("duplicate or overloaded architecture function: " + name);
@@ -3476,7 +3615,7 @@ class RTLConstructor {
     const auto id = key(name);
     if (port && type.ranges.size() > 1)
       fail("RTL ports require scalar values or one-dimensional logic vectors");
-    if (strings_.contains(id) || functions_.contains(id) || booleans_.contains(id) || objects_.contains(id) || integers_.contains(id) || (enumerations_.contains(id) || records_.contains(id)) || arrayDeclarations_.contains(id) || integerTables_.contains(id))
+    if (reals_.contains(id) || strings_.contains(id) || functions_.contains(id) || booleans_.contains(id) || objects_.contains(id) || integers_.contains(id) || (enumerations_.contains(id) || records_.contains(id)) || arrayDeclarations_.contains(id) || integerTables_.contains(id))
       fail("duplicate or shadowing object: " + id);
     Bits bits;
     const auto size = type.size();
@@ -5673,6 +5812,7 @@ class RTLConstructor {
       hide(owner.aliases_, name);
       hide(owner.integers_, name);
       hide(owner.strings_, name);
+      hide(owner.reals_, name);
       hide(owner.booleans_, name);
       hide(owner.functions_, name);
       hide(owner.enumLiterals_, name);
@@ -6159,6 +6299,7 @@ class RTLConstructor {
   const LibraryContext& libraryContext_;
   NLLibrary* work_;
   GenericValues genericOverrides_;
+  std::vector<SNLHDLParameter> specializationParameters_;
   std::function<GenericValue(const std::string&, const Shape*)> genericActual_;
   std::function<SNLDesign*(NLLibrary*, const std::string&, const GenericValues&)> build_;
   std::set<std::pair<NLLibrary*, std::string>> imported_;
@@ -6169,6 +6310,7 @@ class RTLConstructor {
   std::set<std::string> instanceNames_;
   std::map<std::string, int64_t> integers_;
   std::map<std::string, std::string> strings_;
+  std::map<std::string, double> reals_;
   std::set<std::string> locallyStaticIntegers_;
   SubtypeMap subtypes_;
   std::map<std::string, FunctionBinding> functions_;
@@ -6243,6 +6385,8 @@ bool requiresVHDLRTL(const vhdl::DesignFile& syntax) {
         self(self, expression->right.get()) || self(self, expression->condition.get()));
   };
   for (const auto& entity : syntax.entities) {
+    // All generic specialization uses the same resolver and naming policy.
+    if (!entity.generics.empty()) return true;
     if (rtlContext(entity.context)) return true;
     for (const auto& generic : entity.generics)
       if (generic.type.constraint || !generic.defaultValue || extendedExpression(extendedExpression, generic.defaultValue.get()) ||
@@ -6396,6 +6540,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     selected = *candidates.begin();
   }
   std::vector<SNLDesign*> created;
+  std::vector<NLLibrary*> namingLibraries;
   std::set<std::pair<NLLibrary*, std::string>> active;
   std::function<SNLDesign*(NLLibrary*, const std::string&, const GenericValues&)> build;
   build = [&](NLLibrary* owner, const std::string& name, const GenericValues& overrides) -> SNLDesign* {
@@ -6413,20 +6558,39 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
       architecture = &candidate;
     }
     if (!entity || !architecture) fail("missing RTL entity or architecture: " + name);
-    std::string modelName = entity->name.spelling;
-    for (const auto& [generic, value] : overrides) {
-      modelName += "__" + generic + "_";
-      if (value.text) {
-        modelName += "s" + std::to_string(value.text->size()) + "_";
-        for (const unsigned char c : *value.text) {
-          modelName += "0123456789abcdef"[c >> 4];
-          modelName += "0123456789abcdef"[c & 15];
-        }
-      } else modelName += value.bits ? "v" + *value.bits : value.scalar.boolean ?
-          (value.scalar.value ? "true" : "false") : std::to_string(value.scalar.value);
+    // Resolve the full environment before looking up a specialization. Actuals
+    // have already been evaluated in the parent; defaults use the entity scope.
+    auto scratchDeleter = [](SNLDesign* design) { design->destroy(); };
+    std::unique_ptr<SNLDesign, decltype(scratchDeleter)> scratch(
+        SNLDesign::create(owner), scratchDeleter);
+    RTLConstructor resolved(scratch.get(), *entity, *architecture, syntax, context, overrides, build);
+    resolved.prepareEntity();
+    auto parameters = resolved.specializationParameters();
+
+    const bool hasDefaults = std::all_of(entity->generics.begin(), entity->generics.end(),
+        [](const auto& generic) { return bool(generic.defaultValue); });
+    if (hasDefaults) {
+      try {
+        RTLConstructor defaults(scratch.get(), *entity, *architecture, syntax, context, {}, build);
+        defaults.prepareEntity();
+        const auto& declared = defaults.specializationParameters();
+        for (size_t i = 0; i < parameters.size(); ++i)
+          parameters[i].isDefault = parameters[i].identity == declared[i].identity;
+      } catch (const NLException&) {
+        // The resolved environment above is valid. Unused defaults need not
+        // elaborate; retain every resolved value in the specialization name.
+      }
     }
+    scratch.reset();
+    std::set<std::string> sourceNames;
+    for (const auto& candidate : syntax.entities)
+      if (context.owner(candidate.span.start.offset) == owner) sourceNames.insert(key(candidate.name));
+    if (std::find(namingLibraries.begin(), namingLibraries.end(), owner) == namingLibraries.end())
+      namingLibraries.push_back(owner);
+    const auto modelName = SNLHDLSpecialization::name(
+        owner, key(entity->name), parameters, sourceNames, {}, owner == library && name == selected);
     const auto signature = std::string(source.substr(context.start(owner),
-        std::max(entity->span.end.offset, architecture->span.end.offset) - context.start(owner))) + modelName;
+        std::max(entity->span.end.offset, architecture->span.end.offset) - context.start(owner))) + SNLHDLSpecialization::signature(parameters);
     if (auto* existing = owner->getSNLDesign(NLName(modelName))) {
       auto* property = dynamic_cast<RTLSourceProperty*>(existing->getProperty("VHDLRTLSource"));
       if (!property || property->signature != signature) fail("conflicting RTL design: " + modelName);
@@ -6442,6 +6606,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     }
     auto* design = SNLDesign::create(owner, NLName(modelName));
     created.push_back(design);
+    SNLHDLSpecialization::annotate(design, key(entity->name), parameters);
     sourceMap.annotate(design, entity->span, true);
     sourceMap.annotate(design, architecture->span);
     RTLConstructor constructor(design, *entity, *architecture, syntax, context, overrides, build);
@@ -6454,6 +6619,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
   try {
     auto* design = build(library, selected, {});
     if (noRoot) fail("cannot infer a unique RTL top entity; specify an explicit top");
+    for (auto* owner : namingLibraries) SNLHDLSpecialization::finalizeNames(owner);
     std::optional<VHDLIntentValue> gateIntent;
     SNLClockGating::Hooks clockGateHooks;
     clockGateHooks.beforeReplace = [&](SNLInstance* instance) {
@@ -6471,6 +6637,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     return design;
   } catch (...) {
     for (auto* design : created) design->destroy();
+    for (auto* owner : namingLibraries) SNLHDLSpecialization::finalizeNames(owner);
     throw;
   }
 }

@@ -56,6 +56,391 @@ endmodule
 """
 
 class SNLDBTest(unittest.TestCase):
+  def _load_specializations(self, language, source, reserved=None, **sv_options):
+    if naja.NLUniverse.get():
+      naja.NLUniverse.get().destroy()
+    universe = naja.NLUniverse.create()
+    db = naja.NLDB.create(universe)
+    if reserved:
+      library = naja.NLLibrary.create(db, "DESIGN")
+      naja.SNLDesign.create(library, reserved)
+    with tempfile.TemporaryDirectory() as directory:
+      path = os.path.join(directory, "synthetic." + language)
+      with open(path, "w") as stream:
+        stream.write(source)
+      if language == "sv":
+        top = db.loadSystemVerilog([path], diagnostics_report_path=None, **sv_options)
+      else:
+        top = db.loadVHDL([path], top="top")
+    return db, top
+
+  def test_selected_top_retains_source_name_with_parameter_overrides(self):
+    source = """
+module tile #(parameter int WIDTH=3)(input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  assign y=a;
+endmodule
+module top #(parameter int WIDTH=3, parameter logic [255:0] MASK=0)
+            (input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  tile #(.WIDTH(WIDTH)) only_child(a,y);
+endmodule
+"""
+    wide = "256'h" + "123456789ABCDEF0" * 4
+    for options, width in (([], 3), (["-GWIDTH=5"], 5),
+                           (["-GWIDTH=5", "-GMASK=" + wide], 5)):
+      with self.subTest(options=options):
+        db, top = self._load_specializations(
+            "sv", source, frontend_options={"slang": ["--top=top", *options]})
+        self.assertEqual("top", top.getName())
+        self.assertEqual(str(width), top.getParameter("WIDTH").getValue())
+        self.assertEqual(width, top.getBusTerm("a").getWidth())
+        self.assertEqual("top", dict((a.getName(),a.getValue()) for a in top.getAttributes())["naja.source_module"])
+        child = top.getInstance("only_child").getModel()
+        self.assertEqual("tile", child.getName())
+        if len(options) == 2:
+          self.assertEqual(wide, top.getParameter("MASK").getValue())
+        with tempfile.TemporaryDirectory() as directory:
+          top.dumpGateLevelVerilog(directory, "netlist.v")
+          with open(os.path.join(directory, "netlist.v")) as stream:
+            dumped = stream.read()
+          self.assertRegex(dumped, r"(?m)^module top\(")
+          self.assertNotIn("module top__", dumped)
+          snapshot = os.path.join(directory, "snapshot")
+          db.dumpNajaIF(snapshot)
+          naja.NLUniverse.get().destroy()
+          naja.NLUniverse.create()
+          restored = naja.NLDB.loadNajaIF(snapshot).getTopDesign()
+          self.assertEqual("top", restored.getName())
+          self.assertEqual(str(width), restored.getParameter("WIDTH").getValue())
+          self.assertEqual("tile",
+                           restored.getInstance("only_child").getModel().getName())
+
+  def test_selected_top_reserves_source_name_in_finite_recursive_hierarchy(self):
+    source = """
+module top #(parameter int N=0)(input a,output y);
+  if(N>0) begin:branch
+    top #(.N(N-1)) inner(a,y);
+  end else assign y=a;
+endmodule
+"""
+    _, top = self._load_specializations(
+        "sv", source, frontend_options={"slang": ["--top=top", "-GN=2"]})
+    self.assertEqual("top", top.getName())
+    child = next(iter(top.getNonPrimitiveInstances())).getModel()
+    self.assertEqual("top__N_1", child.getName())
+    default_child = next(iter(child.getNonPrimitiveInstances())).getModel()
+    self.assertEqual("0", default_child.getParameter("N").getValue())
+    self.assertRegex(default_child.getName(), r"^top__h[0-9a-f]{8}$")
+    self.assertEqual(0, len(list(default_child.getNonPrimitiveInstances())))
+
+  def test_single_specialization_retains_source_name_and_resolved_metadata(self):
+    sources = {
+      "sv": """
+module tile #(parameter int WIDTH=2, parameter string LABEL="base")
+             (input [WIDTH-1:0] a,output [WIDTH-1:0] y);assign y=a;endmodule
+module top(input [4:0] a,output [4:0] y,z);
+  tile #(.WIDTH(5),.LABEL("punctuation !")) first(a,y);
+  tile #(.LABEL("punctuation !"),.WIDTH(5)) repeated(a,z);
+endmodule
+""",
+      "vhd": """
+entity tile is generic(width:positive:=2;label_value:string:="base");
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit_vector(4 downto 0);y,z:out bit_vector(4 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(5,"punctuation !") port map(a,y);
+  repeated:entity work.tile generic map(label_value=>"punctuation !",width=>5) port map(a,z);
+end;
+"""}
+    for language, source in sources.items():
+      with self.subTest(language=language):
+        db, top = self._load_specializations(language, source)
+        model = top.getInstance("first").getModel()
+        self.assertEqual(model, top.getInstance("repeated").getModel())
+        self.assertEqual("tile", model.getName())
+        self.assertEqual(5, model.getBusTerm("a").getWidth())
+        values = {p.getName(): p.getValue() for p in model.getParameters()}
+        self.assertEqual("5", values["WIDTH" if language == "sv" else "width"])
+        with tempfile.TemporaryDirectory() as directory:
+          top.dumpGateLevelVerilog(directory, "netlist.v")
+          with open(os.path.join(directory, "netlist.v")) as stream:
+            dumped = stream.read()
+          self.assertRegex(dumped, r"(?m)^module tile\(")
+          self.assertNotIn("naja.elaboration_", dumped)
+          snapshot = os.path.join(directory, "snapshot")
+          db.dumpNajaIF(snapshot)
+          naja.NLUniverse.get().destroy()
+          naja.NLUniverse.create()
+          restored = naja.NLDB.loadNajaIF(snapshot).getTopDesign().getInstance("first").getModel()
+          self.assertEqual("tile", restored.getName())
+          self.assertEqual(values, {p.getName():p.getValue() for p in restored.getParameters()})
+
+  def test_elaborated_specializations_share_names_and_values(self):
+    sources = {
+      "sv": ("""
+module tile #(parameter int COUNT=3, parameter logic [15:0] MASK=0,
+              parameter bit ACTIVE=0)(input logic a, output logic y);
+  assign y=a;
+endmodule
+module top(input logic a, output wire y);
+  tile #(.COUNT(6), .MASK(16'hA590), .ACTIVE(1)) first(a,y);
+  tile #(.COUNT(6), .MASK(16'h1830), .ACTIVE(1)) second(a,);
+  tile implicit_default(a,);
+  tile #(.COUNT(6), .MASK(16'hA590), .ACTIVE(1)) repeated(a,);
+  tile #(.COUNT(3)) explicit_default(a,);
+endmodule
+""", "COUNT_6__MASK_hA590__ACTIVE_1", {
+        "COUNT": "6", "MASK": "16'hA590", "ACTIVE": "1'b1"}),
+      "vhd": ("""
+library ieee; use ieee.std_logic_1164.all;
+entity tile is generic(COUNT:integer:=3;
+  MASK:std_ulogic_vector(15 downto 0):=(others=>'0'); ACTIVE:boolean:=false);
+  port(a:in bit;y:out bit);end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit;y:out bit);end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(6,x"A590",true) port map(a,y);
+  second:entity work.tile generic map(6,x"1830",true) port map(a,open);
+  implicit_default:entity work.tile port map(a,open);
+  repeated:entity work.tile generic map(6,x"A590",true) port map(a,open);
+  explicit_default:entity work.tile generic map(COUNT=>3) port map(a,open);
+end;
+""", "count_6__mask_hA590__active_true", {
+        "count": "6", "mask": 'x"A590"', "active": "true"}),
+    }
+    for language, (source, suffix, expected) in sources.items():
+      with self.subTest(language=language):
+        db, top = self._load_specializations(language, source)
+        models = {inst.getName(): inst.getModel() for inst in top.getInstances()}
+        self.assertEqual("tile__" + suffix, models["first"].getName())
+        self.assertEqual(models["first"], models["repeated"])
+        self.assertEqual(models["implicit_default"], models["explicit_default"])
+        self.assertEqual("tile", models["implicit_default"].getName())
+        self.assertNotEqual(models["first"], models["second"])
+        self.assertEqual(expected, {p.getName(): p.getValue() for p in models["first"].getParameters()})
+        self.assertEqual("tile", dict((a.getName(), a.getValue()) for a in models["first"].getAttributes())["naja.source_module"])
+        names = {key: model.getName() for key, model in models.items()}
+        with tempfile.TemporaryDirectory() as directory:
+          top.dumpGateLevelVerilog(directory, "netlist.v")
+          with open(os.path.join(directory, "netlist.v")) as stream:
+            dumped = stream.read()
+          self.assertIn("module tile__" + suffix, dumped)
+          self.assertNotIn("parameter ", dumped)
+          snapshot = os.path.join(directory, "snapshot")
+          db.dumpNajaIF(snapshot)
+          naja.NLUniverse.get().destroy()
+          naja.NLUniverse.create()
+          reloaded = naja.NLDB.loadNajaIF(snapshot)
+          model = next(d for lib in reloaded.getLibraries() for d in lib.getSNLDesigns()
+                       if d.getName() == names["first"])
+          self.assertEqual(expected, {p.getName():p.getValue() for p in model.getParameters()})
+          self.assertEqual("tile", dict((a.getName(),a.getValue()) for a in model.getAttributes())["naja.source_module"])
+        # Moving the default instance first must not rename any specialization.
+        lines = source.splitlines()
+        first = next(i for i,line in enumerate(lines) if "first" in line)
+        default = next(i for i,line in enumerate(lines) if "implicit_default" in line)
+        lines[first], lines[default] = lines[default], lines[first]
+        _, reordered = self._load_specializations(language, "\n".join(lines))
+        self.assertEqual(names, {inst.getName():inst.getModel().getName() for inst in reordered.getInstances()})
+
+  def test_single_interface_specialization_retains_source_name(self):
+    source = """
+interface channel_if #(parameter int W=2);
+  logic [W-1:0] value,result;
+  modport endpoint(input value,output result);
+endinterface
+module endpoint(channel_if.endpoint bus);assign bus.result=~bus.value;endmodule
+module top(input [4:0] a,output [4:0] y);
+  channel_if #(.W(5)) channel();
+  assign channel.value=a;
+  assign y=channel.result;
+  endpoint worker(channel);
+endmodule
+"""
+    _, top = self._load_specializations("sv", source)
+    model = top.getInstance("worker").getModel()
+    self.assertEqual("endpoint", model.getName())
+    self.assertEqual("endpoint", dict((a.getName(),a.getValue()) for a in model.getAttributes())["naja.source_module"])
+
+  def test_elaborated_specialization_hash_generate_and_collision(self):
+    sources = {
+      "sv": """
+module tile #(parameter int N=0)(input a, output y);assign y=a;endmodule
+module tile__N_2(input a, output y);assign y=~a;endmodule
+module wide #(parameter logic [255:0] MASK=0)(input a, output y);assign y=a;endmodule
+module top(input a, output [4:0] y);
+  for(genvar i=0;i<3;i++) begin:lanes tile #(.N(i)) u(a,y[i]);end
+  tile__N_2 user_name(a,y[3]);
+  wide #(.MASK(256'h123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0)) hashed(a,y[4]);
+endmodule
+""",
+      "vhd": """
+entity tile is generic(n:integer:=0);port(a:in bit;y:out bit);end;
+architecture rtl of tile is begin y<=a;end;
+entity tile__n_2 is port(a:in bit;y:out bit);end;
+architecture rtl of tile__n_2 is begin y<=not a;end;
+entity wide is generic(mask:bit_vector(255 downto 0):=(others=>'0'));port(a:in bit;y:out bit);end;
+architecture rtl of wide is begin y<=a;end;
+entity top is port(a:in bit;y:out bit_vector(4 downto 0));end;
+architecture rtl of top is begin
+  lanes:for i in 0 to 2 generate u:entity work.tile generic map(i) port map(a,y(i));end generate;
+  user_name:entity work.tile__n_2 port map(a,y(3));
+  hashed:entity work.wide generic map(x"123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0") port map(a,y(4));
+end;
+"""}
+    for language, source in sources.items():
+      with self.subTest(language=language):
+        # VHDL basic identifiers cannot contain adjacent underscores. Reserve
+        # the generated spelling through the netlist API for this frontend.
+        if language == "vhd":
+          source = source.replace("entity tile__n_2 is port(a:in bit;y:out bit);end;", "")
+          source = source.replace("architecture rtl of tile__n_2 is begin y<=not a;end;", "")
+          source = source.replace("user_name:entity work.tile__n_2 port map(a,y(3));", "y(3)<=a;")
+        reserved = "tile__n_2" if language == "vhd" else None
+        _, top = self._load_specializations(language, source, reserved)
+        models = {inst.getName():inst.getModel() for inst in top.getInstances()}
+        hashed = models["hashed"].getName()
+        self.assertEqual("wide", hashed)
+        lane = (lambda i: "top_lanes_" + str(i) + "_u") if language == "sv" else (lambda i: "lanes[" + str(i) + "].u")
+        self.assertEqual("tile", models[lane(0)].getName())
+        self.assertEqual("tile__" + ("N" if language == "sv" else "n") + "_1", models[lane(1)].getName())
+        self.assertRegex(models[lane(2)].getName(), r"^tile__h[0-9a-f]{8}$")
+        _, repeated = self._load_specializations(language, source, reserved)
+        self.assertEqual(hashed, repeated.getInstance("hashed").getModel().getName())
+
+  def test_elaborated_specialization_value_kinds(self):
+    source = """
+package choices; typedef enum {slow,fast} mode_t; endpackage
+module values #(parameter int OFFSET=0, parameter logic [3:0] MASK=0,
+  parameter string LABEL="base", parameter real RATE=1.0,
+  parameter choices::mode_t MODE=choices::slow,
+  parameter type DATA=logic, parameter int TABLE[2]='{1,2})(input a,output y);
+  assign y=a;
+endmodule
+module top(input a, output [7:0] y);
+  values #(.OFFSET(-7)) negative(a,y[0]);
+  values #(.MASK(4'b1xz0)) unknowns(a,y[1]);
+  values #(.LABEL("other_core")) text_value(a,y[2]);
+  values #(.RATE(2.5)) real_value(a,y[3]);
+  values #(.MODE(choices::fast)) enumeration(a,y[4]);
+  values #(.DATA(logic[2:0])) type_value(a,y[5]);
+  values #(.TABLE('{3,4})) array_value(a,y[6]);
+  values #(.LABEL("other-core")) lossy_string(a,y[7]);
+endmodule
+"""
+    _, top = self._load_specializations("sv", source)
+    models = {i.getName():i.getModel() for i in top.getInstances()}
+    for instance, suffix in (("negative", "OFFSET_n7"), ("unknowns", "MASK_b1xz0"),
+                             ("text_value", "LABEL_other_core"), ("real_value", "RATE_2p5"),
+                             ("enumeration", "MODE_fast")):
+      self.assertEqual("values__" + suffix, models[instance].getName())
+    for instance in ("type_value", "array_value", "lossy_string"):
+      self.assertRegex(models[instance].getName(), r"^values__h[0-9a-f]{8}$")
+    self.assertEqual("4'b1xz0", models["unknowns"].getParameter("MASK").getValue())
+    self.assertEqual('"other_core"', models["text_value"].getParameter("LABEL").getValue())
+    self.assertEqual("choices::fast", models["enumeration"].getParameter("MODE").getValue())
+    source = """
+library ieee;use ieee.std_logic_1164.all;
+entity values is generic(offset:integer:=0;mask:std_ulogic_vector(3 downto 0):="0000";
+  label_value:string:="base";flag:std_ulogic:='0');port(a:in bit;y:out bit);end;
+architecture rtl of values is begin y<=a;end;
+entity top is port(a:in bit;y:out bit_vector(4 downto 0));end;
+architecture rtl of top is begin
+  negative:entity work.values generic map(offset=>-7) port map(a,y(0));
+  unknowns:entity work.values generic map(mask=>"1XZ0") port map(a,y(1));
+  text_value:entity work.values generic map(label_value=>"other_core") port map(a,y(2));
+  bit_value:entity work.values generic map(flag=>'1') port map(a,y(3));
+  lossy_string:entity work.values generic map(label_value=>"other-core") port map(a,y(4));
+end;
+"""
+    _, top = self._load_specializations("vhd", source)
+    models = {i.getName():i.getModel() for i in top.getInstances()}
+    for instance, suffix in (("negative", "offset_n7"), ("unknowns", "mask_b1xz0"),
+                             ("text_value", "label_value_other_core"), ("bit_value", "flag_1")):
+      self.assertEqual("values__" + suffix, models[instance].getName())
+    self.assertRegex(models["lossy_string"].getName(), r"^values__h[0-9a-f]{8}$")
+    self.assertEqual('"1XZ0"', models["unknowns"].getParameter("mask").getValue())
+    source = """
+package choices is type mode_t is (slow,fast);end;
+use work.choices.all;
+entity values is generic(rate:real:=1.0;mode:mode_t:=slow);port(a:in bit;y:out bit);end;
+architecture rtl of values is begin y<=a when mode=fast else not a;end;
+use work.choices.all;
+entity top is port(a:in bit;y:out bit_vector(2 downto 0));end;
+architecture rtl of top is begin
+  real_value:entity work.values generic map(rate=>2.5) port map(a,y(0));
+  computed:entity work.values generic map(rate=>1.25*2.0) port map(a,y(1));
+  enumeration:entity work.values generic map(mode=>fast) port map(a,y(2));
+end;
+"""
+    _, top = self._load_specializations("vhd", source)
+    self.assertEqual("values__rate_2p5", top.getInstance("real_value").getModel().getName())
+    self.assertEqual(top.getInstance("real_value").getModel(), top.getInstance("computed").getModel())
+    self.assertEqual("values__mode_fast", top.getInstance("enumeration").getModel().getName())
+    self.assertEqual("2.5", top.getInstance("real_value").getModel().getParameter("rate").getValue())
+    self.assertEqual("fast", top.getInstance("enumeration").getModel().getParameter("mode").getValue())
+    # Unsupported std_ulogic values retain an explicit diagnostic.
+    with self.assertRaisesRegex(RuntimeError, "RTL literals require"):
+      self._load_specializations("vhd", """
+library ieee;use ieee.std_logic_1164.all;
+entity top is generic(mask:std_ulogic_vector(3 downto 0):="1-X0");end;
+architecture rtl of top is begin end;
+""")
+
+  def test_elaborated_specialization_types_and_string_identity(self):
+    source = r"""
+package choices;
+  typedef logic [2:0] word_t;
+  typedef word_t alias_t;
+  typedef struct packed {logic [2:0] value;} record_t;
+endpackage
+module tile #(parameter type DATA=logic, parameter logic [2:0] MASK=0,
+              parameter string LABEL="base")(input a, output y);
+  assign y=a;
+endmodule
+module typed_default #(parameter type DATA=choices::record_t)(input a,output y);
+  assign y=a;
+endmodule
+module enum_default #(parameter type DATA=enum {idle,busy})(input a,output y);
+  assign y=a;
+endmodule
+module top(input a,output [7:0] y);
+  tile #(.DATA(choices::word_t)) first(a,y[0]);
+  tile #(.DATA(choices::alias_t)) equivalent(a,y[1]);
+  tile #(.LABEL("a-b")) punctuation(a,y[2]);
+  tile #(.LABEL("a b")) space(a,y[3]);
+  tile #(.MASK(3'b001)) narrow(a,y[4]);
+  tile #(.LABEL("quote\"line\n\001")) controls(a,y[5]);
+  typed_default default_record(a,y[6]);
+  enum_default default_enum(a,y[7]);
+endmodule
+"""
+    _, top = self._load_specializations("sv", source)
+    models = {i.getName():i.getModel() for i in top.getInstances()}
+    self.assertEqual(models["first"], models["equivalent"])
+    self.assertEqual("logic[2:0]", models["first"].getParameter("DATA").getValue())
+    self.assertEqual("typed_default", models["default_record"].getName())
+    self.assertEqual("enum_default", models["default_enum"].getName())
+    self.assertEqual("tile__MASK_h1", models["narrow"].getName())
+    self.assertNotEqual(models["punctuation"].getName(), models["space"].getName())
+    self.assertEqual(r'"quote\"line\n\001"', models["controls"].getParameter("LABEL").getValue())
+    for instance in ("punctuation", "space", "controls"):
+      self.assertRegex(models[instance].getName(), r"^tile__h[0-9a-f]{8}$")
+    names = {key:value.getName() for key,value in models.items()}
+    # Type declaration allocation and specialization discovery must not enter
+    # canonical identities. Alias spelling must not split a specialization.
+    reordered = source.replace("  typedef logic [2:0] word_t;",
+                               "  typedef logic unrelated_t;\n  typedef logic [2:0] word_t;")
+    lines = reordered.splitlines()
+    first = next(i for i,line in enumerate(lines) if ")) first" in line)
+    equivalent = next(i for i,line in enumerate(lines) if ")) equivalent" in line)
+    punctuation = next(i for i,line in enumerate(lines) if ")) punctuation" in line)
+    space = next(i for i,line in enumerate(lines) if ")) space" in line)
+    lines[first], lines[equivalent] = lines[equivalent], lines[first]
+    lines[punctuation], lines[space] = lines[space], lines[punctuation]
+    _, top = self._load_specializations("sv", "\n".join(lines))
+    self.assertEqual(names, {i.getName():i.getModel().getName() for i in top.getInstances()})
+
   def test_clock_gate_wrapper_does_not_create_an_extra_root(self):
     source = '''module phase_cell(input source, request, output result);
       reg held;
@@ -647,8 +1032,9 @@ end;
                      "u: entity cells.leaf generic map(not enabled) port map(a, y); end;")
       self.assertIsNone(db.loadVHDL(child, library="cells", diagnostics_report_path=None))
       top = db.loadVHDL(parent, library="DESIGN", diagnostics_report_path=None)
-      model = db.getLibrary("cells").getSNLDesign("leaf__enabled_false")
+      model = db.getLibrary("cells").getSNLDesign("leaf")
       self.assertIsNotNone(model)
+      self.assertEqual("false", model.getParameter("enabled").getValue())
       self.assertEqual(top.getInstance("u").getModel(), model)
       self.assertEqual(db.loadVHDL(parent, library="DESIGN", diagnostics_report_path=None), top)
 

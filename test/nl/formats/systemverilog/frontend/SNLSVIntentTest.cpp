@@ -371,7 +371,7 @@ TEST_F(SNLSVIntentTest, returnsParametersAndPackageMembers) {
   ASSERT_TRUE(voidType.valid);
   EXPECT_EQ("void", voidType.canonicalKind);
 
-  auto* child = findInstanceByModel(top, "intent_child");
+  auto* child = top->getInstance(NLName("u_child"));
   ASSERT_NE(nullptr, child);
   const auto childParams = SNLSVIntent::parametersOf(child);
   ASSERT_TRUE(childParams.valid);
