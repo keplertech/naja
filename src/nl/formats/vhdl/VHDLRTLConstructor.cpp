@@ -37,6 +37,7 @@
 #include <cctype>
 #include <cmath>
 #include <exception>
+#include <iomanip>
 #include <limits>
 #include <locale>
 #include <map>
@@ -454,10 +455,37 @@ class RTLConstructor {
   }
 
   static std::string realLiteral(double value) {
-    char buffer[128];
-    const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), value == 0 ? 0.0 : value);
-    if (converted.ec != std::errc{}) fail("cannot format real generic");
-    std::string text(buffer, converted.ptr);
+    // Floating-point to_chars requires macOS 13.3. Find the shortest
+    // round-tripping precision using streams available on macOS 11 instead.
+    // Use the classic locale for both directions, including under a caller's
+    // custom global locale, and canonicalize negative zero.
+    value = value == 0 ? 0.0 : value;
+    std::ostringstream formatted;
+    formatted.imbue(std::locale::classic());
+    std::string scientific;
+    int precision = 0;
+    for (; precision < std::numeric_limits<double>::max_digits10; ++precision) {
+      formatted.str({});
+      formatted << std::scientific << std::setprecision(precision) << value;
+      scientific = formatted.str();
+      std::istringstream literal(scientific);
+      literal.imbue(std::locale::classic());
+      double roundTrip = 0;
+      literal >> roundTrip;
+      const bool representableTinyValue = roundTrip != 0 &&
+          std::abs(roundTrip) <= std::numeric_limits<double>::min();
+      if (roundTrip == value && (!literal.fail() || representableTinyValue)) break;
+    }
+    if (precision == std::numeric_limits<double>::max_digits10)
+      fail("cannot format real generic");
+    // Match to_chars' choice of the shorter fixed/scientific spelling, with
+    // fixed winning ties. Format fixed from the value itself so large integer
+    // values retain their exact digits rather than a rounded significand.
+    const auto decimalExponent = std::stoi(scientific.substr(scientific.find('e') + 1));
+    formatted.str({});
+    formatted << std::fixed << std::setprecision(std::max(0, precision - decimalExponent)) << value;
+    std::string text = formatted.str();
+    if (scientific.size() < text.size()) text = scientific;
     const auto exponent = text.find_first_of("eE");
     if (text.substr(0, exponent).find('.') == std::string::npos)
       text.insert(exponent == std::string::npos ? text.size() : exponent, ".0");
