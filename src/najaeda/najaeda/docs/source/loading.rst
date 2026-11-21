@@ -27,7 +27,9 @@ module/entity name, including when its parameters are overridden. Its resolved
 values remain available as metadata. For child models, the all-default
 specialization keeps the source name. If a non-default top already owns that
 name in a finite recursive hierarchy, the default-valued child uses the hash
-fallback. Other names list values differing from the declared
+fallback. If a VHDL default environment cannot be evaluated, naming uses all
+resolved values; an unused overridden default does not prevent elaboration.
+Other names list values differing from the declared
 default environment, in declaration order: for example ``queue__DEPTH_12`` in
 SystemVerilog or ``queue__depth_12`` in VHDL. SystemVerilog identifier case is
 preserved; VHDL basic identifiers are canonicalized to lower case.

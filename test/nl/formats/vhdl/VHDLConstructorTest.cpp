@@ -8645,7 +8645,7 @@ TEST_F(VHDLConstructorTest, RealGenericLiteralsPreserveRangeAndIgnoreGlobalLocal
   };
   for (const auto& [literal, expected] : std::vector<std::pair<std::string, std::string>>{
       {"1.2_5", "1.25"}, {"1.25e+2", "125.0"}, {"-1.25E-2", "-0.0125"},
-      {"0.0e-999", "0.0"}, {"-0.0", "0.0"},
+      {"0.0e-999", "0.0"}, {"0.000_00e-999", "0.0"}, {"0.0e999", "0.0"}, {"-0.0", "0.0"},
       {"4.9406564584124654e-324", "5.0e-324"}, {"1.0e-320", "1.0e-320"},
       {"2.2250738585072014e-308", "2.2250738585072014e-308"},
       {"1.7976931348623157e308", "1.7976931348623157e+308"}}) {
@@ -8657,7 +8657,7 @@ TEST_F(VHDLConstructorTest, RealGenericLiteralsPreserveRangeAndIgnoreGlobalLocal
     EXPECT_EQ(parameter->getValue(), expected);
     design->destroy();
   }
-  for (const auto& literal : {"1.0e309", "-1.0e309", "1.0e-999", "16#1.8#"}) {
+  for (const auto& literal : {"1.0e309", "-1.0e309", "1.0e-999", "-1.0e-999", "0.000_01e-999", "16#1.8#"}) {
     SCOPED_TRACE(literal);
     try {
       VHDLConstructor(library_).construct(source(literal), "probe");
@@ -8668,4 +8668,71 @@ TEST_F(VHDLConstructorTest, RealGenericLiteralsPreserveRangeAndIgnoreGlobalLocal
     }
     EXPECT_TRUE(library_->getSNLDesigns().empty());
   }
+}
+
+TEST_F(VHDLConstructorTest, SpecializationNamesDoNotRequireUnusedDefaultsToElaborate) {
+  for (const auto& [type, defaultExpression, actual] :
+      std::vector<std::tuple<std::string, std::string, std::string>>{
+          {"integer", "-(1 / 0)", "2"},
+          {"boolean", "(1 / 0) = 0", "true"},
+          {"real", "1.0 / 0.0", "2.5"}}) {
+    SCOPED_TRACE(type);
+    const auto declarations = "entity cell is generic(value:" + type + ":=" + defaultExpression +
+        ");port(y:out bit);end;architecture rtl of cell is begin y<='1';end;";
+    const auto source = declarations + "entity top is port(y,z:out bit);end;"
+        "architecture rtl of top is begin "
+        "first:entity work.cell generic map(value=>" + actual + ") port map(y);"
+        "second:entity work.cell generic map(value=>" + actual + ") port map(z);end;";
+    auto* top = VHDLConstructor(library_).construct(source, "top");
+    ASSERT_NE(top, nullptr);
+    auto* first = top->getInstance(NLName("first"))->getModel();
+    EXPECT_EQ(first, top->getInstance(NLName("second"))->getModel());
+    EXPECT_EQ(first->getParameter(NLName("value"))->getValue(), actual);
+    EXPECT_TRUE(assignSource(first->getScalarTerm(NLName("y"))->getNet())->isConstant1());
+    top->destroy();
+    first->destroy();
+    // An invalid default actually selected for elaboration must still fail.
+    try {
+      VHDLConstructor(library_).construct(declarations, "cell");
+      FAIL() << "expected the selected invalid default to fail";
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find("division by zero"), std::string::npos) << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+}
+
+TEST_F(VHDLConstructorTest, CounterfactualDefaultsDoNotOverrideResolvedDependentValues) {
+  const std::string declarations = R"(
+entity cell is generic(divisor:integer:=0;width:positive:=12/divisor);
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of cell is begin y<=a;end;
+)";
+  auto* top = VHDLConstructor(library_).construct(declarations + R"(
+entity top is port(a:in bit_vector(3 downto 0);y,z:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.cell generic map(divisor=>3) port map(a,y);
+  second:entity work.cell generic map(divisor=>3,width=>4) port map(a,z);
+end;
+)", "top");
+  ASSERT_NE(top, nullptr);
+  auto* model = top->getInstance(NLName("first"))->getModel();
+  EXPECT_EQ(model, top->getInstance(NLName("second"))->getModel());
+  EXPECT_EQ(model->getParameter(NLName("divisor"))->getValue(), "3");
+  EXPECT_EQ(model->getParameter(NLName("width"))->getValue(), "4");
+  EXPECT_EQ(model->getBusTerm(NLName("y"))->getWidth(), 4);
+  top->destroy();
+  model->destroy();
+  try {
+    VHDLConstructor(library_).construct(declarations + R"(
+entity top is port(a:in bit_vector(3 downto 0);y:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  invalid_actual:entity work.cell generic map(divisor=>1/0) port map(a,y);
+end;
+)", "top");
+    FAIL() << "expected the invalid actual value to fail";
+  } catch (const NLException& error) {
+    EXPECT_NE(std::string(error.what()).find("division by zero"), std::string::npos) << error.what();
+  }
+  EXPECT_TRUE(library_->getSNLDesigns().empty());
 }

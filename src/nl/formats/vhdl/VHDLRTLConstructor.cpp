@@ -480,7 +480,13 @@ class RTLConstructor {
       // overflow and nonzero literals that underflow to zero.
       const bool representableTinyValue = value != 0 &&
           std::abs(value) <= std::numeric_limits<double>::min();
-      if (!literal.eof() || literal.bad() || (literal.fail() && !representableTinyValue))
+      // Other libraries underflow to zero without setting failbit. Exponent
+      // digits do not make an otherwise zero significand nonzero.
+      const auto significandEnd = text.begin() + std::min(text.find_first_of("eE"), text.size());
+      const bool nonzeroSignificand = std::any_of(text.begin(), significandEnd,
+          [](char digit) { return digit >= '1' && digit <= '9'; });
+      if (!literal.eof() || literal.bad() || (literal.fail() && !representableTinyValue) ||
+          (value == 0 && nonzeroSignificand))
         fail("unsupported real generic literal");
     } else if (expr.kind == Expr::Kind::Name && reals_.contains(key(expr))) value = reals_.at(key(expr));
     else if (expr.kind == Expr::Kind::Unary && (expr.text == "+" || expr.text == "-"))
@@ -6535,11 +6541,16 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     const bool hasDefaults = std::all_of(entity->generics.begin(), entity->generics.end(),
         [](const auto& generic) { return bool(generic.defaultValue); });
     if (hasDefaults) {
-      RTLConstructor defaults(scratch.get(), *entity, *architecture, syntax, context, {}, build);
-      defaults.prepareEntity();
-      const auto& declared = defaults.specializationParameters();
-      for (size_t i = 0; i < parameters.size(); ++i)
-        parameters[i].isDefault = parameters[i].identity == declared[i].identity;
+      try {
+        RTLConstructor defaults(scratch.get(), *entity, *architecture, syntax, context, {}, build);
+        defaults.prepareEntity();
+        const auto& declared = defaults.specializationParameters();
+        for (size_t i = 0; i < parameters.size(); ++i)
+          parameters[i].isDefault = parameters[i].identity == declared[i].identity;
+      } catch (const NLException&) {
+        // The resolved environment above is valid. Unused defaults need not
+        // elaborate; retain every resolved value in the specialization name.
+      }
     }
     scratch.reset();
     std::set<std::string> sourceNames;

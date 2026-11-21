@@ -1064,6 +1064,18 @@ module top #(parameter int N=0)(input a,output y);
 endmodule
 """)
 
+    def test_overridden_unevaluable_vhdl_defaults(self):
+        self.check_determinism("vhd", """
+entity tile is generic(divisor:integer:=0;width:positive:=12/divisor;epsilon:real:=1.0e-320);
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit_vector(3 downto 0);y,z:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(divisor=>3) port map(a,y);
+  second:entity work.tile generic map(divisor=>3,width=>4) port map(a,z);
+end;
+""")
+
     def test_elaborated_specialization_identity(self):
         self.check_determinism("sv", """
 module tile #(parameter int SIZE=3, parameter logic[255:0] MASK=0,
