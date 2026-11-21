@@ -95,7 +95,7 @@ endmodule
         self.assertEqual(width, top.getBusTerm("a").getWidth())
         self.assertEqual("top", dict((a.getName(),a.getValue()) for a in top.getAttributes())["naja.source_module"])
         child = top.getInstance("only_child").getModel()
-        self.assertEqual("tile" if width == 3 else "tile__WIDTH_5", child.getName())
+        self.assertEqual("tile", child.getName())
         if len(options) == 2:
           self.assertEqual(wide, top.getParameter("MASK").getValue())
         with tempfile.TemporaryDirectory() as directory:
@@ -111,7 +111,7 @@ endmodule
           restored = naja.NLDB.loadNajaIF(snapshot).getTopDesign()
           self.assertEqual("top", restored.getName())
           self.assertEqual(str(width), restored.getParameter("WIDTH").getValue())
-          self.assertEqual("tile" if width == 3 else "tile__WIDTH_5",
+          self.assertEqual("tile",
                            restored.getInstance("only_child").getModel().getName())
 
   def test_selected_top_reserves_source_name_in_finite_recursive_hierarchy(self):
@@ -131,6 +131,49 @@ endmodule
     self.assertEqual("0", default_child.getParameter("N").getValue())
     self.assertRegex(default_child.getName(), r"^top__h[0-9a-f]{8}$")
     self.assertEqual(0, len(list(default_child.getNonPrimitiveInstances())))
+
+  def test_single_specialization_retains_source_name_and_resolved_metadata(self):
+    sources = {
+      "sv": """
+module tile #(parameter int WIDTH=2, parameter string LABEL="base")
+             (input [WIDTH-1:0] a,output [WIDTH-1:0] y);assign y=a;endmodule
+module top(input [4:0] a,output [4:0] y,z);
+  tile #(.WIDTH(5),.LABEL("punctuation !")) first(a,y);
+  tile #(.LABEL("punctuation !"),.WIDTH(5)) repeated(a,z);
+endmodule
+""",
+      "vhd": """
+entity tile is generic(width:positive:=2;label_value:string:="base");
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit_vector(4 downto 0);y,z:out bit_vector(4 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(5,"punctuation !") port map(a,y);
+  repeated:entity work.tile generic map(label_value=>"punctuation !",width=>5) port map(a,z);
+end;
+"""}
+    for language, source in sources.items():
+      with self.subTest(language=language):
+        db, top = self._load_specializations(language, source)
+        model = top.getInstance("first").getModel()
+        self.assertEqual(model, top.getInstance("repeated").getModel())
+        self.assertEqual("tile", model.getName())
+        self.assertEqual(5, model.getBusTerm("a").getWidth())
+        values = {p.getName(): p.getValue() for p in model.getParameters()}
+        self.assertEqual("5", values["WIDTH" if language == "sv" else "width"])
+        with tempfile.TemporaryDirectory() as directory:
+          top.dumpGateLevelVerilog(directory, "netlist.v")
+          with open(os.path.join(directory, "netlist.v")) as stream:
+            dumped = stream.read()
+          self.assertRegex(dumped, r"(?m)^module tile\(")
+          self.assertNotIn("naja.elaboration_", dumped)
+          snapshot = os.path.join(directory, "snapshot")
+          db.dumpNajaIF(snapshot)
+          naja.NLUniverse.get().destroy()
+          naja.NLUniverse.create()
+          restored = naja.NLDB.loadNajaIF(snapshot).getTopDesign().getInstance("first").getModel()
+          self.assertEqual("tile", restored.getName())
+          self.assertEqual(values, {p.getName():p.getValue() for p in restored.getParameters()})
 
   def test_elaborated_specializations_share_names_and_values(self):
     sources = {
@@ -200,6 +243,25 @@ end;
         _, reordered = self._load_specializations(language, "\n".join(lines))
         self.assertEqual(names, {inst.getName():inst.getModel().getName() for inst in reordered.getInstances()})
 
+  def test_single_interface_specialization_retains_source_name(self):
+    source = """
+interface channel_if #(parameter int W=2);
+  logic [W-1:0] value,result;
+  modport endpoint(input value,output result);
+endinterface
+module endpoint(channel_if.endpoint bus);assign bus.result=~bus.value;endmodule
+module top(input [4:0] a,output [4:0] y);
+  channel_if #(.W(5)) channel();
+  assign channel.value=a;
+  assign y=channel.result;
+  endpoint worker(channel);
+endmodule
+"""
+    _, top = self._load_specializations("sv", source)
+    model = top.getInstance("worker").getModel()
+    self.assertEqual("endpoint", model.getName())
+    self.assertEqual("endpoint", dict((a.getName(),a.getValue()) for a in model.getAttributes())["naja.source_module"])
+
   def test_elaborated_specialization_hash_generate_and_collision(self):
     sources = {
       "sv": """
@@ -238,7 +300,7 @@ end;
         _, top = self._load_specializations(language, source, reserved)
         models = {inst.getName():inst.getModel() for inst in top.getInstances()}
         hashed = models["hashed"].getName()
-        self.assertRegex(hashed, r"^wide__h[0-9a-f]{8}$")
+        self.assertEqual("wide", hashed)
         lane = (lambda i: "top_lanes_" + str(i) + "_u") if language == "sv" else (lambda i: "lanes[" + str(i) + "].u")
         self.assertEqual("tile", models[lane(0)].getName())
         self.assertEqual("tile__" + ("N" if language == "sv" else "n") + "_1", models[lane(1)].getName())
@@ -970,8 +1032,9 @@ end;
                      "u: entity cells.leaf generic map(not enabled) port map(a, y); end;")
       self.assertIsNone(db.loadVHDL(child, library="cells", diagnostics_report_path=None))
       top = db.loadVHDL(parent, library="DESIGN", diagnostics_report_path=None)
-      model = db.getLibrary("cells").getSNLDesign("leaf__enabled_false")
+      model = db.getLibrary("cells").getSNLDesign("leaf")
       self.assertIsNotNone(model)
+      self.assertEqual("false", model.getParameter("enabled").getValue())
       self.assertEqual(top.getInstance("u").getModel(), model)
       self.assertEqual(db.loadVHDL(parent, library="DESIGN", diagnostics_report_path=None), top)
 

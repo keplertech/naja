@@ -1103,6 +1103,26 @@ architecture rtl of top is begin
 end;
 """)
 
+    def test_single_specialization_names(self):
+        self.check_determinism("sv", """
+module tile #(parameter int WIDTH=2,parameter string LABEL="base")
+  (input [WIDTH-1:0] a,output [WIDTH-1:0] y);assign y=a;endmodule
+module top(input [4:0] a,output [4:0] y,z);
+  tile #(.WIDTH(5),.LABEL("punctuation !")) first(a,y);
+  tile #(.LABEL("punctuation !"),.WIDTH(5)) repeated(a,z);
+endmodule
+""")
+        self.check_determinism("vhd", """
+entity tile is generic(width:positive:=2;label_value:string:="base");
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit_vector(4 downto 0);y,z:out bit_vector(4 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(5,"punctuation !") port map(a,y);
+  repeated:entity work.tile generic map(label_value=>"punctuation !",width=>5) port map(a,z);
+end;
+""")
+
     def test_systemverilog_interfaces(self):
         self.check_determinism("sv", """
 interface lane_if #(parameter W = 3);

@@ -1547,6 +1547,8 @@ class SNLSVConstructorImpl {
         maybeWriteSVPerfReportSnapshot();
 #endif
 
+        SNLHDLSpecialization::finalizeNames(library_);
+
         // Expression lowering caches can retain pointers to compiler-generated
         // nets. No construction path consults them after all top designs have
         // been built, so release them before deleting redundant alias nets.
@@ -1645,6 +1647,7 @@ class SNLSVConstructorImpl {
 #endif
         finalizeDiagnosticsReport(true, {});
       } catch (const std::exception& e) {
+        SNLHDLSpecialization::finalizeNames(library_);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         if (svPerfReport_.failureReason.empty()) {
           svPerfReport_.failureReason = e.what();

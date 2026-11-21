@@ -9,10 +9,21 @@
 #include "SNLParameter.h"
 #include "sha-256.h"
 
+#include <map>
+
 namespace naja::NL {
 namespace {
 constexpr auto sourceAttribute = "naja.source_module";
 constexpr auto signatureAttribute = "naja.elaboration_signature";
+constexpr auto nameAttribute = "naja.elaboration_name";
+void setSpecializationName(SNLDesign* design, const std::string& name) {
+  std::vector<SNLAttribute> attributes;
+  for (const auto& attr : SNLAttributes::getAttributes(design))
+    if (attr.getName().getString() != nameAttribute) attributes.push_back(attr);
+  SNLAttributes::clearAttributes(design);
+  for (const auto& attr : attributes) SNLAttributes::addAttribute(design, attr);
+  SNLAttributes::addAttribute(design, SNLAttribute(NLName(nameAttribute), SNLAttributeValue(name)));
+}
 std::string digest(const std::string& text) {
   uint8_t bytes[32];
   calc_sha_256(bytes, text.data(), text.size());
@@ -50,6 +61,18 @@ bool SNLHDLSpecialization::isElaborated(const SNLDesign* design) {
 std::string SNLHDLSpecialization::name(NLLibrary* library, const std::string& source,
     const std::vector<SNLHDLParameter>& parameters, const std::set<std::string>& sourceNames,
     const std::string& context, bool isTop) {
+  // A previous load may have shortened a singleton to its source name. Restore
+  // its qualified spelling before allocating another variant. Keep this hint
+  // in NajaIF as well, so a fresh process makes the same naming decisions.
+  if (auto* previous = library->getSNLDesign(NLName(source));
+      previous && attribute(previous, sourceAttribute) == source) {
+    const auto qualified = attribute(previous, nameAttribute);
+    if (!qualified.empty() && qualified != source) {
+      if (library->getSNLDesign(NLName(qualified)))
+        throw NLException("Conflicting HDL specialization name: " + qualified);
+      previous->setName(NLName(qualified));
+    }
+  }
   const auto identity = signature(parameters, context);
   auto candidate = source;
   bool defaults = context.empty(), readable = context.empty();
@@ -110,6 +133,7 @@ std::string SNLHDLSpecialization::name(NLLibrary* library, const std::string& so
       if (longer != previousLonger && available(longer) &&
           !sourceNames.contains(previousLonger) && !library->getSNLDesign(NLName(previousLonger))) {
         previous->setName(NLName(previousLonger));
+        setSpecializationName(previous, previousLonger);
         return longer;
       }
     }
@@ -124,8 +148,32 @@ void SNLHDLSpecialization::annotate(SNLDesign* design, const std::string& source
     const std::vector<SNLHDLParameter>& parameters, const std::string& context) {
   SNLAttributes::addAttribute(design, SNLAttribute(NLName(sourceAttribute), SNLAttributeValue(source)));
   SNLAttributes::addAttribute(design, SNLAttribute(NLName(signatureAttribute), SNLAttributeValue(signature(parameters, context))));
+  if (design->getName().getString() != source)
+    SNLAttributes::addAttribute(design, SNLAttribute(
+        NLName(nameAttribute), SNLAttributeValue(design->getName().getString())));
   for (const auto& parameter : parameters)
     SNLParameter::create(design, NLName(parameter.name), SNLParameter::Type::Decimal, parameter.literal);
+}
+
+void SNLHDLSpecialization::finalizeNames(NLLibrary* library) {
+  std::map<std::string, std::vector<SNLDesign*>> families;
+  for (auto* design : library->getSNLDesigns()) {
+    const auto source = attribute(design, sourceAttribute);
+    if (!source.empty()) families[source].push_back(design);
+  }
+  for (const auto& [source, designs] : families) {
+    // Clones with the same identity are not additional specializations.
+    std::set<std::string> identities;
+    for (auto* design : designs) identities.insert(attribute(design, signatureAttribute));
+    if (identities.size() != 1) continue;
+    if (library->getSNLDesign(NLName(source))) continue;
+    for (auto* design : designs) {
+      if (design->getName().getString() == attribute(design, nameAttribute)) {
+        design->setName(NLName(source));
+        break;
+      }
+    }
+  }
 }
 
 std::string SNLHDLSpecialization::identifierValue(std::string value) {

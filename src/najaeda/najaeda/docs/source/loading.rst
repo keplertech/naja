@@ -24,8 +24,14 @@ The SystemVerilog and VHDL loaders share a specialization naming policy.
 Instances with the same resolved parameters/generics share a model, including
 explicit values equal to defaults. The selected top retains its source
 module/entity name, including when its parameters are overridden. Its resolved
-values remain available as metadata. For child models, the all-default
-specialization keeps the source name. If a non-default top already owns that
+values remain available as metadata. A child model also keeps the source name
+when it is the only distinct specialization of that source in its owning
+library, even with non-default values or interface bindings. Multiple instances
+of the same model do not require suffixes. Names are finalized after hierarchy
+construction. If a later load introduces another specialization in that library,
+the previously single model may acquire a suffix; instance references stay valid.
+For multiple child models, the all-default specialization keeps the source name.
+If a non-default top already owns that
 name in a finite recursive hierarchy, the default-valued child uses the hash
 fallback. If a VHDL default environment cannot be evaluated, naming uses all
 resolved values; an unused overridden default does not prevent elaboration.
@@ -46,7 +52,8 @@ collisions promote both designs to 16 digits. Source module names are reserved
 before elaboration; collisions with them use the hash form or report an error
 if that is also occupied. Source identifiers themselves are never truncated.
 SystemVerilog interface port bindings also contribute their resolved types and
-alias relationships to identity; these implicit specializations use hash names.
+alias relationships to identity; these implicit specializations use hash names
+when more than one distinct model is needed.
 
 Resolved values and the original source identifier are available from the raw
 API; see :doc:`raw_api`. Names do not replace that metadata. Supported generic

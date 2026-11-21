@@ -361,7 +361,7 @@ end;
         self.assertEqual("unavailable", generic["default_value_status"])
         self.assertNotIn("default_value", generic)
         model = top.getInstance("child").getModel()
-        self.assertEqual("defaults_leaf__n_2", model.getName())
+        self.assertEqual("defaults_leaf", model.getName())
         self.assertEqual("2", model.getParameter("n").getValue())
 
     def test_required_generic_has_no_default_expression(self):

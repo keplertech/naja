@@ -6512,6 +6512,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     selected = *candidates.begin();
   }
   std::vector<SNLDesign*> created;
+  std::vector<NLLibrary*> namingLibraries;
   std::set<std::pair<NLLibrary*, std::string>> active;
   std::function<SNLDesign*(NLLibrary*, const std::string&, const GenericValues&)> build;
   build = [&](NLLibrary* owner, const std::string& name, const GenericValues& overrides) -> SNLDesign* {
@@ -6556,6 +6557,8 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     std::set<std::string> sourceNames;
     for (const auto& candidate : syntax.entities)
       if (context.owner(candidate.span.start.offset) == owner) sourceNames.insert(key(candidate.name));
+    if (std::find(namingLibraries.begin(), namingLibraries.end(), owner) == namingLibraries.end())
+      namingLibraries.push_back(owner);
     const auto modelName = SNLHDLSpecialization::name(
         owner, key(entity->name), parameters, sourceNames, {}, owner == library && name == selected);
     const auto signature = std::string(source.substr(context.start(owner),
@@ -6588,6 +6591,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
   try {
     auto* design = build(library, selected, {});
     if (noRoot) fail("cannot infer a unique RTL top entity; specify an explicit top");
+    for (auto* owner : namingLibraries) SNLHDLSpecialization::finalizeNames(owner);
     std::optional<VHDLIntentValue> gateIntent;
     SNLClockGating::Hooks clockGateHooks;
     clockGateHooks.beforeReplace = [&](SNLInstance* instance) {
@@ -6605,6 +6609,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     return design;
   } catch (...) {
     for (auto* design : created) design->destroy();
+    for (auto* owner : namingLibraries) SNLHDLSpecialization::finalizeNames(owner);
     throw;
   }
 }

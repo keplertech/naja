@@ -1268,7 +1268,8 @@ void SNLVRLDumper::dumpAttributes(
     // Elaboration metadata is preserved by NajaIF; its source-language values
     // and internal identity encoding are not Verilog attributes.
     const auto& name = attribute.getName().getString();
-    if (name == "naja.source_module" || name == "naja.elaboration_signature") continue;
+    if (name == "naja.source_module" || name == "naja.elaboration_signature" ||
+        name == "naja.elaboration_name") continue;
     ++dumpedSNLAttributes;
     o << "(* ";
     o << attribute.getName().getString();

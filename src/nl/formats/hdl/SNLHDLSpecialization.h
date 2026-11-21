@@ -30,6 +30,9 @@ class SNLHDLSpecialization {
       bool isTop = false);
   static void annotate(SNLDesign* design, const std::string& source,
       const std::vector<SNLHDLParameter>& parameters, const std::string& context = {});
+  // Call after building the complete hierarchy. Only distinct resolved models
+  // in the owning library require specialization suffixes.
+  static void finalizeNames(NLLibrary* library);
   static bool isElaborated(const SNLDesign* design);
   static std::string attribute(const SNLDesign* design, const std::string& name);
   static std::string identifierValue(std::string value);

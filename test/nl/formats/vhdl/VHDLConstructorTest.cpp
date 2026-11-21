@@ -8611,6 +8611,58 @@ TEST_F(VHDLConstructorTest, SharedSpecializationDigestCollisionsPromoteBothNames
   EXPECT_EQ(b->getName().getString(), "cell__hc4c28cf596ab9078");
 }
 
+TEST_F(VHDLConstructorTest, SingletonNameRestoresBeforeDigestCollisionPromotion) {
+  const std::vector<SNLHDLParameter> first{{"tag", "integer:85019", "85019", std::nullopt, false}};
+  const std::vector<SNLHDLParameter> second{{"tag", "integer:135170", "135170", std::nullopt, false}};
+  auto* a = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", first, {})));
+  SNLHDLSpecialization::annotate(a, "cell", first);
+  SNLHDLSpecialization::finalizeNames(library_);
+  EXPECT_EQ(a->getName(), NLName("cell"));
+  auto* b = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", second, {})));
+  SNLHDLSpecialization::annotate(b, "cell", second);
+  SNLHDLSpecialization::finalizeNames(library_);
+  EXPECT_EQ(a->getName(), NLName("cell__hc4c28cf51c2efecd"));
+  EXPECT_EQ(b->getName(), NLName("cell__hc4c28cf596ab9078"));
+  b->destroy();
+  SNLHDLSpecialization::finalizeNames(library_);
+  EXPECT_EQ(a->getName(), NLName("cell"));
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", first, {}), "cell__hc4c28cf51c2efecd");
+}
+
+TEST_F(VHDLConstructorTest, LaterSpecializationRenamesSingletonWithoutChangingInstances) {
+  const std::string source = R"(
+entity cell is generic(width:positive:=2);
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of cell is begin y<=a;end;
+entity first is port(a:in bit_vector(4 downto 0);y,z:out bit_vector(4 downto 0));end;
+architecture rtl of first is begin
+  u:entity work.cell generic map(5) port map(a,y);
+  v:entity work.cell generic map(5) port map(a,z);
+end;
+entity second is port(a:in bit_vector(6 downto 0);y:out bit_vector(6 downto 0));end;
+architecture rtl of second is begin u:entity work.cell generic map(7) port map(a,y);end;
+entity invalid is port(a:in bit_vector(6 downto 0);y:out bit_vector(6 downto 0));end;
+architecture rtl of invalid is begin
+  u:entity work.cell generic map(7) port map(a,y);
+  v:entity work.cell generic map(0) port map(a,open);
+end;
+)";
+  auto* first = VHDLConstructor(library_).construct(source, "first");
+  auto* model = first->getInstance(NLName("u"))->getModel();
+  const auto id = model->getID();
+  EXPECT_EQ(model->getName(), NLName("cell"));
+  EXPECT_EQ(first->getInstance(NLName("v"))->getModel(), model);
+  EXPECT_THROW(VHDLConstructor(library_).construct(source, "invalid"), NLException);
+  EXPECT_EQ(model->getName(), NLName("cell"));
+  EXPECT_EQ(library_->getSNLDesign(NLName("cell__width_7")), nullptr);
+  auto* second = VHDLConstructor(library_).construct(source, "second");
+  EXPECT_EQ(model->getName(), NLName("cell__width_5"));
+  EXPECT_EQ(model->getID(), id);
+  EXPECT_EQ(first->getInstance(NLName("u"))->getModel(), model);
+  EXPECT_EQ(model->getBusTerm(NLName("a"))->getWidth(), 5);
+  EXPECT_EQ(second->getInstance(NLName("u"))->getModel()->getName(), NLName("cell__width_7"));
+}
+
 TEST_F(VHDLConstructorTest, SharedSpecializationPolicyFormatsAndRejectsCollisions) {
   EXPECT_EQ(SNLHDLSpecialization::integerValue("-1.5e-8"), "n1p5en8");
   EXPECT_EQ(SNLHDLSpecialization::bitValue("00001"), "h01");

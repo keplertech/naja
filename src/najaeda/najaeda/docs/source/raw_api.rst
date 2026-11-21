@@ -11,8 +11,11 @@ Elaborated RTL specializations
 
 SystemVerilog and VHDL elaborated designs expose every resolved non-local
 parameter/generic through ``SNLDesign.getParameters()``. The selected top retains
-its source name even with non-default parameters; child models use specialization
-names. Both expose the resolved values. ``getValue()`` returns
+its source name even with non-default parameters. A child model retains the
+source name if it is the only distinct specialization in its owning library;
+multiple instances sharing that model do not require a suffix. When additional
+specializations are loaded, existing model names may change while object and
+instance references remain valid. All models expose the resolved values. ``getValue()`` returns
 source-language literal text (including quotes on string literals), rather than
 an instance override. These parameters describe fixed elaborated circuitry;
 changing an instance parameter does not re-elaborate it. ``getInstParameters()``
@@ -31,7 +34,10 @@ identifier. It is available without retaining source intent or a live AST:
    resolved = {p.getName(): p.getValue() for p in model.getParameters()}
 
 The ``naja.elaboration_signature`` attribute is a versioned internal identity
-record; callers should treat it as opaque. Both attributes and resolved values
+record; callers should treat it as opaque. ``naja.elaboration_name`` is an
+internal naming hint used to restore qualified names when a later load adds
+another specialization. Consumers should use ``getName()`` for the current name.
+These attributes and resolved values
 survive NajaIF save/load, cloning and fresh-process reloads. Gate-level Verilog
 uses the specialized design names directly and omits these informational
 parameter declarations, including VHDL literal text.

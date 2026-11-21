@@ -46,7 +46,7 @@ TEST_F(SNLSVConstructorTestElab, elaborateParameterizedPorts) {
   std::filesystem::path benchmarksPath(SNL_SV_BENCHMARKS_PATH);
   constructor.construct(benchmarksPath/"param_inst"/"param_inst.sv");
 
-  auto leaf = library_->getSNLDesign(NLName("leaf__W_4"));
+  auto leaf = library_->getSNLDesign(NLName("leaf"));
   auto top = library_->getSNLDesign(NLName("top"));
   ASSERT_NE(leaf, nullptr);
   ASSERT_NE(top, nullptr);
