@@ -843,7 +843,7 @@ semantic source of truth.
    * - :class:`najaeda.naja.SNLOccurrence`
      - :meth:`getRole <najaeda.naja.SNLOccurrence.getRole>`, :meth:`getResetActiveLevel <najaeda.naja.SNLOccurrence.getResetActiveLevel>`, :meth:`isInstanceOccurrence <najaeda.naja.SNLOccurrence.isInstanceOccurrence>`, :meth:`getPath <najaeda.naja.SNLOccurrence.getPath>`, :meth:`getInstance <najaeda.naja.SNLOccurrence.getInstance>`, :meth:`getInstTerm <najaeda.naja.SNLOccurrence.getInstTerm>`, :meth:`getNetComponent <najaeda.naja.SNLOccurrence.getNetComponent>`, :meth:`getDesign <najaeda.naja.SNLOccurrence.getDesign>`
    * - :class:`najaeda.naja.SNLEquipotential`
-     - :class:`Mode <najaeda.naja.SNLEquipotential.Mode>`, :meth:`getTerms <najaeda.naja.SNLEquipotential.getTerms>`, :meth:`getInstTermOccurrences <najaeda.naja.SNLEquipotential.getInstTermOccurrences>`, :meth:`isConst0 <najaeda.naja.SNLEquipotential.isConst0>`, :meth:`isConst1 <najaeda.naja.SNLEquipotential.isConst1>`, :meth:`dumpDotFile <najaeda.naja.SNLEquipotential.dumpDotFile>`
+     - :class:`EdgeKind <najaeda.naja.SNLEquipotential.EdgeKind>`, :meth:`getGraph <najaeda.naja.SNLEquipotential.getGraph>`, :class:`Mode <najaeda.naja.SNLEquipotential.Mode>`, :meth:`getTerms <najaeda.naja.SNLEquipotential.getTerms>`, :meth:`getInstTermOccurrences <najaeda.naja.SNLEquipotential.getInstTermOccurrences>`, :meth:`isConst0 <najaeda.naja.SNLEquipotential.isConst0>`, :meth:`isConst1 <najaeda.naja.SNLEquipotential.isConst1>`, :meth:`dumpDotFile <najaeda.naja.SNLEquipotential.dumpDotFile>`
    * - :class:`najaeda.naja.NLID`
      - :meth:`fromString <najaeda.naja.NLID.fromString>`, :meth:`toTuple <najaeda.naja.NLID.toTuple>`, :meth:`getType <najaeda.naja.NLID.getType>`, :meth:`getDBID <najaeda.naja.NLID.getDBID>`, :meth:`getLibraryID <najaeda.naja.NLID.getLibraryID>`, :meth:`getDesignID <najaeda.naja.NLID.getDesignID>`, :meth:`getDesignObjectID <najaeda.naja.NLID.getDesignObjectID>`, :meth:`getInstanceID <najaeda.naja.NLID.getInstanceID>`, :meth:`getBit <najaeda.naja.NLID.getBit>`, :meth:`isDesign <najaeda.naja.NLID.isDesign>`, :meth:`isInstance <najaeda.naja.NLID.isInstance>`, :meth:`isNet <najaeda.naja.NLID.isNet>`, :meth:`isTerm <najaeda.naja.NLID.isTerm>`
    * - :class:`najaeda.naja.LogicCone`
@@ -1940,7 +1940,7 @@ Hierarchy and connectivity
    :inherited-members:
 
 .. autoclass:: najaeda.naja.SNLEquipotential
-   :exclude-members: Mode
+   :exclude-members: Mode, EdgeKind
    :members:
    :undoc-members:
    :inherited-members:
@@ -1948,6 +1948,29 @@ Hierarchy and connectivity
    Pass ``mode=SNLEquipotential.Mode.TraverseAssigns`` to the constructor
    to cross Assign instances and omit their instance terminals.  The
    default is ``SNLEquipotential.Mode.Standard``.
+
+   Experts building hierarchical schematic views can pass ``keep_graph=True``
+   independently of ``mode``. ``getGraph()`` then returns ``(nodes, edges)``;
+   otherwise it returns ``None``. Each node is
+   ``(net_occurrence, [leaf_inst_term_occurrences], [top_bit_terms])``.
+   Nodes follow net discovery order, with the starting net first; leaves and
+   terms retain the order of the existing collections. Each crossing is recorded
+   once, including crossings that close a cycle. Each edge is
+   ``(kind, crossing_occurrence, from_index, to_index)``:
+
+   * ``SNLEquipotential.EdgeKind.Port`` uses the non-leaf instance terminal
+     occurrence in the parent path, directed from the outer net to the inner net.
+   * ``SNLEquipotential.EdgeKind.Assign`` uses the assign input instance terminal
+     occurrence, directed from input net to output net at the same path. These
+     edges appear only in ``TraverseAssigns`` mode.
+
+   Unconnected port or assign sides do not form edges. The graph is derived
+   data: retaining it does not change equipotential equality or ordering.
+   Copies share an immutable native graph; the returned Python lists are views
+   copied from that graph and can be edited without changing it. ``dumpDotFile``
+   shows net nodes, their leaves and top terms, and labeled crossings when the
+   graph is kept. The high-level ``najaeda.netlist.Equipotential`` wrapper does
+   not yet expose this option; use the raw API for hierarchical routing.
 
 .. autoclass:: najaeda.naja.SNLNetComponent
    :members:
@@ -1972,6 +1995,7 @@ Enum-like values
    SNLTerm.Direction
    SNLNet.Type
    SNLEquipotential.Mode
+   SNLEquipotential.EdgeKind
    SNLTermRole
    SNLActiveLevel
 
@@ -1984,6 +2008,10 @@ Enum-like values
    :undoc-members:
 
 .. autoclass:: najaeda.naja.SNLEquipotential.Mode
+   :members:
+   :undoc-members:
+
+.. autoclass:: najaeda.naja.SNLEquipotential.EdgeKind
    :members:
    :undoc-members:
 

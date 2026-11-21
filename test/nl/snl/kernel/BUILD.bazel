@@ -34,6 +34,7 @@ cc_test(
         "SNLMergeAssignsTest.cpp",
         "NLClockTest.cpp",
         "SNLClockGatingTest.cpp",
+        "SNLEquipotentialGraphTest.cpp",
         "SNLUtilsTest.cpp",
     ],
     deps = [

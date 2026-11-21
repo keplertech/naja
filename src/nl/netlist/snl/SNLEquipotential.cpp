@@ -11,22 +11,65 @@
 #include "SNLInstTerm.h"
 #include "SNLInstance.h"
 #include "NLDB0.h"
+#include <map>
+#include <fstream>
 #include <sstream>  
 
 namespace {
 
 using namespace naja::NL;
 
+// Allocated only when graph retention is requested. Lookup order never drives output.
+struct EquipotentialGraphBuilder {
+  using Graph = SNLEquipotential::Graph;
+  std::shared_ptr<Graph> graph = std::make_shared<Graph>();
+  std::map<SNLOccurrence, size_t> nodes;
+  std::set<SNLOccurrence> crossings;
+  std::vector<std::pair<SNLOccurrence, SNLOccurrence>> endpoints;
+
+  void visit(const SNLOccurrence& net) {
+    nodes.emplace(net, graph->nodes.size());
+    graph->nodes.push_back({net, {}, {}});
+  }
+
+  void cross(Graph::EdgeKind kind, const SNLOccurrence& crossing,
+      const SNLOccurrence& from, const SNLOccurrence& to) {
+    if (not from.isValid() or not to.isValid() or not crossings.insert(crossing).second) {
+      return;
+    }
+    graph->edges.push_back({kind, crossing, 0, 0});
+    endpoints.emplace_back(from, to);
+  }
+
+  void finish(const SNLEquipotential::InstTermOccurrences& leaves,
+      const SNLEquipotential::Terms& terms) {
+    for (size_t i = 0; i < endpoints.size(); ++i) {
+      graph->edges[i].from = nodes.at(endpoints[i].first);
+      graph->edges[i].to = nodes.at(endpoints[i].second);
+    }
+    // Iterate the existing ordered sets, preserving their order and exact membership.
+    for (const auto& leaf: leaves) {
+      graph->nodes[nodes.at(leaf.getComponentBitNetOccurrence())].leaves.push_back(leaf);
+    }
+    for (auto term: terms) {
+      auto net = SNLOccurrence(term).getComponentBitNetOccurrence();
+      graph->nodes[nodes.at(net)].terms.push_back(term);
+    }
+  }
+};
+
 struct SNLEquipotentialExtractor {
   explicit SNLEquipotentialExtractor(
     SNLEquipotential::InstTermOccurrences& instTermOccurrences,
     SNLEquipotential::Terms& terms,
     SNLNet::Type& type,
-    SNLEquipotential::Mode mode
+    SNLEquipotential::Mode mode,
+    EquipotentialGraphBuilder* graph
   ): instTermOccurrences_(instTermOccurrences),
     terms_(terms),
     type_(type),
-    mode_(mode)
+    mode_(mode),
+    graph_(graph)
   {}
 
   void extractNetComponentsFromNetOccurrence(
@@ -39,6 +82,9 @@ struct SNLEquipotentialExtractor {
       return;
     }
     visitedNetOccurrences_.insert(netOccurrence);
+    if (graph_) {
+      graph_->visit(netOccurrence);
+    }
     auto net = dynamic_cast<const SNLBitNet*>(netOccurrence.getObject());
     if (net->getType() != SNLNet::Type::Standard) {
       if (not hasDrivingType_) {
@@ -64,6 +110,12 @@ struct SNLEquipotentialExtractor {
               ? assignOutput
               : assignInput;
             auto oppositeInstTerm = instance->getInstTerm(oppositeTerm);
+            if (graph_) {
+              auto input = SNLOccurrence(path, instance->getInstTerm(assignInput));
+              auto output = SNLOccurrence(path, instance->getInstTerm(assignOutput));
+              graph_->cross(SNLEquipotential::Graph::EdgeKind::Assign, input,
+                input.getComponentBitNetOccurrence(), output.getComponentBitNetOccurrence());
+            }
             extractNetFromNetComponentOccurrence(
               naja::NL::SNLOccurrence(path, oppositeInstTerm), false);
             continue;
@@ -74,7 +126,11 @@ struct SNLEquipotentialExtractor {
           //get inside instance by exploring from term occurrence
           auto term = instTerm->getBitTerm();
           auto instancePath = naja::NL::SNLPath(path, instance);
-          //
+          if (graph_) {
+            graph_->cross(SNLEquipotential::Graph::EdgeKind::Port,
+              SNLOccurrence(path, instTerm), netOccurrence,
+              SNLOccurrence(instancePath, term).getComponentBitNetOccurrence());
+          }
           extractNetFromNetComponentOccurrence(naja::NL::SNLOccurrence(instancePath, term), false);
         }
       } else {
@@ -88,7 +144,11 @@ struct SNLEquipotentialExtractor {
             auto parentPath = path.getHeadPath();
             auto instance = path.getTailInstance();
             auto instTerm = instance->getInstTerm(term);
-            //
+            if (graph_) {
+              auto crossing = SNLOccurrence(parentPath, instTerm);
+              graph_->cross(SNLEquipotential::Graph::EdgeKind::Port, crossing,
+                crossing.getComponentBitNetOccurrence(), netOccurrence);
+            }
             extractNetFromNetComponentOccurrence(naja::NL::SNLOccurrence(parentPath, instTerm), false);
           }
         }
@@ -145,6 +205,7 @@ struct SNLEquipotentialExtractor {
     SNLEquipotential::Terms&                terms_;
     SNLNet::Type&                           type_;
     SNLEquipotential::Mode                  mode_;
+    EquipotentialGraphBuilder*              graph_;
     bool                                    hasDrivingType_    {false};
     using NetOccurrences = std::set<SNLOccurrence>;
     NetOccurrences                          visitedNetOccurrences_  {};
@@ -162,7 +223,7 @@ SNLEquipotential::SNLEquipotential(
 SNLEquipotential::SNLEquipotential(
   SNLNetComponent* netComponent,
   Mode mode):
-  SNLEquipotential(SNLOccurrence(netComponent), mode)
+  SNLEquipotential(netComponent, Options{mode, false})
 {}
 
 SNLEquipotential::SNLEquipotential(
@@ -172,10 +233,25 @@ SNLEquipotential::SNLEquipotential(
 
 SNLEquipotential::SNLEquipotential(
   const SNLOccurrence& netComponentOccurrence,
-  Mode mode) {
+  Mode mode):
+  SNLEquipotential(netComponentOccurrence, Options{mode, false})
+{}
+
+SNLEquipotential::SNLEquipotential(
+  SNLNetComponent* netComponent, const Options& options):
+  SNLEquipotential(SNLOccurrence(netComponent), options)
+{}
+
+SNLEquipotential::SNLEquipotential(
+  const SNLOccurrence& netComponentOccurrence, const Options& options) {
+  auto graph = options.keepGraph ? std::make_unique<EquipotentialGraphBuilder>() : nullptr;
   SNLEquipotentialExtractor extractor(
-    instTermOccurrences_, terms_, type_, mode);
+    instTermOccurrences_, terms_, type_, options.mode, graph.get());
   extractor.extractNetFromNetComponentOccurrence(netComponentOccurrence, true);
+  if (graph) {
+    graph->finish(instTermOccurrences_, terms_);
+    graph_ = graph->graph;
+  }
 }
 
 bool SNLEquipotential::isConst0() const {
@@ -216,7 +292,58 @@ std::string SNLEquipotential::getString() const {
     stream << term->getString();
   }
   stream << "]";
+  if (graph_) {
+    stream << ", Graph: Nodes: [";
+    for (size_t i = 0; i < graph_->nodes.size(); ++i) {
+      const auto& node = graph_->nodes[i];
+      stream << "\n" << i << ": " << node.net.getString() << " Leaves: [";
+      for (const auto& leaf: node.leaves) { stream << leaf.getString() << "; "; }
+      stream << "] Terms: [";
+      for (auto term: node.terms) { stream << term->getString() << "; "; }
+      stream << "]";
+    }
+    stream << "], Edges: [";
+    for (const auto& edge: graph_->edges) {
+      stream << "\n" << (edge.kind == Graph::EdgeKind::Port ? "Port" : "Assign")
+        << " " << edge.crossing.getString() << " " << edge.from << " -> " << edge.to;
+    }
+    stream << "]";
+  }
   return stream.str();
+}
+
+namespace {
+std::string dotQuote(const std::string& value) {
+  std::string result = "\"";
+  for (char c: value) {
+    if (c == '\\' or c == '\"') { result += '\\'; }
+    if (c == '\n') { result += "\\n"; }
+    else if (c != '\r') { result += c; }
+  }
+  return result + "\"";
+}
+}
+
+void SNLEquipotential::dumpDotFile(const std::string& path) const {
+  std::ofstream stream(path);
+  if (not stream) { throw NLException("Cannot open equipotential DOT file: " + path); }
+  stream << "digraph equipotential {\n";
+  if (graph_) {
+    for (size_t i = 0; i < graph_->nodes.size(); ++i) {
+      const auto& node = graph_->nodes[i];
+      auto label = node.net.getString();
+      for (const auto& leaf: node.leaves) { label += "\nLeaf: " + leaf.getString(); }
+      for (auto term: node.terms) { label += "\nTerm: " + term->getString(); }
+      stream << "  n" << i << " [label=" << dotQuote(label) << "];\n";
+    }
+    for (const auto& edge: graph_->edges) {
+      auto label = std::string(edge.kind == Graph::EdgeKind::Port ? "Port: " : "Assign: ")
+        + edge.crossing.getString();
+      stream << "  n" << edge.from << " -> n" << edge.to
+        << " [label=" << dotQuote(label) << "];\n";
+    }
+  }
+  stream << "}\n";
 }
 
 NajaCollection<SNLBitTerm*> SNLEquipotential::getTerms() const {
