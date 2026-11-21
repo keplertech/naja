@@ -1657,9 +1657,9 @@ TEST_F(SNLSVConstructorTestSimple, parseDistinctParameterizedInstanceBodiesUseDi
   ASSERT_NE(u2Model, nullptr);
   ASSERT_NE(u4Model, nullptr);
   EXPECT_NE(u2Model, u4Model);
-  EXPECT_EQ(std::string("leaf"), u2Model->getName().getString());
+  EXPECT_EQ(std::string("leaf__W_2"), u2Model->getName().getString());
   EXPECT_NE(std::string("leaf"), u4Model->getName().getString());
-  EXPECT_EQ(u2Model, library_->getSNLDesign(NLName("leaf")));
+  EXPECT_EQ(u2Model, library_->getSNLDesign(NLName("leaf__W_2")));
 
   auto* u2A = u2Model->getBusTerm(NLName("a"));
   auto* u2Y = u2Model->getBusTerm(NLName("y"));
@@ -8432,6 +8432,9 @@ TEST_F(SNLSVConstructorTestSimple, rejectStaticArrayFunctionState) {
     assign values = retain(a);
     assign y = values[1];
   endmodule)");
+    auto* db = library_->getDB();
+    library_->destroy();
+    library_ = NLLibrary::create(db, NLName("SVLIB"));
     SNLSVConstructor constructor(library_);
     expectUnsupportedConstruct(constructor, path, {"Unsupported RHS in continuous assign", "Call"});
   }
@@ -8447,6 +8450,9 @@ TEST_F(SNLSVConstructorTestSimple, rejectConstantFunctionUnsupportedSignatures) 
       "function automatic logic [3:0] outer(input real v=1.5); return int'(v); endfunction\n"}) {
     const auto path = writeSVTestFile("unsupported_constant_call",
       "module top(output wire [3:0] y);\n" + body + "assign y = outer(); endmodule\n");
+    auto* db = library_->getDB();
+    library_->destroy();
+    library_ = NLLibrary::create(db, NLName("SVLIB"));
     SNLSVConstructor constructor(library_);
     expectUnsupportedConstruct(constructor, path, {"Unsupported RHS in continuous assign", "Call"});
   }
@@ -11791,11 +11797,10 @@ endmodule
   ASSERT_NE(yNet, nullptr);
   EXPECT_EQ(3, yNet->getWidth());
 
-  auto child = library_->getSNLDesign(NLName("shift_reg"));
-  ASSERT_NE(child, nullptr);
   auto inst = top->getInstance(NLName("i_pipe_reg_load"));
   ASSERT_NE(inst, nullptr);
-  EXPECT_EQ(child, inst->getModel());
+  ASSERT_NE(inst->getModel(), nullptr);
+  EXPECT_EQ(3, inst->getModel()->getBusTerm(NLName("d_i"))->getWidth());
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseInstanceConnectionOutputElementSelectSupported) {
@@ -12225,9 +12230,10 @@ endmodule
 
   auto top = library_->getSNLDesign(
     NLName("interface_modport_lazy_flattened_connection_supported"));
-  auto child = library_->getSNLDesign(
-    NLName("interface_modport_lazy_flattened_connection_child"));
   ASSERT_NE(top, nullptr);
+  auto* instance = top->getInstance(NLName("u_child"));
+  ASSERT_NE(instance, nullptr);
+  auto* child = instance->getModel();
   ASSERT_NE(child, nullptr);
   EXPECT_NE(child->getTerm(NLName("bus__sig")), nullptr);
   EXPECT_NE(child->getTerm(NLName("bus__data")), nullptr);

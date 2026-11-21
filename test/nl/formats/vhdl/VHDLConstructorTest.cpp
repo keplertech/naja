@@ -17,8 +17,10 @@
 #include "SNLInstance.h"
 #include "SNLEquipotential.h"
 #include "SNLInstParameter.h"
+#include "SNLParameter.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLPrimitives.h"
+#include "SNLHDLSpecialization.h"
 #include "SNLRTLInfos.h"
 #include "SNLVRLDumper.h"
 #include "SNLScalarTerm.h"
@@ -29,6 +31,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <cstdlib>
 #include <stdexcept>
 #include <tuple>
@@ -5964,8 +5967,8 @@ end;
   ASSERT_NE(first, nullptr);
   ASSERT_NE(second, nullptr);
   EXPECT_NE(first->getModel(), second->getModel());
-  EXPECT_EQ(first->getModel()->getName(), NLName("leaf_extra_1_m_3_n_3"));
-  EXPECT_EQ(second->getModel()->getName(), NLName("leaf_extra_2_m_3_n_3"));
+  EXPECT_EQ(first->getModel()->getName(), NLName("leaf__n_3__m_3__extra_1"));
+  EXPECT_EQ(second->getModel()->getName(), NLName("leaf__n_3__m_3__extra_2"));
   EXPECT_EQ(first->getModel()->getBusTerm(NLName("a"))->getWidth(), 3);
   EXPECT_EQ(second->getModel()->getBusTerm(NLName("y"))->getWidth(), 3);
 }
@@ -5986,7 +5989,7 @@ end;
   EXPECT_THROW(VHDLConstructor(library_).construct(prefix, "top"), NLException);
   EXPECT_EQ(library_->getSNLDesigns().size(), 1);
   EXPECT_EQ(library_->getSNLDesign(NLName("blocked")), existing);
-  EXPECT_EQ(library_->getSNLDesign(NLName("leaf_n_3")), nullptr);
+  EXPECT_EQ(library_->getSNLDesign(NLName("leaf__n_3")), nullptr);
   EXPECT_EQ(library_->getSNLDesign(NLName("top")), nullptr);
   try {
     VHDLConstructor(library_).construct(R"(
@@ -5994,12 +5997,12 @@ entity grouped is generic(n, m : positive := 2); port(a : in bit; y : out bit); 
 architecture rtl of grouped is begin y <= a; end;
 entity top is port(a : in bit; y : out bit); end;
 architecture rtl of top is begin
-  u: entity work.grouped generic map(2, 3) port map(a, y);
+  u: entity work.grouped generic map(2, 0) port map(a, y);
 end;
 )", "top");
-    FAIL() << "expected grouped generic rejection";
+    FAIL() << "expected invalid positive generic rejection";
   } catch (const NLException& error) {
-    EXPECT_NE(std::string(error.what()).find("grouped generics with different actual values"),
+    EXPECT_NE(std::string(error.what()).find("generic value violates its subtype"),
         std::string::npos) << error.what();
   }
   EXPECT_EQ(library_->getSNLDesigns().size(), 1);
@@ -7814,7 +7817,7 @@ TEST_F(VHDLConstructorTest, StringGenericAttributesAndOrderingAreStatic) {
 TEST_F(VHDLConstructorTest, RTLValidationDiagnosticsRollBackDesigns) {
   library_->setName(NLName("design"));
   const std::vector<std::pair<std::string, std::string>> cases{
-    {"entity bad is generic(v : bit := '0'); end; architecture rtl of bad is begin end;",
+    {"entity bad is generic(v : time := 1); end; architecture rtl of bad is begin end;",
       "RTL generics require"},
     {"entity bad is generic(v : string := 7); end; architecture rtl of bad is begin end;",
       "string generic actual must be a static string"},
@@ -8580,4 +8583,213 @@ TEST_F(VHDLConstructorTest, NullArrayReadsRejectBeforeComputingElementStrides) {
     }
     EXPECT_TRUE(library_->getSNLDesigns().empty());
   }
+}
+
+TEST_F(VHDLConstructorTest, SharedSpecializationDigestCollisionsPromoteBothNames) {
+  // These independent integer values collide in the first 32 SHA-256 bits of
+  // the versioned canonical parameter record, but not in the first 64 bits.
+  const std::vector<SNLHDLParameter> first{{"tag", "integer:85019", "85019", std::nullopt, false}};
+  const std::vector<SNLHDLParameter> second{{"tag", "integer:135170", "135170", std::nullopt, false}};
+  auto* a = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", first, {})));
+  SNLHDLSpecialization::annotate(a, "cell", first);
+  EXPECT_EQ(a->getName().getString(), "cell__hc4c28cf5");
+  const auto secondName = SNLHDLSpecialization::name(library_, "cell", second, {});
+  EXPECT_EQ(secondName, "cell__hc4c28cf596ab9078");
+  EXPECT_EQ(a->getName().getString(), "cell__hc4c28cf51c2efecd");
+  auto* b = SNLDesign::create(library_, NLName(secondName));
+  SNLHDLSpecialization::annotate(b, "cell", second);
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", first, {}), a->getName().getString());
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", second, {}), b->getName().getString());
+  EXPECT_EQ(SNLHDLSpecialization::attribute(a, "naja.source_module"), "cell");
+  EXPECT_TRUE(SNLHDLSpecialization::isElaborated(a));
+  a->destroy();
+  b->destroy();
+  // Reversing discovery order gives the same final names.
+  b = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", second, {})));
+  SNLHDLSpecialization::annotate(b, "cell", second);
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", first, {}), "cell__hc4c28cf51c2efecd");
+  EXPECT_EQ(b->getName().getString(), "cell__hc4c28cf596ab9078");
+}
+
+TEST_F(VHDLConstructorTest, SingletonNameRestoresBeforeDigestCollisionPromotion) {
+  const std::vector<SNLHDLParameter> first{{"tag", "integer:85019", "85019", std::nullopt, false}};
+  const std::vector<SNLHDLParameter> second{{"tag", "integer:135170", "135170", std::nullopt, false}};
+  auto* a = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", first, {})));
+  SNLHDLSpecialization::annotate(a, "cell", first);
+  SNLHDLSpecialization::finalizeNames(library_);
+  EXPECT_EQ(a->getName(), NLName("cell"));
+  auto* b = SNLDesign::create(library_, NLName(SNLHDLSpecialization::name(library_, "cell", second, {})));
+  SNLHDLSpecialization::annotate(b, "cell", second);
+  SNLHDLSpecialization::finalizeNames(library_);
+  EXPECT_EQ(a->getName(), NLName("cell__hc4c28cf51c2efecd"));
+  EXPECT_EQ(b->getName(), NLName("cell__hc4c28cf596ab9078"));
+  b->destroy();
+  SNLHDLSpecialization::finalizeNames(library_);
+  EXPECT_EQ(a->getName(), NLName("cell"));
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", first, {}), "cell__hc4c28cf51c2efecd");
+}
+
+TEST_F(VHDLConstructorTest, LaterSpecializationRenamesSingletonWithoutChangingInstances) {
+  const std::string source = R"(
+entity cell is generic(width:positive:=2);
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of cell is begin y<=a;end;
+entity first is port(a:in bit_vector(4 downto 0);y,z:out bit_vector(4 downto 0));end;
+architecture rtl of first is begin
+  u:entity work.cell generic map(5) port map(a,y);
+  v:entity work.cell generic map(5) port map(a,z);
+end;
+entity second is port(a:in bit_vector(6 downto 0);y:out bit_vector(6 downto 0));end;
+architecture rtl of second is begin u:entity work.cell generic map(7) port map(a,y);end;
+entity invalid is port(a:in bit_vector(6 downto 0);y:out bit_vector(6 downto 0));end;
+architecture rtl of invalid is begin
+  u:entity work.cell generic map(7) port map(a,y);
+  v:entity work.cell generic map(0) port map(a,open);
+end;
+)";
+  auto* first = VHDLConstructor(library_).construct(source, "first");
+  auto* model = first->getInstance(NLName("u"))->getModel();
+  const auto id = model->getID();
+  EXPECT_EQ(model->getName(), NLName("cell"));
+  EXPECT_EQ(first->getInstance(NLName("v"))->getModel(), model);
+  EXPECT_THROW(VHDLConstructor(library_).construct(source, "invalid"), NLException);
+  EXPECT_EQ(model->getName(), NLName("cell"));
+  EXPECT_EQ(library_->getSNLDesign(NLName("cell__width_7")), nullptr);
+  auto* second = VHDLConstructor(library_).construct(source, "second");
+  EXPECT_EQ(model->getName(), NLName("cell__width_5"));
+  EXPECT_EQ(model->getID(), id);
+  EXPECT_EQ(first->getInstance(NLName("u"))->getModel(), model);
+  EXPECT_EQ(model->getBusTerm(NLName("a"))->getWidth(), 5);
+  EXPECT_EQ(second->getInstance(NLName("u"))->getModel()->getName(), NLName("cell__width_7"));
+}
+
+TEST_F(VHDLConstructorTest, SharedSpecializationPolicyFormatsAndRejectsCollisions) {
+  EXPECT_EQ(SNLHDLSpecialization::integerValue("-1.5e-8"), "n1p5en8");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("00001"), "h01");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("1"), "h1");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("1", true), "1");
+  EXPECT_EQ(SNLHDLSpecialization::bitValue("01-XU"), "b01-xu");
+  const std::vector<SNLHDLParameter> values{{"mode", "enumeration:fast", "fast", "fast", false}};
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", values, {}, {}, true), "cell");
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "cell", values, {}), "cell__mode_fast");
+  const auto hashed = SNLHDLSpecialization::name(library_, "cell", values, {"cell__mode_fast"});
+  EXPECT_EQ(hashed.find("cell__h"), 0);
+  SNLDesign::create(library_, NLName(hashed));
+  EXPECT_THROW(SNLHDLSpecialization::name(library_, "cell", values, {"cell__mode_fast"}), NLException);
+  // Non-identifier logic states are represented in identity, never emitted in
+  // an unsafe readable name. Frontends still own value-domain validation.
+  const std::vector<SNLHDLParameter> unknown{{"mask", "logic:01-XU", "\"01-XU\"", "b01-xu", false}};
+  EXPECT_EQ(SNLHDLSpecialization::name(library_, "other", unknown, {}).find("other__h"), 0);
+}
+
+TEST_F(VHDLConstructorTest, RealGenericLiteralsPreserveRangeAndIgnoreGlobalLocale) {
+  struct CommaDecimalPoint : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+  };
+  struct RestoreLocale {
+    std::locale previous = std::locale();
+    ~RestoreLocale() { std::locale::global(previous); }
+  } restoreLocale;
+  std::locale::global(std::locale(std::locale::classic(), new CommaDecimalPoint));
+  const auto source = [](const std::string& value) {
+    return "entity probe is generic(rate:real:=" + value + ");end;"
+        "architecture rtl of probe is begin end;";
+  };
+  for (const auto& [literal, expected] : std::vector<std::pair<std::string, std::string>>{
+      {"1.2_5", "1.25"}, {"1.25e+2", "125.0"}, {"-1.25E-2", "-0.0125"},
+      {"0.1", "0.1"}, {"0.001", "0.001"}, {"0.0001", "1.0e-04"},
+      {"10000.0", "10000.0"}, {"100000.0", "1.0e+05"}, {"-100000.0", "-1.0e+05"},
+      {"100000000000000016.0", "100000000000000016.0"},
+      {"1.0000000000000002", "1.0000000000000002"},
+      {"0.0e-999", "0.0"}, {"0.000_00e-999", "0.0"}, {"0.0e999", "0.0"}, {"-0.0", "0.0"},
+      {"4.9406564584124654e-324", "5.0e-324"}, {"1.0e-320", "1.0e-320"},
+      {"2.225073858507201e-308", "2.225073858507201e-308"},
+      {"2.2250738585072014e-308", "2.2250738585072014e-308"},
+      {"1.7976931348623157e308", "1.7976931348623157e+308"}}) {
+    SCOPED_TRACE(literal);
+    auto* design = VHDLConstructor(library_).construct(source(literal), "probe");
+    ASSERT_NE(design, nullptr);
+    auto* parameter = design->getParameter(NLName("rate"));
+    ASSERT_NE(parameter, nullptr);
+    EXPECT_EQ(parameter->getValue(), expected);
+    design->destroy();
+  }
+  for (const auto& literal : {"1.0e309", "-1.0e309", "1.0e-999", "-1.0e-999", "0.000_01e-999", "16#1.8#"}) {
+    SCOPED_TRACE(literal);
+    try {
+      VHDLConstructor(library_).construct(source(literal), "probe");
+      FAIL() << "expected invalid or out-of-range real literal rejection";
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find("unsupported real generic literal"), std::string::npos)
+          << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+}
+
+TEST_F(VHDLConstructorTest, SpecializationNamesDoNotRequireUnusedDefaultsToElaborate) {
+  for (const auto& [type, defaultExpression, actual] :
+      std::vector<std::tuple<std::string, std::string, std::string>>{
+          {"integer", "-(1 / 0)", "2"},
+          {"boolean", "(1 / 0) = 0", "true"},
+          {"real", "1.0 / 0.0", "2.5"}}) {
+    SCOPED_TRACE(type);
+    const auto declarations = "entity cell is generic(value:" + type + ":=" + defaultExpression +
+        ");port(y:out bit);end;architecture rtl of cell is begin y<='1';end;";
+    const auto source = declarations + "entity top is port(y,z:out bit);end;"
+        "architecture rtl of top is begin "
+        "first:entity work.cell generic map(value=>" + actual + ") port map(y);"
+        "second:entity work.cell generic map(value=>" + actual + ") port map(z);end;";
+    auto* top = VHDLConstructor(library_).construct(source, "top");
+    ASSERT_NE(top, nullptr);
+    auto* first = top->getInstance(NLName("first"))->getModel();
+    EXPECT_EQ(first, top->getInstance(NLName("second"))->getModel());
+    EXPECT_EQ(first->getParameter(NLName("value"))->getValue(), actual);
+    EXPECT_TRUE(assignSource(first->getScalarTerm(NLName("y"))->getNet())->isConstant1());
+    top->destroy();
+    first->destroy();
+    // An invalid default actually selected for elaboration must still fail.
+    try {
+      VHDLConstructor(library_).construct(declarations, "cell");
+      FAIL() << "expected the selected invalid default to fail";
+    } catch (const NLException& error) {
+      EXPECT_NE(std::string(error.what()).find("division by zero"), std::string::npos) << error.what();
+    }
+    EXPECT_TRUE(library_->getSNLDesigns().empty());
+  }
+}
+
+TEST_F(VHDLConstructorTest, CounterfactualDefaultsDoNotOverrideResolvedDependentValues) {
+  const std::string declarations = R"(
+entity cell is generic(divisor:integer:=0;width:positive:=12/divisor);
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of cell is begin y<=a;end;
+)";
+  auto* top = VHDLConstructor(library_).construct(declarations + R"(
+entity top is port(a:in bit_vector(3 downto 0);y,z:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.cell generic map(divisor=>3) port map(a,y);
+  second:entity work.cell generic map(divisor=>3,width=>4) port map(a,z);
+end;
+)", "top");
+  ASSERT_NE(top, nullptr);
+  auto* model = top->getInstance(NLName("first"))->getModel();
+  EXPECT_EQ(model, top->getInstance(NLName("second"))->getModel());
+  EXPECT_EQ(model->getParameter(NLName("divisor"))->getValue(), "3");
+  EXPECT_EQ(model->getParameter(NLName("width"))->getValue(), "4");
+  EXPECT_EQ(model->getBusTerm(NLName("y"))->getWidth(), 4);
+  top->destroy();
+  model->destroy();
+  try {
+    VHDLConstructor(library_).construct(declarations + R"(
+entity top is port(a:in bit_vector(3 downto 0);y:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  invalid_actual:entity work.cell generic map(divisor=>1/0) port map(a,y);
+end;
+)", "top");
+    FAIL() << "expected the invalid actual value to fail";
+  } catch (const NLException& error) {
+    EXPECT_NE(std::string(error.what()).find("division by zero"), std::string::npos) << error.what();
+  }
+  EXPECT_TRUE(library_->getSNLDesigns().empty());
 }

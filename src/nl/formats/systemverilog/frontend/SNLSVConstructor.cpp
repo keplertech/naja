@@ -57,6 +57,7 @@
 #include "SNLUtils.h"
 #include "SNLClockGating.h"
 #include "SNLParameter.h"
+#include "SNLHDLSpecialization.h"
 #include "SNLRTLInfos.h"
 #include "SNLRTLPrimitives.h"
 #include "SNLHDLMuxSelection.h"
@@ -98,6 +99,8 @@
 #include "slang/diagnostics/DeclarationsDiags.h"
 #include "slang/driver/Driver.h"
 #include "slang/syntax/SyntaxNode.h"
+#include "slang/syntax/AllSyntax.h"
+#include "slang/ast/types/TypePrinter.h"
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/text/Json.h"
 #include "slang/text/SourceManager.h"
@@ -1533,7 +1536,7 @@ class SNLSVConstructorImpl {
             ++svPerfReport_.topInstanceBuildsStarted;
             noteSVPerfProgress();
 #endif
-            buildDesign(top->body);
+            buildDesign(top->body, true);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
             ++svPerfReport_.topInstanceBuildsCompleted;
             maybeWriteSVPerfReportSnapshot();
@@ -1543,6 +1546,8 @@ class SNLSVConstructorImpl {
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         maybeWriteSVPerfReportSnapshot();
 #endif
+
+        SNLHDLSpecialization::finalizeNames(library_);
 
         // Expression lowering caches can retain pointers to compiler-generated
         // nets. No construction path consults them after all top designs have
@@ -1642,6 +1647,7 @@ class SNLSVConstructorImpl {
 #endif
         finalizeDiagnosticsReport(true, {});
       } catch (const std::exception& e) {
+        SNLHDLSpecialization::finalizeNames(library_);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         if (svPerfReport_.failureReason.empty()) {
           svPerfReport_.failureReason = e.what();
@@ -3382,21 +3388,169 @@ endmodule
       // LCOV_EXCL_STOP
     }
 
-    std::string allocateElaboratedDesignName(const std::string& defName) {
-      auto& nextOrdinal = elaboratedDesignOrdinals_[defName];
-      while (true) {
-        std::string candidate = defName;
-        if (nextOrdinal != 0) {
-          candidate += "__elab" + std::to_string(nextOrdinal);
-        }
-        ++nextOrdinal;
-        if (!library_->getSNLDesign(NLName(candidate))) {
-          return candidate;
-        }
-      }
+    static std::string specializationType(const Type& type) {
+      slang::ast::TypePrinter printer;
+      printer.options.skipScopedTypeNames = true;
+      printer.options.elideScopeNames = true;
+      printer.options.fullEnumType = true;
+      printer.append(type.getCanonicalType());
+      return printer.toString();
     }
 
-    SNLDesign* buildDesign(const InstanceBodySymbol& body) {
+    static std::string nominalTypeIdentity(const Type& type) {
+      const auto& canonical = type.getCanonicalType();
+      if (const auto* element = canonical.getArrayElementType()) return nominalTypeIdentity(*element);
+      if (!canonical.isEnum() && !canonical.isStruct() && !canonical.isUnion()) return {};
+      const auto* scope = canonical.getParentScope();
+      std::string identity = scope ? scope->asSymbol().getLexicalPath() : std::string{};
+      for (auto* syntax = canonical.getSyntax(); syntax; syntax = syntax->parent) {
+        if (syntax->kind == slang::syntax::SyntaxKind::TypedefDeclaration)
+          return identity + "::" + std::string(syntax->as<slang::syntax::TypedefDeclarationSyntax>().name.valueText());
+        if (syntax->kind == slang::syntax::SyntaxKind::TypeAssignment)
+          return identity + "::" + std::string(syntax->as<slang::syntax::TypeAssignmentSyntax>().name.valueText());
+      }
+      return identity;
+    }
+
+    std::vector<SNLHDLParameter> specializationParameters(const InstanceBodySymbol& body) {
+      const auto& definition = body.getDefinition();
+      const InstanceBodySymbol* defaults = nullptr;
+      if (std::all_of(definition.parameters.begin(), definition.parameters.end(),
+          [](const auto& parameter) { return parameter.hasDefault(); })) {
+        auto [it, inserted] = defaultParameterBodies_.try_emplace(&definition, nullptr);
+        if (inserted) it->second = &InstanceSymbol::createDefault(*compilation_, definition).body;
+        defaults = it->second;
+      }
+      std::vector<SNLHDLParameter> result;
+      const auto parameters = body.getParameters();
+      const auto defaultParameters = defaults ? defaults->getParameters() : decltype(parameters){};
+      for (size_t i = 0; i < parameters.size(); ++i) {
+        const auto& parameter = *parameters[i];
+        if (parameter.isLocalParam()) continue;
+        const auto& symbol = parameter.symbol;
+        SNLHDLParameter record;
+        record.name = std::string(symbol.name);
+        if (symbol.kind == SymbolKind::TypeParameter) {
+          const auto& type = symbol.as<slang::ast::TypeParameterSymbol>().targetType.getType();
+          const auto canonical = specializationType(type);
+          record.literal = type.isUnpackedArray() && type.kind == SymbolKind::TypeAlias ? type.toString() : canonical;
+          record.identity = "type:" + nominalTypeIdentity(type) + ":" + canonical;
+          if (i < defaultParameters.size()) {
+            const auto& defaultType = defaultParameters[i]->symbol.as<slang::ast::TypeParameterSymbol>().targetType.getType();
+            record.isDefault = type.isMatching(defaultType) || record.identity ==
+                "type:" + nominalTypeIdentity(defaultType) + ":" + specializationType(defaultType);
+          }
+        } else {
+          const auto& valueSymbol = symbol.as<slang::ast::ParameterSymbol>();
+          const auto& value = valueSymbol.getValue();
+          const auto& type = valueSymbol.getType();
+          record.literal = value.toString(slang::SVInt::MAX_BITS, true, true);
+          record.identity = specializationType(type) + ":" + record.literal;
+          if (i < defaultParameters.size()) {
+            const auto& defaultSymbol = defaultParameters[i]->symbol.as<slang::ast::ParameterSymbol>();
+            record.isDefault = specializationType(type) == specializationType(defaultSymbol.getType()) &&
+                value == defaultSymbol.getValue();
+          }
+          if (type.isEnum()) {
+            for (const auto& literal : type.getCanonicalType().as<slang::ast::EnumType>().values()) {
+              if (literal.getValue() == value) {
+                record.nameValue = std::string(literal.name);
+                record.literal = std::string(literal.name);
+                const auto* scope = literal.getParentScope();
+                if (scope && scope->asSymbol().kind == SymbolKind::EnumType)
+                  scope = scope->asSymbol().getParentScope();
+                if (scope && (scope->asSymbol().kind == SymbolKind::Package ||
+                    scope->asSymbol().kind == SymbolKind::ClassType))
+                  record.literal = scope->asSymbol().getHierarchicalPath() + "::" + record.literal;
+                break;
+              }
+            }
+          } else if (value.isString()) {
+            const auto readableString = SNLHDLSpecialization::identifierValue(value.str());
+            if (readableString == value.str()) record.nameValue = readableString;
+            // ConstantValue's display formatter does not escape source strings.
+            record.literal = "\"";
+            for (unsigned char c : value.str()) {
+              if (c == '\\' || c == '"') record.literal += '\\';
+              if (c == '\n') record.literal += "\\n";
+              else if (c == '\r') record.literal += "\\r";
+              else if (c == '\t') record.literal += "\\t";
+              else if (c < 32 || c >= 127) {
+                record.literal += '\\';
+                record.literal += char('0' + ((c >> 6) & 7));
+                record.literal += char('0' + ((c >> 3) & 7));
+                record.literal += char('0' + (c & 7));
+              } else record.literal += c;
+            }
+            record.literal += '"';
+            record.identity = specializationType(type) + ":" + record.literal;
+          } else if (value.isReal() || value.isShortReal()) {
+            record.nameValue = SNLHDLSpecialization::integerValue(record.literal);
+          } else if (value.isInteger() && (type.isPredefinedInteger() || type.isSimpleBitVector())) {
+            const auto& integer = value.integer();
+            const auto* declared = valueSymbol.getDeclaredType()->getTypeSyntax();
+            const bool inferredInteger = declared && declared->kind == slang::syntax::SyntaxKind::ImplicitType &&
+                declared->as<slang::syntax::ImplicitTypeSyntax>().dimensions.empty() && integer.isSigned();
+            if ((type.isPredefinedInteger() || inferredInteger) && !integer.hasUnknown()) {
+              record.literal = integer.toString(slang::LiteralBase::Decimal, false);
+              record.nameValue = SNLHDLSpecialization::integerValue(record.literal);
+            } else {
+              std::string bits;
+              for (auto bit = integer.getBitWidth(); bit > 0; --bit) bits += integer[int32_t(bit - 1)].toChar();
+              const auto component = SNLHDLSpecialization::bitValue(bits, type.isScalar());
+              record.nameValue = component;
+              const auto width = std::to_string(integer.getBitWidth());
+              if (integer.hasUnknown() || bits.size() == 1)
+                record.literal = width + (integer.isSigned() ? "'sb" : "'b") + bits;
+              else record.literal = width + (integer.isSigned() ? "'sh" : "'h") + component.substr(1);
+            }
+          }
+        }
+        result.push_back(std::move(record));
+      }
+      return result;
+    }
+
+    std::string specializationContext(const InstanceBodySymbol& body) {
+      // Interface bindings are implicit type/alias parameters. Slang's ordinary
+      // module parameter comparison does not cover them.
+      std::string context;
+      std::unordered_map<const Symbol*, size_t> aliases;
+      const auto append = [&](const std::string& value) {
+        context += std::to_string(value.size()) + ":" + value;
+      };
+      for (const auto* symbol : body.getPortList()) {
+        if (symbol->kind != SymbolKind::InterfacePort) continue;
+        const auto& port = symbol->as<slang::ast::InterfacePortSymbol>();
+        append(std::string(port.name));
+        const auto [connected, modport] = port.getConnection();
+        if (modport) append(std::string(modport->name));
+        const auto describe = [&](const auto& self, const Symbol* connection) -> void {
+          if (!connection) return;
+          if (connection->kind == SymbolKind::InstanceArray) {
+            const auto& array = connection->as<slang::ast::InstanceArraySymbol>();
+            append(array.range.toString());
+            for (const auto* element : array.elements) self(self, element);
+          } else if (connection->kind == SymbolKind::Instance) {
+            const auto& instance = connection->as<InstanceSymbol>();
+            append(std::string(instance.getDefinition().name));
+            append(SNLHDLSpecialization::signature(specializationParameters(instance.body)));
+          }
+        };
+        describe(describe, connected);
+        visitInterfacePortSignals(port, [&](const std::string& name,
+            const slang::ast::ModportPortSymbol& member) {
+          append(name);
+          append(specializationType(member.getType()));
+          append(std::to_string(int(member.direction)));
+          const auto [it, inserted] = aliases.try_emplace(member.internalSymbol, aliases.size());
+          append(std::to_string(it->second));
+        });
+      }
+      return context;
+    }
+
+    SNLDesign* buildDesign(const InstanceBodySymbol& body, bool isTop = false) {
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
       ++svPerfReport_.buildDesignCalls;
       noteSVPerfProgress();
@@ -3470,7 +3624,18 @@ endmodule
         inferredMemorySequentialBlocks_ = std::move(savedInferredMemorySequentialBlocks);
       });
 
-      auto design = SNLDesign::create(library_, NLName(allocateElaboratedDesignName(defName)));
+      const auto parameters = specializationParameters(body);
+      const auto context = specializationContext(body);
+      std::set<std::string> sourceNames;
+      for (const auto* symbol : compilation_->getDefinitions()) sourceNames.emplace(symbol->name);
+      const auto name = SNLHDLSpecialization::name(library_, defName, parameters, sourceNames, context, isTop);
+      if (auto* existing = library_->getSNLDesign(NLName(name)); existing && hasInterfacePorts) {
+        bodyToDesign_[&body] = existing;
+        representativeBodies.push_back(&body);
+        return existing;
+      }
+      auto design = SNLDesign::create(library_, NLName(name));
+      SNLHDLSpecialization::annotate(design, defName, parameters, context);
       bodyToDesign_[&body] = design;
       representativeBodies.push_back(&body);
       annotateSourceInfo(design, getSourceRange(definition), true);
@@ -37348,7 +37513,7 @@ endmodule
     std::unordered_map<std::string, SNLDesign*> unknownBlackboxes_;
     std::unordered_map<const slang::ast::DefinitionSymbol*, std::vector<const InstanceBodySymbol*>>
       representativeBodiesByDefinition_;
-    std::unordered_map<std::string, size_t> elaboratedDesignOrdinals_;
+    std::unordered_map<const slang::ast::DefinitionSymbol*, const InstanceBodySymbol*> defaultParameterBodies_;
     std::ofstream diagnosticsReportStream_;
     std::unordered_set<std::string> reportSections_;
     std::unordered_map<std::string, size_t> slangSeverityCounts_;

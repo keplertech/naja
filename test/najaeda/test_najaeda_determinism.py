@@ -234,8 +234,13 @@ def worker(kind, source, output, run):
     universe = naja.NLUniverse.create()
     db = naja.NLDB.create(universe)
     universe.setTopDB(db)
-    if kind in ("sv", "sv_timing", "sv_resets"):
-        db.loadSystemVerilog([source], diagnostics_report_path=None)
+    if kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top"):
+        options = None
+        if kind == "sv_top":
+            options = {"slang": ["-GWIDTH=5"]}
+        elif kind == "sv_recursive_top":
+            options = {"slang": ["--top=top", "-GN=2"]}
+        db.loadSystemVerilog([source], diagnostics_report_path=None, frontend_options=options)
     elif kind == "v":
         db.loadGateLevelVerilog([source])
         from najaeda import naja
@@ -310,7 +315,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
-            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets") else kind))
+            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets", "sv_top", "sv_recursive_top") else kind))
             for name, contents in (files or {}).items():
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
@@ -1038,6 +1043,84 @@ module top(input [8:0] a, b, output [8:0] y);
   branch u1(a[5:3], b[5:3], y[5:3]);
   branch u2(a[8:6], b[8:6], y[8:6]);
 endmodule
+""")
+
+    def test_selected_top_name_with_parameter_override(self):
+        self.check_determinism("sv_top", """
+module tile #(parameter int WIDTH=3)(input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  assign y=a;
+endmodule
+module top #(parameter int WIDTH=3)(input [WIDTH-1:0] a,output [WIDTH-1:0] y);
+  tile #(.WIDTH(WIDTH)) only_child(a,y);
+endmodule
+""")
+
+    def test_selected_top_name_in_finite_recursive_hierarchy(self):
+        self.check_determinism("sv_recursive_top", """
+module top #(parameter int N=0)(input a,output y);
+  if(N>0) begin:branch
+    top #(.N(N-1)) inner(a,y);
+  end else assign y=a;
+endmodule
+""")
+
+    def test_overridden_unevaluable_vhdl_defaults(self):
+        self.check_determinism("vhd", """
+entity tile is generic(divisor:integer:=0;width:positive:=12/divisor;epsilon:real:=1.0e-320);
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit_vector(3 downto 0);y,z:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(divisor=>3) port map(a,y);
+  second:entity work.tile generic map(divisor=>3,width=>4) port map(a,z);
+end;
+""")
+
+    def test_elaborated_specialization_identity(self):
+        self.check_determinism("sv", """
+module tile #(parameter int SIZE=3, parameter logic[255:0] MASK=0,
+             parameter real RATE=1.0, parameter string LABEL="base", parameter bit EN=0)(input a,output y);
+  assign y=a;
+endmodule
+module top(input a,output [3:0] y);
+  tile #(.SIZE(5), .RATE(2.5), .LABEL("other-core"), .EN(1)) first(a,y[0]);
+  tile implicit_default(a,y[1]);
+  tile #(.SIZE(3)) explicit_default(a,y[2]);
+  tile #(.MASK(256'h123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0)) wide(a,y[3]);
+endmodule
+""")
+        self.check_determinism("vhd", """
+entity tile is generic(size:integer:=3;mask:bit_vector(255 downto 0):=(others=>'0');
+  rate:real:=1.0;label_value:string:="base";en:boolean:=false);
+  port(a:in bit;y:out bit);end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit;y:out bit_vector(3 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(size=>5,rate=>2.5,label_value=>"other-core",en=>true) port map(a,y(0));
+  implicit_default:entity work.tile port map(a,y(1));
+  explicit_default:entity work.tile generic map(size=>3) port map(a,y(2));
+  wide:entity work.tile generic map(mask=>x"123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0") port map(a,y(3));
+end;
+""")
+
+    def test_single_specialization_names(self):
+        self.check_determinism("sv", """
+module tile #(parameter int WIDTH=2,parameter string LABEL="base")
+  (input [WIDTH-1:0] a,output [WIDTH-1:0] y);assign y=a;endmodule
+module top(input [4:0] a,output [4:0] y,z);
+  tile #(.WIDTH(5),.LABEL("punctuation !")) first(a,y);
+  tile #(.LABEL("punctuation !"),.WIDTH(5)) repeated(a,z);
+endmodule
+""")
+        self.check_determinism("vhd", """
+entity tile is generic(width:positive:=2;label_value:string:="base");
+  port(a:in bit_vector(width-1 downto 0);y:out bit_vector(width-1 downto 0));end;
+architecture rtl of tile is begin y<=a;end;
+entity top is port(a:in bit_vector(4 downto 0);y,z:out bit_vector(4 downto 0));end;
+architecture rtl of top is begin
+  first:entity work.tile generic map(5,"punctuation !") port map(a,y);
+  repeated:entity work.tile generic map(label_value=>"punctuation !",width=>5) port map(a,z);
+end;
 """)
 
     def test_systemverilog_interfaces(self):

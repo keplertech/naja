@@ -3,6 +3,7 @@
 
 #include "VHDLConstructor.h"
 #include "VHDLIntent.h"
+#include "SNLHDLSpecialization.h"
 #include "NajaPrivateProperty.h"
 #include "VHDLRTLConstructor.h"
 #include "VHDLSourceInfo.h"
@@ -534,6 +535,7 @@ SNLDesign* VHDLConstructor::constructInputs(
       }
       auto* design = SNLDesign::create(library_, NLName(topEntity->name.spelling));
       topDesign = design;
+      SNLHDLSpecialization::annotate(design, std::string(nameKey(topEntity->name)), {});
       sourceMap.annotate(design, topEntity->span, true);
       sourceMap.annotate(design, topArchitecture->span);
       std::unordered_map<std::string, SNLNet*> nets;
@@ -827,6 +829,7 @@ SNLDesign* VHDLConstructor::constructInputs(
       SNLDesign::create(library_, NLName(entity.name.spelling)),
       [](SNLDesign* design) { design->destroy(); });
   auto* design = designGuard.get();
+  SNLHDLSpecialization::annotate(design, std::string(nameKey(entity.name)), {});
   sourceMap.annotate(design, entity.span, true);
   sourceMap.annotate(design, architecture.span);
   for (const auto& port : entity.ports) {

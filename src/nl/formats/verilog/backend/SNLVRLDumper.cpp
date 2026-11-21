@@ -1265,6 +1265,11 @@ void SNLVRLDumper::dumpAttributes(
     snlAttributesStart = std::chrono::steady_clock::now(); // LCOV_EXCL_LINE
   }
   for (const auto& attribute: SNLAttributes::getAttributes(object)) {
+    // Elaboration metadata is preserved by NajaIF; its source-language values
+    // and internal identity encoding are not Verilog attributes.
+    const auto& name = attribute.getName().getString();
+    if (name == "naja.source_module" || name == "naja.elaboration_signature" ||
+        name == "naja.elaboration_name") continue;
     ++dumpedSNLAttributes;
     o << "(* ";
     o << attribute.getName().getString();
@@ -2429,6 +2434,9 @@ void SNLVRLDumper::dumpParameters(const SNLDesign* design, std::ostream& o) {
     [](const SNLParameter* lhs, const SNLParameter* rhs) {
       return lhs->getName().getString() < rhs->getName().getString();
     });
+  for (const auto& attribute : SNLAttributes::getAttributes(design))
+    if (attribute.getName().getString() == "naja.elaboration_signature" &&
+        attribute.getValue().getString().starts_with("naja-elaboration-v1:")) return;
   bool atLeastOne = false;
   for (auto parameter: parameters) {
     atLeastOne = true;
