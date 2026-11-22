@@ -137,7 +137,7 @@ end;
 """
 
 
-def dump_state(output, timing=False, resets=False):
+def dump_state(output, timing=False, resets=False, graphs=False):
     from najaeda import naja
 
     # Capture the live database before invoking any dumper. A dumper-only sort
@@ -217,7 +217,38 @@ def dump_state(output, timing=False, resets=False):
                 [occurrence_id(r["occurrence"]), domains(r["resets"]),
                  [occurrence_id(p) for p in r["nonResetInputs"]]]
                 for r in top.getTimingDiagnostics()["resetControls"]]])
+    graph_dumps = []
+    if graphs:
+        top = naja.NLUniverse.get().getTopDesign()
+
+        def graph_occurrence_id(occurrence):
+            path = occurrence.getPath()
+            obj = occurrence.getNetComponent()
+            if obj is None:
+                model = top if path.empty() else path.getModel()
+                obj = next(net for net in model.getBitNets()
+                           if naja.SNLOccurrence(path, net) == occurrence)
+            return [path.getInstanceIDs(), obj.getNLID().toTuple()]
+
+        for term_index, term in enumerate(top.getBitTerms()):
+            for mode in (naja.SNLEquipotential.Mode.Standard,
+                         naja.SNLEquipotential.Mode.TraverseAssigns):
+                equi = naja.SNLEquipotential(term, mode=mode, keep_graph=True)
+                plain = naja.SNLEquipotential(term, mode=mode)
+                assert equi == plain and plain.getGraph() is None
+                nodes, edges = equi.getGraph()
+                assert sorted(o for _, leaves, _ in nodes for o in leaves) == sorted(equi.getInstTermOccurrences())
+                assert sorted(t.getNLID().toTuple() for _, _, terms in nodes for t in terms) == sorted(
+                    t.getNLID().toTuple() for t in equi.getTerms())
+                state.append(["equipotential_graph", term_index, mode,
+                    [[graph_occurrence_id(net), [graph_occurrence_id(o) for o in leaves],
+                      [t.getNLID().toTuple() for t in terms]] for net, leaves, terms in nodes],
+                    [[kind, graph_occurrence_id(crossing), source, target]
+                     for kind, crossing, source, target in edges]])
+                graph_dumps.append((f"equipotential-{term_index}-{mode}.dot", equi))
     output.mkdir()
+    for filename, equi in graph_dumps:
+        equi.dumpDotFile(str(output / filename))
     (output / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
     top = naja.NLUniverse.get().getTopDesign()
     top.dumpGateLevelVerilog(str(output), "design.v")
@@ -241,6 +272,8 @@ def worker(kind, source, output, run):
         elif kind == "sv_recursive_top":
             options = {"slang": ["--top=top", "-GN=2"]}
         db.loadSystemVerilog([source], diagnostics_report_path=None, frontend_options=options)
+    elif kind == "v_graph":
+        db.loadGateLevelVerilog([source])
     elif kind == "v":
         db.loadGateLevelVerilog([source])
         from najaeda import naja
@@ -268,10 +301,10 @@ def worker(kind, source, output, run):
     else:
         raise ValueError(kind)
     output = Path(output)
-    dump_state(output / "original", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets")
+    dump_state(output / "original", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets", graphs=kind == "v_graph")
     universe.destroy()
     naja.NLDB.loadNajaIF(str(output / "original" / "snapshot"))
-    dump_state(output / "reloaded", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets")
+    dump_state(output / "reloaded", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets", graphs=kind == "v_graph")
     assert allocations  # Retain heap perturbation until both dumps are complete.
 
 
@@ -315,7 +348,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
-            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets", "sv_top", "sv_recursive_top") else kind))
+            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets", "sv_top", "sv_recursive_top") else "v" if kind == "v_graph" else kind))
             for name, contents in (files or {}).items():
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
@@ -1009,6 +1042,26 @@ module top import types::*;
 endmodule
 """)
 
+    def test_equipotential_graph(self):
+        self.check_determinism("v_graph", """
+module lane(input [2:0] a, b, output [2:0] y, z);
+  assign y = a;
+  assign z = b;
+endmodule
+module bridge(input a, output b);
+  wire internal;
+  assign internal = a;
+  assign b = internal;
+endmodule
+module top(input [2:0] i, output [2:0] o, output p);
+  wire [2:0] mid;
+  lane u0(.a(i), .b(i), .y(mid), .z());
+  lane u1(.a(mid), .b(i), .y(o), .z());
+  bridge u2(.a(i[1]), .b(p));
+  bridge u3(.a(i[2]), .b(i[2]));
+endmodule
+""")
+
     def test_verilog(self):
         self.check_determinism("v", VERILOG)
 
@@ -1472,6 +1525,7 @@ if __name__ == "__main__":
         naja.NLDB.loadNajaIF(sys.argv[2])
         assert not naja.intentAvailable(), "cold snapshots must not expose retained intent"
         dump_state(Path(sys.argv[3]), timing=len(sys.argv) > 4 and sys.argv[4] in ("sv_timing", "sv_resets"),
-                   resets=len(sys.argv) > 4 and sys.argv[4] == "sv_resets")
+                   resets=len(sys.argv) > 4 and sys.argv[4] == "sv_resets",
+                   graphs=len(sys.argv) > 4 and sys.argv[4] == "v_graph")
     else:
         unittest.main()

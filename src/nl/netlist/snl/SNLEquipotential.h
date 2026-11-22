@@ -5,6 +5,8 @@
 #pragma once
 
 #include <set>
+#include <memory>
+#include <vector>
 #include "SNLNet.h"
 #include "SNLBitTerm.h"
 #include "SNLOccurrence.h"
@@ -21,6 +23,31 @@ class SNLEquipotential {
       TraverseAssigns
     };
 
+    struct Options {
+      Mode mode = Mode::Standard;
+      bool keepGraph = false;
+    };
+
+    struct Graph {
+      struct Node {
+        SNLOccurrence net;
+        std::vector<SNLOccurrence> leaves;
+        std::vector<SNLBitTerm*> terms;
+      };
+      enum class EdgeKind { Port, Assign };
+      struct Edge {
+        EdgeKind kind;
+        // Port: inst term in the parent path. Assign: input inst term.
+        SNLOccurrence crossing;
+        // Port: outer -> inner. Assign: input -> output.
+        size_t from;
+        size_t to;
+      };
+      // Nodes and crossings are retained in discovery order.
+      std::vector<Node> nodes;
+      std::vector<Edge> edges;
+    };
+
     using InstTermOccurrences = std::set<SNLOccurrence>;
     using Terms = std::set<SNLBitTerm*, SNLDesignObject::PointerLess>;
 
@@ -33,6 +60,11 @@ class SNLEquipotential {
       const SNLOccurrence& netComponentOccurrence,
       Mode mode);
 
+    SNLEquipotential(SNLNetComponent* netComponent, const Options& options);
+    SNLEquipotential(const SNLOccurrence& netComponentOccurrence, const Options& options);
+
+    const Graph* getGraph() const { return graph_.get(); }
+    void dumpDotFile(const std::string& path) const;
     const Terms& getTermsSet() const { return terms_; }
     const InstTermOccurrences& getInstTermOccurrencesSet() const { return instTermOccurrences_; }
     NajaCollection<SNLBitTerm*> getTerms() const;
@@ -43,6 +75,7 @@ class SNLEquipotential {
     bool isConstX() const;
     bool isConstZ() const;
     std::string getString() const;
+    // Identity is leaves + top terms; derived graph data must not affect map keys.
     //Comparators
     bool operator==(const SNLEquipotential& other) const {
       return instTermOccurrences_ == other.instTermOccurrences_ and terms_ == other.terms_;
@@ -65,6 +98,8 @@ class SNLEquipotential {
       return not operator<(other);
     }
   private:
+    // Immutable after extraction, so copies can share the graph cheaply.
+    std::shared_ptr<const Graph> graph_ {};
     InstTermOccurrences instTermOccurrences_  {};
     Terms               terms_                {};
     SNLNet::Type        type_                 {SNLNet::Type::Standard};

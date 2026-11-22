@@ -24,6 +24,7 @@ SET(snl_tests
   SNLMergeAssignsTest.cpp
   NLClockTest.cpp
   SNLClockGatingTest.cpp
+  SNLEquipotentialGraphTest.cpp
   SNLUtilsTest.cpp
 )
 

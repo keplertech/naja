@@ -81,6 +81,7 @@ cc_library(
         "PySNLOccurrences.cpp",
         "PySNLEquipotential.cpp",
         "PySNLEquipotentialMode.cpp",
+        "PySNLEquipotentialEdgeKind.cpp",
         "PyLogicCone.cpp",
         "PySNLUniquifier.cpp",
         "NajaPythonProperty.cpp",
