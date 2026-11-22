@@ -272,6 +272,50 @@ class SNLEquiTest(unittest.TestCase):
       expected = la if bit == a else lb
       self.assertEqual(expected.getInstTerm(self.i0sub), nodes[target][1][0].getInstTerm())
 
+  def testGraphBusNetBitWithLeaves(self):
+    bus = naja.SNLBusNet.create(self.top, 2, 0, "bus")
+    leaf = naja.SNLInstance.create(self.top, self.submodel, "leaf")
+    pin = leaf.getInstTerm(self.osub)
+    pin.setNet(bus.getBit(1))
+    self.assertIs(type(pin.getNet()), naja.SNLBusNetBit)
+    graph = naja.SNLEquipotential(pin, keep_graph=True).getGraph()
+    nodes, edges = graph
+    self.assertEqual(1, len(nodes))
+    self.assertEqual([], edges)
+    self.assertEqual(1, len(nodes[0][1]))
+    self.assertIs(type(pin.getNet()), naja.SNLBusNetBit)
+    for net in (pin.getNet(), nodes[0][0].getObject()):
+      self.assertIs(type(net), naja.SNLBusNetBit)
+      self.assertEqual(1, net.getBit())
+      self.assertEqual(bus, net.getBus())
+
+  def testGraphBusNetBitWithoutLeaves(self):
+    outer = naja.SNLBusNet.create(self.top, 2, 0, "outer")
+    inner = naja.SNLBusNet.create(self.model, 4, 0, "inner")
+    self.i1.getBusTermBit(3).setNet(inner.getBit(2))
+    leaf = naja.SNLInstance.create(self.model, self.submodel, "leaf")
+    leaf_pin = leaf.getInstTerm(self.osub)
+    leaf_pin.setNet(inner.getBit(2))
+    inst = naja.SNLInstance.create(self.top, self.model, "child")
+    port_pin = inst.getInstTerm(self.i1.getBusTermBit(3))
+    port_pin.setNet(outer.getBit(1))
+    graph = naja.SNLEquipotential(port_pin, keep_graph=True).getGraph()
+    nodes, edges = graph
+    self.assertEqual(2, len(nodes))
+    self.assertEqual(1, len(edges))
+    self.assertCountEqual([0, 1], [len(leaves) for _, leaves, _ in nodes])
+    for pin, bus, bit in ((port_pin, outer, 1), (leaf_pin, inner, 2)):
+      net = pin.getNet()
+      self.assertIs(type(net), naja.SNLBusNetBit)
+      self.assertEqual(bit, net.getBit())
+      self.assertEqual(bus, net.getBus())
+    for occurrence, leaves, _ in nodes:
+      bus, bit = (inner, 2) if leaves else (outer, 1)
+      net = occurrence.getObject()
+      self.assertIs(type(net), naja.SNLBusNetBit)
+      self.assertEqual(bit, net.getBit())
+      self.assertEqual(bus, net.getBus())
+
   def testGraphSiblingsAndInternalNet(self):
     child = naja.SNLInstance.create(self.model, self.submodel, "child")
     inside = naja.SNLScalarNet.create(self.model, "inside")

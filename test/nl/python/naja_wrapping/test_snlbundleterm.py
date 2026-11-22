@@ -47,6 +47,9 @@ class SNLBundleTermTest(unittest.TestCase):
     qn1 = design.getScalarTerm("QN1")
 
     self.assertIsInstance(d_bundle, naja.SNLBundleTerm)
+    occurrence = naja.SNLOccurrence(d_bundle)
+    self.assertIs(occurrence.getObject(), d_bundle)
+    self.assertIs(occurrence.getNetComponent(), d_bundle)
     self.assertIsInstance(qn_bundle, naja.SNLBundleTerm)
     self.assertEqual(["CK", "SE", "SI", "D", "QN"], [term.getName() for term in design.getTerms()])
     self.assertEqual(["CK", "SE", "SI"], [term.getName() for term in design.getScalarTerms()])

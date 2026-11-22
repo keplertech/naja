@@ -841,7 +841,7 @@ semantic source of truth.
    * - :class:`najaeda.naja.SNLPath`
      - :meth:`empty <najaeda.naja.SNLPath.empty>`, :meth:`size <najaeda.naja.SNLPath.size>`, :meth:`getInstances <najaeda.naja.SNLPath.getInstances>`, :meth:`getInstanceIDs <najaeda.naja.SNLPath.getInstanceIDs>`, :meth:`getHeadInstance <najaeda.naja.SNLPath.getHeadInstance>`, :meth:`getTailInstance <najaeda.naja.SNLPath.getTailInstance>`, :meth:`getHeadPath <najaeda.naja.SNLPath.getHeadPath>`, :meth:`getTailPath <najaeda.naja.SNLPath.getTailPath>`, :meth:`getDesign <najaeda.naja.SNLPath.getDesign>`, :meth:`getModel <najaeda.naja.SNLPath.getModel>`
    * - :class:`najaeda.naja.SNLOccurrence`
-     - :meth:`getRole <najaeda.naja.SNLOccurrence.getRole>`, :meth:`getResetActiveLevel <najaeda.naja.SNLOccurrence.getResetActiveLevel>`, :meth:`isInstanceOccurrence <najaeda.naja.SNLOccurrence.isInstanceOccurrence>`, :meth:`getPath <najaeda.naja.SNLOccurrence.getPath>`, :meth:`getInstance <najaeda.naja.SNLOccurrence.getInstance>`, :meth:`getInstTerm <najaeda.naja.SNLOccurrence.getInstTerm>`, :meth:`getNetComponent <najaeda.naja.SNLOccurrence.getNetComponent>`, :meth:`getDesign <najaeda.naja.SNLOccurrence.getDesign>`
+     - :meth:`getRole <najaeda.naja.SNLOccurrence.getRole>`, :meth:`getResetActiveLevel <najaeda.naja.SNLOccurrence.getResetActiveLevel>`, :meth:`isInstanceOccurrence <najaeda.naja.SNLOccurrence.isInstanceOccurrence>`, :meth:`getPath <najaeda.naja.SNLOccurrence.getPath>`, :meth:`getInstance <najaeda.naja.SNLOccurrence.getInstance>`, :meth:`getInstTerm <najaeda.naja.SNLOccurrence.getInstTerm>`, :meth:`getNetComponent <najaeda.naja.SNLOccurrence.getNetComponent>`, :meth:`getObject <najaeda.naja.SNLOccurrence.getObject>`, :meth:`getDesign <najaeda.naja.SNLOccurrence.getDesign>`
    * - :class:`najaeda.naja.SNLEquipotential`
      - :class:`EdgeKind <najaeda.naja.SNLEquipotential.EdgeKind>`, :meth:`getGraph <najaeda.naja.SNLEquipotential.getGraph>`, :class:`Mode <najaeda.naja.SNLEquipotential.Mode>`, :meth:`getTerms <najaeda.naja.SNLEquipotential.getTerms>`, :meth:`getInstTermOccurrences <najaeda.naja.SNLEquipotential.getInstTermOccurrences>`, :meth:`isConst0 <najaeda.naja.SNLEquipotential.isConst0>`, :meth:`isConst1 <najaeda.naja.SNLEquipotential.isConst1>`, :meth:`dumpDotFile <najaeda.naja.SNLEquipotential.dumpDotFile>`
    * - :class:`najaeda.naja.NLID`
@@ -1933,6 +1933,13 @@ Hierarchy and connectivity
    :members:
    :undoc-members:
    :inherited-members:
+
+``SNLOccurrence.getObject()`` returns the referenced net, term, or instance
+with its concrete Python type (including ``SNLBusNetBit`` and ``SNLBusTermBit``),
+or ``None`` for an empty occurrence. Use it to inspect net occurrences in
+``SNLEquipotential.getGraph()`` nodes, including nodes without leaf pins.
+This expert operation is available through the raw API; no high-level wrapper
+is needed to inspect a raw equipotential graph.
 
 .. autoclass:: najaeda.naja.SNLOccurrence
    :members:

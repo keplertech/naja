@@ -31,24 +31,23 @@ using namespace naja::NL;
   GENERIC_METHOD_HEAD(SNLOccurrence, function)
 
 namespace {
+PyObject* linkOccurrenceObject(SNLDesignObject* object) {
+  if (!object) Py_RETURN_NONE;
+  if (auto* component = dynamic_cast<SNLNetComponent*>(object)) return PySNLNetComponent_Link(component);
+  if (auto* net = dynamic_cast<SNLNet*>(object)) return PySNLNet_Link(net);
+  if (auto* instance = dynamic_cast<SNLInstance*>(object)) return PySNLInstance_Link(instance);
+  setError("Unsupported occurrence object");
+  return nullptr;
+}
+
 PyObject* occurrenceOwners(const SNLOccurrence& occurrence) {
   auto path = occurrence.getPath();
   auto* tuple = PyTuple_New(path.size() + (occurrence.isValid() ? 1 : 0));
   if (!tuple) return nullptr;
   Py_ssize_t index = 0;
   if (auto* object = occurrence.getObject()) {
-    PyObject* linked = nullptr;
-    if (auto* component = dynamic_cast<SNLNetComponent*>(object)) linked = PySNLNetComponent_Link(component);
-    else if (auto* net = dynamic_cast<SNLNet*>(object)) linked = PySNLNet_Link(net);
-    else if (auto* instance = dynamic_cast<SNLInstance*>(object)) linked = PySNLInstance_Link(instance);
-    if (!linked) {
-      // Known object families are dispatched above; this requires allocation
-      // failure or an unsupported native SNLDesignObject subclass.
-      // LCOV_EXCL_START
-      if (!PyErr_Occurred()) setError("Unsupported occurrence object");
-      Py_DECREF(tuple); return nullptr;
-      // LCOV_EXCL_STOP
-    }
+    PyObject* linked = linkOccurrenceObject(object);
+    if (!linked) { Py_DECREF(tuple); return nullptr; }
     PyTuple_SET_ITEM(tuple, index++, linked);
   }
   for (auto* instance: path.getInstances()) {
@@ -154,6 +153,11 @@ static Py_hash_t PySNLOccurrence_Hash(PySNLOccurrence* self) {
   return PYNAJA::finishPyHash(hashSNLOccurrence(*self->ACCESS_OBJECT));
 }
 
+static PyObject* PySNLOccurrence_getObject(PySNLOccurrence* self) {
+  METHOD_HEAD("SNLOccurrence.getObject()")
+  return linkOccurrenceObject(selfObject->getObject());
+}
+
 GetObjectMethod(SNLOccurrence, SNLNetComponent, getNetComponent)
 GetObjectMethod(SNLOccurrence, SNLInstTerm, getInstTerm)
 GetObjectMethod(SNLOccurrence, SNLInstance, getInstance)
@@ -189,6 +193,8 @@ static PyObject* PySNLOccurrence_getFaninStartpoints(PyObject* self, PyObject* a
 static PyObject* PySNLOccurrence_getFanoutEndpoints(PyObject* self, PyObject* args, PyObject* kwargs) { return PySNLOccurrence_getTimingCone(self, args, kwargs, true); }
 
 PyMethodDef PySNLOccurrence_Methods[] = {
+  {"getObject", (PyCFunction)PySNLOccurrence_getObject, METH_NOARGS,
+    "Return the referenced design object with its concrete Python type, or None."},
   {"getFaninStartpoints", (PyCFunction)PySNLOccurrence_getFaninStartpoints, METH_VARARGS|METH_KEYWORDS, "getFaninStartpoints(withCells=True): launch-view startpoints, cell unions and directness."},
   {"getFanoutEndpoints", (PyCFunction)PySNLOccurrence_getFanoutEndpoints, METH_VARARGS|METH_KEYWORDS, "getFanoutEndpoints(withCells=True): launch-view stop pins and associated register outputs."},
   {"getLaunchClocks", (PyCFunction)PySNLOccurrence_getLaunchClocks, METH_NOARGS, "Return launch domains reaching this terminal or bit net."},

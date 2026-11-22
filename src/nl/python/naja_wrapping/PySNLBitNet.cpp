@@ -69,10 +69,11 @@ PyObject* PySNLBitNet_Link(SNLBitNet* object) {
   }
   if (auto busNetBit = dynamic_cast<SNLBusNetBit*>(object)) {
     return PySNLBusNetBit_Link(busNetBit);
-  } else {
-    auto scalarNet = static_cast<SNLScalarNet*>(object);
+  } else if (auto scalarNet = dynamic_cast<SNLScalarNet*>(object)) {
     return PySNLScalarNet_Link(scalarNet);
   }
+  setError("Unsupported SNLBitNet subtype");
+  return nullptr;
 }
 
 PyTypeNLAbstractObjectWithNLIDLinkPyType(SNLBitNet)

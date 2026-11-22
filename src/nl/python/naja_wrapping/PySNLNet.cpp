@@ -7,11 +7,13 @@
 
 #include "SNLScalarNet.h"
 #include "SNLBusNet.h"
+#include "SNLBusNetBit.h"
 
 #include "PyInterface.h"
 #include "PySNLNetType.h"
 #include "PySNLScalarNet.h"
 #include "PySNLBusNet.h"
+#include "PySNLBusNetBit.h"
 #include "PySNLDesign.h"
 #include "PySNLBitNets.h"
 
@@ -34,10 +36,13 @@ PyObject* PySNLNet_Link(SNLNet* object) {
   }
   if (auto busNet = dynamic_cast<SNLBusNet*>(object)) {
     return PySNLBusNet_Link(busNet);
-  } else {
-    auto scalarNet = static_cast<SNLScalarNet*>(object);
+  } else if (auto busNetBit = dynamic_cast<SNLBusNetBit*>(object)) {
+    return PySNLBusNetBit_Link(busNetBit);
+  } else if (auto scalarNet = dynamic_cast<SNLScalarNet*>(object)) {
     return PySNLScalarNet_Link(scalarNet);
   }
+  setError("Unsupported SNLNet subtype");
+  return nullptr;
 }
 
 static PyObject* setType(PySNLNet* self, PyObject* arg) {
