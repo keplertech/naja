@@ -3,6 +3,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#ifndef PY_SSIZE_T_CLEAN
+#define PY_SSIZE_T_CLEAN
+#endif
 #include "PyNLDB.h"
 #include "PyNLClock.h"
 #include "PyNLReset.h"
@@ -39,7 +42,43 @@ namespace PYNAJA {
 
 using namespace naja::NL;
 
+PyObject* PyNajaCancelled = nullptr;
+
 namespace {
+
+bool validateProgress(PyObject* callable) {
+  if (!callable || callable == Py_None || PyCallable_Check(callable)) return true;
+  PyErr_SetString(PyExc_TypeError, "progress must be callable or None");
+  return false;
+}
+
+naja::NajaProgressCallback progressCallback(PyObject* callable, bool includeDone = false) {
+  if (!callable || callable == Py_None) return {};
+  return [callable, includeDone](const naja::NajaProgress& event) {
+    // Python loaders still select the top and may merge assigns after construction.
+    if (!includeDone && event.stage == "done") return true;
+    const auto gil = PyGILState_Ensure();
+    PyObject* kwargs = Py_BuildValue("{s:s#,s:s#,s:K,s:K}",
+      "stage", event.stage.data(), Py_ssize_t(event.stage.size()),
+      "detail", event.detail.empty() ? "" : event.detail.data(), Py_ssize_t(event.detail.size()),
+      "current", static_cast<unsigned long long>(event.current),
+      "total", static_cast<unsigned long long>(event.total));
+    PyObject* args = kwargs ? PyTuple_New(0) : nullptr;
+    PyObject* result = args ? PyObject_Call(callable, args, kwargs) : nullptr;
+    const bool proceed = result && result != Py_False;
+    Py_XDECREF(result);
+    Py_XDECREF(args);
+    Py_XDECREF(kwargs);
+    PyGILState_Release(gil);
+    return proceed;
+  };
+}
+
+
+void finishProgress(PyObject* callable) {
+  auto callback = progressCallback(callable, true);
+  if (callback && !callback({"done", {}, 0, 0})) throw naja::NajaCancelled();
+}
 
 PyObject* PySystemVerilogError = nullptr;
 PyObject* PySystemVerilogSyntaxError = nullptr;
@@ -126,6 +165,14 @@ void raiseSystemVerilogError(
 }  // namespace
 
 int PyNLDB_addSystemVerilogExceptions(PyObject* module) {
+  PyNajaCancelled = PyErr_NewException("naja.NajaCancelled", PyExc_RuntimeError, nullptr);
+  if (!PyNajaCancelled) return -1;
+  Py_INCREF(PyNajaCancelled);
+  if (PyModule_AddObject(module, "NajaCancelled", PyNajaCancelled) < 0) {
+    Py_DECREF(PyNajaCancelled);
+    Py_CLEAR(PyNajaCancelled);
+    return -1;
+  }
   auto addException = [module](
     const char* qualifiedName, const char* moduleName, PyObject* base, PyObject*& result) {
     result = PyErr_NewException(qualifiedName, base, nullptr);
@@ -185,9 +232,11 @@ static PyObject* PyNLDB_create(PyObject*, PyObject* args) {
   return PyNLDB_Link(db);
 }
 
-static PyObject* PyNLDB_loadNajaIF(PyObject*, PyObject* args) {
+static PyObject* PyNLDB_loadNajaIF(PyObject*, PyObject* args, PyObject* kwargs) {
+  PyObject* progress = nullptr;
+  static const char* kwords[] = {"path", "progress", nullptr};
   PyObject* arg = nullptr;
-  if (not PyArg_ParseTuple(args, "O:NLDB.loadNajaIF", &arg)) {
+  if (not PyArg_ParseTupleAndKeywords(args, kwargs, "O|O:NLDB.loadNajaIF", const_cast<char**>(kwords), &arg, &progress)) {
     setError("malformed NLDB loadNajaIF");
     return nullptr;
   }
@@ -204,8 +253,12 @@ static PyObject* PyNLDB_loadNajaIF(PyObject*, PyObject* args) {
     NLUniverse::create();
   }
   TRY 
-  db = SNLCapnP::load(path);
+  if (!validateProgress(progress)) return nullptr;
+  SNLCapnP::LoadingConfiguration config;
+  config.progress = progressCallback(progress);
+  db = SNLCapnP::load(path, config);
   NLUniverse::get()->setTopDesign(db->getTopDesign());
+  finishProgress(progress);
   NLCATCH
   return PyNLDB_Link(db);
 }
@@ -262,9 +315,11 @@ PyObject* PyNLDB_dumpNajaIF(PyNLDB* self, PyObject* args) {
   Py_RETURN_NONE;
 }
 
-PyObject* PyNLDB_loadLibertyPrimitives(PyNLDB* self, PyObject* args) {
+PyObject* PyNLDB_loadLibertyPrimitives(PyNLDB* self, PyObject* args, PyObject* kwargs) {
+  PyObject* progress = nullptr;
+  static const char* kwords[] = {"files", "progress", nullptr};
   PyObject* arg0 = nullptr;
-  if (not PyArg_ParseTuple(args, "O:NLDB.loadLibertyPrimitives", &arg0)) {
+  if (not PyArg_ParseTupleAndKeywords(args, kwargs, "O|O:NLDB.loadLibertyPrimitives", const_cast<char**>(kwords), &arg0, &progress)) {
     return nullptr;
   }
   if (not PyList_Check(arg0)) {
@@ -311,8 +366,11 @@ PyObject* PyNLDB_loadLibertyPrimitives(PyNLDB* self, PyObject* args) {
   }
   // LCOV_EXCL_START
   TRY
+  if (!validateProgress(progress)) return nullptr;
   SNLLibertyConstructor constructor(primitivesLibrary);
+  constructor.setProgressCallback(progressCallback(progress));
   constructor.construct(paths);
+  finishProgress(progress);
   NLCATCH
   // LCOV_EXCL_STOP
   Py_RETURN_NONE;
@@ -320,7 +378,8 @@ PyObject* PyNLDB_loadLibertyPrimitives(PyNLDB* self, PyObject* args) {
 
 static PyObject* loadGateLevelVerilog(
     PyNLDB* self, PyObject* args, PyObject* kwargs, const char* methodName) {
-  const std::string parseFormat = std::string("O|pppOp:") + methodName;
+  const std::string parseFormat = std::string("O|pppOpO:") + methodName;
+  PyObject* progress = nullptr;
   PyObject* files = nullptr;
   int keep_assigns = 1;  // Default: true
   int blackbox_unknown_modules = 0; // Default: false
@@ -330,7 +389,7 @@ static PyObject* loadGateLevelVerilog(
 
   static const char* const kwords[] = {
     "files", "keep_assigns", "blackbox_unknown_modules", "preprocess_enabled",
-    "conflicting_design_name_policy", "yosys_source_attributes",
+    "conflicting_design_name_policy", "yosys_source_attributes", "progress",
     nullptr
   };
 
@@ -338,7 +397,7 @@ static PyObject* loadGateLevelVerilog(
     args, kwargs, parseFormat.c_str(),
     const_cast<char**>(kwords),
     &files, &keep_assigns, &blackbox_unknown_modules, &preprocess_enabled,
-    &conflicting_design_name_policy, &yosys_source_attributes)) {
+    &conflicting_design_name_policy, &yosys_source_attributes, &progress)) {
     return nullptr;
   }
 
@@ -418,13 +477,17 @@ static PyObject* loadGateLevelVerilog(
   if (designLibrary == nullptr) {
     designLibrary = NLLibrary::create(db, NLName("DESIGN"));
   }
+  if (!validateProgress(progress)) return nullptr;
   SNLVRLConstructor constructor(designLibrary);
+  constructor.setProgressCallback(progressCallback(progress));
   constructor.config_.blackboxUnknownModules_ = blackbox_unknown_modules;
   constructor.config_.preprocessEnabled_ = preprocess_enabled;
   constructor.config_.yosysSourceAttributes_ = yosys_source_attributes;
   constructor.config_.conflictingDesignNamePolicy_ = policy;
   try {
     constructor.construct(inputPaths);
+  } catch (const naja::NajaCancelled&) {
+    throw;
   } catch (const std::exception& e) {
     const auto location = constructor.getCurrentLocation();
     std::ostringstream error;
@@ -457,6 +520,7 @@ static PyObject* loadGateLevelVerilog(
     return nullptr;
     //LCOV_EXCL_STOP
   }
+  finishProgress(progress);
   NLCATCH
   return PySNLDesign_Link(top);
 }
@@ -491,12 +555,13 @@ static PyObject* PyNLDB_loadGateLevelVerilog(PyNLDB* self, PyObject* args, PyObj
 
 PyObject* PyNLDB_loadVHDL(PyNLDB* self, PyObject* args, PyObject* kwargs) {
   VHDLIntent::invalidate(self->object_);
+  PyObject* progress = nullptr;
   PyObject* file = nullptr;
   PyObject* topObject = nullptr;
   PyObject* libraryObject = nullptr;
   PyObject* diagnosticsReportPath = nullptr;
   int keepASTLink = 0;
-  static const char* const kwords[] = {"file", "top", "diagnostics_report_path", "library", "keep_ast_link", nullptr};
+  static const char* const kwords[] = {"file", "top", "diagnostics_report_path", "library", "keep_ast_link", "progress", nullptr};
   // Keep the legacy file keyword and positional argument order.
   if (kwargs && PyDict_GetItemString(kwargs, "files")) {
     if (PyDict_GetItemString(kwargs, "file")) {
@@ -512,8 +577,8 @@ PyObject* PyNLDB_loadVHDL(PyNLDB* self, PyObject* args, PyObject* kwargs) {
     return result;
   }
   if (not PyArg_ParseTupleAndKeywords(
-      args, kwargs, "O|OOOp:NLDB.loadVHDL", const_cast<char**>(kwords),
-      &file, &topObject, &diagnosticsReportPath, &libraryObject, &keepASTLink)) {
+      args, kwargs, "O|OOOpO:NLDB.loadVHDL", const_cast<char**>(kwords),
+      &file, &topObject, &diagnosticsReportPath, &libraryObject, &keepASTLink, &progress)) {
     return nullptr;
   }
   std::string libraryName;
@@ -590,17 +655,21 @@ PyObject* PyNLDB_loadVHDL(PyNLDB* self, PyObject* args, PyObject* kwargs) {
   SNLDesign* design = nullptr;
   TRY
   auto* designLibrary = hdlDestination(db, libraryName);
-  const VHDLConstructor constructor(designLibrary, options);
+  if (!validateProgress(progress)) return nullptr;
+  VHDLConstructor constructor(designLibrary, options);
+  constructor.setProgressCallback(progressCallback(progress));
   design = batch ? constructor.constructFiles(paths, top) :
       constructor.constructFile(paths.front(), top);
   if (design) NLUniverse::get()->setTopDesign(design);
   NLUniverse::get()->setTopDB(db);
+  finishProgress(progress);
   NLCATCH
   if (!design) Py_RETURN_NONE;
   return PySNLDesign_Link(design);
 }
 
 PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwargs) {
+  PyObject* progress = nullptr;
   PyObject* files = nullptr;
   PyObject* libraryObject = nullptr;
   int keep_assigns = 1;  // Default: true
@@ -620,18 +689,18 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
     "files", "keep_assigns", "elaborated_ast_json_path",
     "pretty_print_elaborated_ast_json", "include_source_info_in_elaborated_ast_json", "flist",
     "diagnostics_report_path", "defines", "suppress_warnings", "keep_ast_link",
-    "blackbox_unknown_modules", "library", "blackbox_multi_writer_memories", "frontend_options",
+    "blackbox_unknown_modules", "library", "blackbox_multi_writer_memories", "frontend_options", "progress",
     nullptr
   };
 
   if (not PyArg_ParseTupleAndKeywords(
-    args, kwargs, "O|pOppOOOOppOpO:NLDB.loadSystemVerilog",
+    args, kwargs, "O|pOppOOOOppOpOO:NLDB.loadSystemVerilog",
     const_cast<char**>(kwords),
     &files, &keep_assigns, &elaborated_ast_json_path,
     &pretty_print_elaborated_ast_json,
     &include_source_info_in_elaborated_ast_json, &flist, &diagnostics_report_path,
     &defines, &suppress_warnings, &keep_ast_link, &blackbox_unknown_modules, &libraryObject,
-    &blackbox_multi_writer_memories, &frontend_options)) {
+    &blackbox_multi_writer_memories, &frontend_options, &progress)) {
     return nullptr;
   }
 
@@ -879,9 +948,13 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
   TRY
   auto* designLibrary = hdlDestination(db, libraryName);
   VHDLIntent::invalidate(db);
+  if (!validateProgress(progress)) return nullptr;
   SNLSVConstructor constructor(designLibrary);
+  constructor.setProgressCallback(progressCallback(progress));
   try {
     constructor.construct(inputPaths, options);
+  } catch (const naja::NajaCancelled&) {
+    throw;
   } catch (const std::exception& e) {
     std::ostringstream error;
     error << "Error while parsing SystemVerilog: ";
@@ -919,6 +992,7 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
       "--top <module> entry in flist.");
     return nullptr;
   }
+  finishProgress(progress);
   NLCATCH
   return PySNLDesign_Link(top);
 }
@@ -1013,11 +1087,11 @@ PyMethodDef PyNLDB_Methods[] = {
     "get a container of every NLClock defined in the designs of this NLDB."},
   { "getTopDesign", (PyCFunction)PyNLDB_getTopDesign, METH_NOARGS,
     "get the top design."},
-  { "loadNajaIF", (PyCFunction)PyNLDB_loadNajaIF, METH_VARARGS | METH_STATIC,
+  { "loadNajaIF", (PyCFunction)PyNLDB_loadNajaIF, METH_VARARGS | METH_KEYWORDS | METH_STATIC,
     "create a NLDB from NajaIF format."},
   { "dumpNajaIF", (PyCFunction)PyNLDB_dumpNajaIF, METH_VARARGS,
     "dump this NLDB to NajaIF format."},
-  { "loadLibertyPrimitives", (PyCFunction)PyNLDB_loadLibertyPrimitives, METH_VARARGS,
+  { "loadLibertyPrimitives", (PyCFunction)PyNLDB_loadLibertyPrimitives, METH_VARARGS | METH_KEYWORDS,
     "import primitives from Liberty format."},
   { "loadGateLevelVerilog", (PyCFunction)PyNLDB_loadGateLevelVerilog, METH_VARARGS|METH_KEYWORDS,
     "create a design from gate-level (structural) Verilog netlists.\n"

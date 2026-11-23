@@ -49,6 +49,7 @@ set(NAJA_CORE_HEADERS
   NajaCollection.h
   NajaProperty.h NajaPrivateProperty.h NajaSharedProperty.h NajaRelationProperty.h
   NajaDumpableProperty.h
+  NajaProgress.h
   NajaException.h
   NajaPerf.h
   NajaLog.h

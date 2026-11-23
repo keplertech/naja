@@ -7,6 +7,8 @@ import gzip
 import re
 import shutil
 import tempfile
+import time
+import threading
 import unittest
 import warnings
 import zipfile
@@ -548,6 +550,157 @@ endmodule
           db.loadSystemVerilog([path], frontend_options={"slang": ["--timescale=" + value]})
       top = db.loadSystemVerilog([path], frontend_options={"slang": ["--timescale=1ns/1ps"]})
       self.assertEqual("top", top.getName())
+
+  def test_loader_progress_cancels_inside_large_design(self):
+    count = 160
+    wires = ",".join("n" + str(i) for i in range(count))
+    assignments = " ".join(
+        "assign n%d = %s;" % (i, "a" if i == 0 else "n" + str(i - 1))
+        for i in range(count))
+    verilog = ("module top(input a, output y); wire " + wires + "; " +
+               assignments + " assign y=n159; endmodule")
+    vhdl = ("entity top is port(a: in bit; y: out bit); end; "
+            "architecture rtl of top is signal " + wires + ": bit; begin " +
+            " ".join("n%d <= %s;" % (i, "a" if i == 0 else "n" + str(i - 1))
+                     for i in range(count)) + " y <= n159; end;")
+    liberty = "library(synthetic) {" + "".join(
+        'cell(c%d) {pin(A) {direction: input;} '
+        'pin(Y) {direction: output; function: "A";}}' % i for i in range(count)) + "}"
+    with tempfile.TemporaryDirectory() as directory:
+      paths = {}
+      for kind, source in (("v", verilog), ("sv", verilog), ("vhd", vhdl), ("lib", liberty)):
+        paths[kind] = os.path.join(directory, "source." + kind)
+        with open(paths[kind], "w") as stream:
+          stream.write(source)
+      if naja.NLUniverse.get():
+        naja.NLUniverse.get().destroy()
+      db = naja.NLDB.create(naja.NLUniverse.create())
+      db.loadGateLevelVerilog([paths["v"]])
+      paths["if"] = os.path.join(directory, "snapshot")
+      db.dumpNajaIF(paths["if"])
+      for kind in paths:
+        with self.subTest(loader=kind):
+          if naja.NLUniverse.get():
+            naja.NLUniverse.get().destroy()
+          db = naja.NLDB.create(naja.NLUniverse.create())
+          stage = {"v": "second_pass", "sv": "construct", "vhd": "construct", "lib": "liberty", "if": "construct"}[kind]
+          started = False
+          cancelled = []
+          worker = threading.get_ident()
+          def cancel(**event):
+            nonlocal started
+            self.assertEqual(worker, threading.get_ident())
+            if event["stage"] != stage:
+              return True
+            if kind == "if" and not started and event["detail"] != "snapshot connectivity":
+              return True
+            if not started:
+              started = True
+              # Make elapsed time deterministic; cancellation still requires 64 work checks.
+              time.sleep(0.06)
+              return True
+            cancelled.append(event)
+            return False
+          with self.assertRaises(naja.NajaCancelled):
+            if kind == "v":
+              db.loadGateLevelVerilog([paths[kind]], progress=cancel)
+            elif kind == "sv":
+              db.loadSystemVerilog([paths[kind]], progress=cancel, diagnostics_report_path=None)
+            elif kind == "vhd":
+              db.loadVHDL([paths[kind]], progress=cancel, diagnostics_report_path=None)
+            elif kind == "lib":
+              db.loadLibertyPrimitives([paths[kind]], progress=cancel)
+            else:
+              naja.NLUniverse.get().destroy()
+              naja.NLUniverse.create()
+              naja.NLDB.loadNajaIF(paths[kind], progress=cancel)
+          self.assertTrue(cancelled)
+          # A named intermediate report proves we stopped inside construction,
+          # before its unconditional completion report (whose detail is empty).
+          self.assertTrue(cancelled[-1]["detail"])
+          naja.NLUniverse.get().destroy()
+
+  def test_loader_progress_contract(self):
+    sources = {
+      "v": "module top(input a, output y); assign y=a; endmodule",
+      "sv": "module top(input logic a, output logic y); assign y=a; endmodule",
+      "vhd": ("entity top is port(a: in bit; y: out bit); end; "
+              "architecture rtl of top is begin y <= a; end;"),
+      "lib": ('library(synthetic) { cell(buffer) { pin(A) { direction: input; } '
+              'pin(Y) { direction: output; function: "A"; } } }'),
+    }
+    expected = {
+      "v": ["parse", "first_pass", "second_pass", "done"],
+      "sv": ["parse", "elaborate", "construct", "done"],
+      "vhd": ["parse", "construct", "done"],
+      "lib": ["parse", "liberty", "done"],
+      "if": ["parse", "construct", "done"],
+    }
+    def reset():
+      if naja.NLUniverse.get():
+        naja.NLUniverse.get().destroy()
+      return naja.NLDB.create(naja.NLUniverse.create())
+
+    with tempfile.TemporaryDirectory() as directory:
+      paths = {}
+      for kind, text in sources.items():
+        paths[kind] = os.path.join(directory, "synthetic." + kind)
+        with open(paths[kind], "w") as stream:
+          stream.write(text)
+      snapshot = os.path.join(directory, "snapshot")
+      db = reset()
+      db.loadGateLevelVerilog([paths["v"]])
+      db.dumpNajaIF(snapshot)
+
+      def load(kind, db, **kwargs):
+        if kind == "v":
+          return db.loadGateLevelVerilog([paths[kind]], **kwargs)
+        if kind == "sv":
+          return db.loadSystemVerilog([paths[kind]], diagnostics_report_path=None, **kwargs)
+        if kind == "vhd":
+          return db.loadVHDL([paths[kind]], diagnostics_report_path=None, **kwargs)
+        if kind == "lib":
+          return db.loadLibertyPrimitives([paths[kind]], **kwargs)
+        # Snapshot restores its original database ID in a fresh universe.
+        naja.NLUniverse.get().destroy()
+        naja.NLUniverse.create()
+        return naja.NLDB.loadNajaIF(snapshot, **kwargs)
+
+      for kind in expected:
+        with self.subTest(loader=kind):
+          load(kind, reset())
+          baseline = naja.NLUniverse.get().getContentHash()
+          events = []
+          def record(**event):
+            self.assertTrue(event["total"] == 0 or event["current"] <= event["total"])
+            self.assertIsInstance(event["detail"], str)
+            if event["stage"] == "done" and kind != "lib":
+              self.assertIsNotNone(naja.NLUniverse.get().getTopDesign())
+            events.append(event)
+            return True
+          load(kind, reset(), progress=record)
+          self.assertEqual(baseline, naja.NLUniverse.get().getContentHash())
+          stages = []
+          for event in events:
+            if not stages or stages[-1] != event["stage"]:
+              stages.append(event["stage"])
+          self.assertEqual(expected[kind], stages)
+          cancelled = []
+          def cancel(**event):
+            cancelled.append(event)
+            return event["stage"] in ("parse", "elaborate", "first_pass") or event["current"] == 0
+          with self.assertRaises(naja.NajaCancelled):
+            load(kind, reset(), progress=cancel)
+          self.assertGreater(cancelled[-1]["current"], 0)
+          self.assertNotEqual("done", cancelled[-1]["stage"])
+          reset()  # Destruction after cancellation must remain safe.
+          def fail(**event):
+            raise ValueError("synthetic callback failure")
+          with self.assertRaisesRegex(ValueError, "synthetic callback failure"):
+            load(kind, reset(), progress=fail)
+          reset()
+          with self.assertRaisesRegex(TypeError, "progress must be callable"):
+            load(kind, reset(), progress=7)
 
   def setUp(self):
     naja.NLUniverse.create()

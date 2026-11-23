@@ -647,12 +647,22 @@ void SNLVRLConstructor::construct(const Paths& paths) {
   NajaPerf::Scope scope("Verilog construct");
   setPreprocessEnabled(config_.preprocessEnabled_);
   try {
+    progress_.begin("parse");
+    progress_.finish();
+    progress_.begin("first_pass");
     setFirstPass(true);
     parse(paths);
+    progress_.finish();
+    progress_.begin("second_pass");
     setFirstPass(false);
     parse(paths);
+    progress_.finish();
     resetPerModuleState();
     selectedModuleDefs_.clear();
+    progress_.begin("done");
+  } catch (const NajaCancelled&) {
+    selectedModuleDefs_.clear();
+    throw;
   } catch (const SNLVRLConstructorException& e) {
     selectedModuleDefs_.clear();
     throw;
@@ -729,6 +739,7 @@ void SNLVRLConstructor::populateSource(NLObject* object, const Attributes& attri
 }
 
 void SNLVRLConstructor::startModule(const naja::verilog::Identifier& module) {
+  progress_.advance(module.name_);
   const NLName moduleName(module.name_);
   const auto defKey = getCurrentModuleDefKey();
 
@@ -885,6 +896,8 @@ void SNLVRLConstructor::moduleInterfaceCompletePort(const naja::verilog::Port& p
 }
 
 void SNLVRLConstructor::addNet(const naja::verilog::Net& net) {
+  if (progress_) progress_.checkpoint(
+    currentModule_ ? std::string_view(currentModule_->getName().getString()) : std::string_view{});
   restoreDeclarationAttributes();
   if (skipCurrentModule_) { nextObjectAttributes_.clear(); return; }
   if (not inFirstPass()) {
@@ -1019,6 +1032,8 @@ void SNLVRLConstructor::startInstantiation(const naja::verilog::Identifier& mode
 }
 
 void SNLVRLConstructor::addInstance(const naja::verilog::Identifier& instance) {
+  if (progress_) progress_.checkpoint(
+    currentModule_ ? std::string_view(currentModule_->getName().getString()) : std::string_view{});
   if (skipCurrentModule_) { nextObjectAttributes_.clear(); return; }
   if (not inFirstPass()) {
     assert(not currentModelName_.empty());
@@ -1305,6 +1320,8 @@ void SNLVRLConstructor::addGateInputInstanceConnection(
 }
 
 void SNLVRLConstructor::endGateInstantiation() {
+  if (progress_) progress_.checkpoint(
+    currentModule_ ? std::string_view(currentModule_->getName().getString()) : std::string_view{});
   if (skipCurrentModule_) { return; }
   if (not inFirstPass()) {
     assert(currentGateInstance_.isValid());

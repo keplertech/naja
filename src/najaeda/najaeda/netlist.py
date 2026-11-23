@@ -2449,13 +2449,15 @@ def _normalize_input_files(
 
 def load_gate_level_verilog(
         files: Union[str, List[str]],
-        config: GateLevelVerilogConfig = None) -> Instance:
+        config: GateLevelVerilogConfig = None, *, progress=None) -> Instance:
     """Load gate-level (structural) Verilog netlists into the top design.
 
     This loader handles structural connectivity, not general behavioral RTL.
     Use :func:`load_system_verilog` for Verilog or SystemVerilog RTL, including
     ``.v`` files, within that frontend's supported subset.
 
+    :param progress: optional callback receiving stage, detail, current and total
+        as keyword arguments on the loading thread; False cancels the load.
     :param files: a list of gate-level Verilog files to load or a single file.
     :param config: the configuration to use when loading the files.
     :return: the top Instance.
@@ -2482,6 +2484,7 @@ def load_gate_level_verilog(
         preprocess_enabled=config.preprocess_enabled,
         yosys_source_attributes=config.yosys_source_attributes,
         conflicting_design_name_policy=config.conflicting_design_name_policy,
+        progress=progress,
     )
     execution_time = time.time() - start_time
     top = get_top()
@@ -2493,7 +2496,7 @@ def load_gate_level_verilog(
 
 def load_verilog(
         files: Union[str, List[str]],
-        config: GateLevelVerilogConfig = None) -> Instance:
+        config: GateLevelVerilogConfig = None, *, progress=None) -> Instance:
     """Compatibility alias for :func:`load_gate_level_verilog`.
 
     This name will be deprecated soon and emits :class:`FutureWarning`.
@@ -2505,7 +2508,7 @@ def load_verilog(
         raise TypeError(
             "load_verilog config must be a VerilogConfig or None "
             f"(got {type(config).__name__})")
-    return load_gate_level_verilog(files, config)
+    return load_gate_level_verilog(files, config, progress=progress)
 
 
 def _validate_hdl_library(library):
@@ -2517,12 +2520,14 @@ def _validate_hdl_library(library):
 
 def load_system_verilog(
         files: Union[str, List[str]],
-        config: SystemVerilogConfig = None, *, library: str = "DESIGN") -> Instance:
+        config: SystemVerilogConfig = None, *, library: str = "DESIGN", progress=None) -> Instance:
     """Elaborate Verilog or SystemVerilog RTL into the top design using slang.
 
     Accepts ``.v`` and ``.sv`` sources within the frontend's supported RTL
     subset. This is not a full language implementation or a simulator.
 
+    :param progress: optional callback receiving stage, detail, current and total
+        as keyword arguments on the loading thread; False cancels the load.
     :param files: a list of SystemVerilog files to load or a single file.
     :param config: the configuration to use when loading the files. Set
         frontend_options={"slang": ["--single-unit"]} to share macros across
@@ -2605,6 +2610,7 @@ def load_system_verilog(
             library=library,
             suppress_warnings=config.suppress_warnings,
             frontend_options=config.frontend_options,
+            progress=progress,
             keep_ast_link=config.keep_ast_link,
         )
     finally:
@@ -2621,7 +2627,7 @@ def load_system_verilog(
 def load_vhdl(file: Union[str, os.PathLike, List[Union[str, os.PathLike]]],
               top: Optional[str] = None, *,
               diagnostics_report_path: Optional[Union[str, os.PathLike]] =
-              "naja_vhdl_diagnostics.log", library: str = "DESIGN") -> Instance:
+              "naja_vhdl_diagnostics.log", library: str = "DESIGN", progress=None) -> Instance:
     """Load VHDL source files into the top design, in any order.
 
     VHDL loading is experimental and currently supports the bounded ``bit`` and
@@ -2631,6 +2637,8 @@ def load_vhdl(file: Union[str, os.PathLike, List[Union[str, os.PathLike]]],
     of their order. Omit ``top`` for a unique uninstantiated entity, or pass it
     explicitly to select a root.
 
+    :param progress: optional callback receiving stage, detail, current and total
+        as keyword arguments on the loading thread; False cancels the load.
     :param file: one VHDL source path or a list of paths, in any order.
     :param top: optional top entity name for structural hierarchy.
     :param diagnostics_report_path: report for all warning occurrences, overwritten
@@ -2692,7 +2700,7 @@ def load_vhdl(file: Union[str, os.PathLike, List[Union[str, os.PathLike]]],
         logger.info(f"VHDL loading top override requested: {top}")
     __get_top_db().loadVHDL(
         paths if batch else paths[0], top=top,
-        diagnostics_report_path=diagnostics_report_path, library=library)
+        diagnostics_report_path=diagnostics_report_path, library=library, progress=progress)
     execution_time = time.time() - start_time
     loaded_top = get_top()
     logger.info(
@@ -2701,9 +2709,11 @@ def load_vhdl(file: Union[str, os.PathLike, List[Union[str, os.PathLike]]],
     return loaded_top
 
 
-def load_liberty(files: Union[str, List[str]]):
+def load_liberty(files: Union[str, List[str]], *, progress=None):
     """Load liberty files.
 
+    :param progress: optional callback receiving stage, detail, current and total
+        as keyword arguments on the loading thread; False cancels the load.
     :param files: a list of liberty files to load or a single file.
     :rtype: None
     :raises TypeError: if files has the wrong type.
@@ -2712,7 +2722,7 @@ def load_liberty(files: Union[str, List[str]]):
     """
     files = _normalize_input_files(files, "Liberty")
     logger.info(f"Loading liberty files: {', '.join(files)}")
-    __get_top_db().loadLibertyPrimitives(files)
+    __get_top_db().loadLibertyPrimitives(files, progress=progress)
 
 
 def load_primitives(name: str):
@@ -2760,12 +2770,12 @@ def load_primitives_from_file(file: str):
     module.load(db)
 
 
-def load_naja_if(path: str):
+def load_naja_if(path: str, *, progress=None):
     """Load the Naja IF from the given path."""
     if not os.path.isdir(path):
         raise FileNotFoundError(f"Cannot load Naja IF from non existing directory: {path}")
     logger.info(f"Loading Naja IF from {path}")
-    naja.NLDB.loadNajaIF(path)
+    naja.NLDB.loadNajaIF(path, progress=progress)
 
 
 def dump_naja_if(path: str):

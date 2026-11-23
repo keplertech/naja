@@ -5,6 +5,7 @@
 
 
 #pragma once
+#include "NajaProgress.h"
 #include <filesystem>
 #include <vector>
 
@@ -27,6 +28,8 @@ class SNLLibertyConstructor {
 
     Config config_ {};
 
+    void setProgressCallback(NajaProgressCallback callback) { progress_.setCallback(std::move(callback)); }
+
     SNLLibertyConstructor() = delete;
     SNLLibertyConstructor(const SNLLibertyConstructor&) = delete;
     SNLLibertyConstructor(NLLibrary* library);
@@ -39,6 +42,7 @@ class SNLLibertyConstructor {
     void construct(const Paths& paths);
     void construct(const std::filesystem::path& path);
   private:
+    NajaProgressReporter progress_;
     NLLibrary*  library_;
 };
 

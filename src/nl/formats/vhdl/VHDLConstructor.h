@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "NajaProgress.h"
 
 #include "NLLibrary.h"
 
@@ -29,6 +30,8 @@ class VHDLConstructor {
       /// All warning occurrences, overwritten per load; nullopt is console-only.
       std::optional<std::filesystem::path> diagnosticsReportPath {"naja_vhdl_diagnostics.log"};
     };
+
+    void setProgressCallback(NajaProgressCallback callback) { progress_.setCallback(std::move(callback)); }
 
     explicit VHDLConstructor(NLLibrary* library) : library_(library) {}
     VHDLConstructor(NLLibrary* library, const ConstructOptions& options)
@@ -69,6 +72,7 @@ class VHDLConstructor {
     SNLDesign* constructInputs(
       const std::vector<std::pair<std::string, std::string>>& inputs,
       std::string_view top, bool batch, const VHDLSourceMap* mappedSource = nullptr) const;
+    mutable NajaProgressReporter progress_;
     NLLibrary* library_;
     ConstructOptions options_;
 };

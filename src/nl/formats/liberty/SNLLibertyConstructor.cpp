@@ -1372,10 +1372,16 @@ void parseCells(
   NLLibrary* library,
   const Yosys::LibertyAst* ast,
   const std::filesystem::path& sourcePath,
-  ConflictingCellNamePolicy conflictingCellNamePolicy) {
+  ConflictingCellNamePolicy conflictingCellNamePolicy, naja::NajaProgressReporter& progress) {
+  uint64_t total = 0;
+  if (progress) {
+    for (auto child : ast->children) if (child->id == "cell") ++total;
+    progress.begin("liberty", sourcePath.string(), total);
+  }
   for (auto child: ast->children) {
     if (child->id == "cell") {
       parseCell(library, ast, child, sourcePath, conflictingCellNamePolicy);
+      if (progress) progress.advance(child->args.empty() ? std::string_view{} : child->args.front());
     }
   }
 }
@@ -1764,6 +1770,7 @@ void SNLLibertyConstructor::construct(const Paths& paths) {
       throw SNLLibertyConstructorException(reason);
     }
     try {
+      if (progress_) progress_.begin("parse", path.string(), 1);
       auto inStream = openLibertyStream(path);
       std::unique_ptr<Yosys::LibertyParser> parser;
       try {
@@ -1774,6 +1781,8 @@ void SNLLibertyConstructor::construct(const Paths& paths) {
         auto reason = buildParserFileErrorReason(path, e.getReason());
         throw SNLLibertyConstructorException(reason);
       }
+      progress_.advance();
+      progress_.finish();
       auto ast = parser->ast;
       //LCOV_EXCL_START
       if (ast == nullptr) {
@@ -1793,8 +1802,11 @@ void SNLLibertyConstructor::construct(const Paths& paths) {
       {
         NajaPerf::Scope constructScope("Liberty build SNL primitives");
         library_->setName(NLName(libraryName));
-        parseCells(library_, ast, path, config_.conflictingCellNamePolicy_);
+        parseCells(library_, ast, path, config_.conflictingCellNamePolicy_, progress_);
+        progress_.finish();
       }
+    } catch (const naja::NajaCancelled&) {
+      throw;
     } catch (const SNLLibertyConstructorException& e) {
       throw SNLLibertyConstructorException(
           ensureFileContext(path, e.getReason()));
@@ -1804,6 +1816,7 @@ void SNLLibertyConstructor::construct(const Paths& paths) {
     }
   }
   NLLibraryTruthTables::construct(library_);
+  progress_.begin("done");
 }
 
 }  // namespace naja::NL
