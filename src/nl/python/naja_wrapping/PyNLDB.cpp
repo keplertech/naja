@@ -614,6 +614,7 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
   int keep_ast_link = 0;  // Default: false
   int blackbox_unknown_modules = 0;  // Default: false
   int blackbox_multi_writer_memories = 0;  // Default: false
+  int preserve_assertions = 0;  // Default: false
   PyObject* frontend_options = nullptr;  // Optional: backend-specific option tokens
 
   static const char* const kwords[] = {
@@ -621,17 +622,18 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
     "pretty_print_elaborated_ast_json", "include_source_info_in_elaborated_ast_json", "flist",
     "diagnostics_report_path", "defines", "suppress_warnings", "keep_ast_link",
     "blackbox_unknown_modules", "library", "blackbox_multi_writer_memories", "frontend_options",
+    "preserve_assertions",
     nullptr
   };
 
   if (not PyArg_ParseTupleAndKeywords(
-    args, kwargs, "O|pOppOOOOppOpO:NLDB.loadSystemVerilog",
+    args, kwargs, "O|pOppOOOOppOpOp:NLDB.loadSystemVerilog",
     const_cast<char**>(kwords),
     &files, &keep_assigns, &elaborated_ast_json_path,
     &pretty_print_elaborated_ast_json,
     &include_source_info_in_elaborated_ast_json, &flist, &diagnostics_report_path,
     &defines, &suppress_warnings, &keep_ast_link, &blackbox_unknown_modules, &libraryObject,
-    &blackbox_multi_writer_memories, &frontend_options)) {
+    &blackbox_multi_writer_memories, &frontend_options, &preserve_assertions)) {
     return nullptr;
   }
 
@@ -652,6 +654,7 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
   options.keepASTLink = keep_ast_link;
   options.blackboxUnknownModules = blackbox_unknown_modules;
   options.blackboxMultiWriterMemories = blackbox_multi_writer_memories;
+  options.preserveAssertions = preserve_assertions;
   if (frontend_options != nullptr && frontend_options != Py_None) {
     if (!PyDict_Check(frontend_options)) {
       PyErr_SetString(PyExc_TypeError,
@@ -1060,6 +1063,7 @@ PyMethodDef PyNLDB_Methods[] = {
     "(default naja_sv_diagnostics.log; None disables the report file)\n"
     "  defines (list[str], optional): SystemVerilog preprocessor defines passed as -D<name>[=<value>]\n"
     "  suppress_warnings (list[str], optional): frontend warning names to suppress\n"
+    "  preserve_assertions (bool, optional): capture concurrent assertion text and signal bindings in DB0 properties (default False)\n"
     "  frontend_options (dict[str, list[str]] | None, optional): backend-specific option tokens (currently slang; default None)\n"
     "  blackbox_multi_writer_memories (bool, optional): blackbox entire modules with unsupported multi-writer memories (default False)\n"
     "  keep_ast_link (bool, optional): retain live frontend AST to SNL object links when supported "

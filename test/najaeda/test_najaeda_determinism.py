@@ -265,13 +265,14 @@ def worker(kind, source, output, run):
     universe = naja.NLUniverse.create()
     db = naja.NLDB.create(universe)
     universe.setTopDB(db)
-    if kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top"):
+    if kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top", "sv_formal"):
         options = None
         if kind == "sv_top":
             options = {"slang": ["-GWIDTH=5"]}
         elif kind == "sv_recursive_top":
             options = {"slang": ["--top=top", "-GN=2"]}
-        db.loadSystemVerilog([source], diagnostics_report_path=None, frontend_options=options)
+        db.loadSystemVerilog([source], diagnostics_report_path=None, frontend_options=options,
+                             preserve_assertions=kind == "sv_formal")
     elif kind == "v_graph":
         db.loadGateLevelVerilog([source])
     elif kind == "v":
@@ -348,7 +349,7 @@ class NajaEDADeterminismTest(unittest.TestCase):
         self.assertGreaterEqual(runs, 5, "determinism requires at least five fresh processes")
         with tempfile.TemporaryDirectory(dir=os.environ.get("NAJAEDA_TEST_PATH")) as directory:
             directory = Path(directory)
-            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets", "sv_top", "sv_recursive_top") else "v" if kind == "v_graph" else kind))
+            source_path = directory / ("source." + ("sv" if kind in ("sv_timing", "sv_resets", "sv_top", "sv_recursive_top", "sv_formal") else "v" if kind == "v_graph" else kind))
             for name, contents in (files or {}).items():
                 (directory / name).write_text(contents, encoding="utf-8")
             source_path.write_text(source.replace("__DATA_DIRECTORY__", str(directory)), encoding="utf-8")
@@ -413,8 +414,8 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 # The input-only verification family participates in live-ID,
                 # connectivity, dump and fresh-process snapshot comparisons.
                 self.assertIn(b"naja_formal_property__w5", original["state.txt"])
-                self.assertIn(b"formal_property 2 3", original["state.txt"])
-                self.assertIn(b"FP1", original["state.txt"])
+                self.assertIn(b"formal_property 2 2", original["state.txt"])
+                self.assertIn(b"FPB1", original["state.txt"])
                 self.assertIn("design.dot", original)
                 self.assertIn("design.v", original)
                 self.assertIn("snapshot/db0_interface.snl", original)
@@ -430,14 +431,17 @@ class NajaEDADeterminismTest(unittest.TestCase):
                     self.assert_artifacts_equal(baseline, original)
 
     def test_systemverilog_formal_properties(self):
-        self.check_determinism("sv", """
-module leaf(input bit clk, reset, a, b);
-  property response; @(posedge clk) disable iff (reset) a |=> b; endproperty
+        self.check_determinism("sv_formal", """
+`define CHECK(n,p) n: assert property (@(posedge clk) p) else $error("report");
+module leaf(input logic clk, reset, a, b);
+  localparam integer LIMIT = 3;
+  property response; @(posedge clk) disable iff (reset !== 1'b0) a |=> ##[1:LIMIT] b; endproperty
   check_response: assert property (response);
   environment: assume property (@(negedge clk) !a || b);
   reached: cover property (@(posedge clk) a && b);
+  `CHECK(check_macro, a |-> b)
 endmodule
-module top(input bit clk, reset, input bit [3:0] data);
+module top(input logic clk, reset, input logic [3:0] data);
   for (genvar g = 0; g < 2; g++) begin: lanes
     leaf u(clk, reset, data[g], data[g+2]);
     check_bit: assert property (@(posedge clk) data[g] |-> data[g+2]);

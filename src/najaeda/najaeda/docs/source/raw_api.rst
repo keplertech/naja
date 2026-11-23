@@ -905,6 +905,17 @@ RTL subset. The normal high-level equivalents are ``netlist.load_gate_level_veri
 ``SNLDesign.dumpGateLevelVerilog`` export structural netlists rather than reconstructing
 the original behavioral RTL.
 
+``NLDB.loadSystemVerilog(..., preserve_assertions=False)`` ignores concurrent
+assertions during netlist construction by default and reports discarded
+assertions with code ``ignored_concurrent_assertion``. Set
+``preserve_assertions=True`` to capture module-level concurrent assertion source
+text and referenced packed signals in NLDB0 property instances. The property
+text replaces the former temporal graph; no assertion execution or proof is
+performed. References that cannot be bound faithfully are diagnosed. The corresponding
+high-level loader option is ``netlist.SystemVerilogConfig.preserve_assertions``;
+this does not provide direct Python property construction. Immediate assertion
+handling remains unchanged. See the loading guide for supported property forms.
+
 ``NLDB.loadSystemVerilog(..., frontend_options={"slang": ["--relax-enum-conversions"]})``
 passes backend-specific options through a frontend-neutral mapping. The high-level
 counterpart is ``netlist.SystemVerilogConfig.frontend_options``. The default is

@@ -31,38 +31,41 @@ TEST(NLDB0FormalPropertyTest, ContractAndValidation) {
   EXPECT_EQ(model, NLDB0::getOrCreateFormalProperty(3));
   EXPECT_EQ(model, NLDB0::getOrCreatePrimitive(model->getLibrary()->getID(), model->getID()));
   EXPECT_EQ(3u, NLDB0::getFormalPropertyWidth(model));
-  EXPECT_EQ(5u, model->getBitTerms().size());
+  EXPECT_EQ(3u, model->getBitTerms().size());
   for (auto* term : model->getBitTerms()) EXPECT_EQ(SNLTerm::Direction::Input, term->getDirection());
   EXPECT_FALSE(SNLDesignModeling::hasSequentialModel(model));
+  EXPECT_EQ(nullptr, model->getParameter(NLName("CONFIG")));
   auto* instance = SNLInstance::create(top, model);
   EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException);
   P property;
-  property.nodes = {{P::Op::Input, 0}, {P::Op::Input, 2}, {P::Op::NonOverlappedImplication, 0, 1}};
+  property.sourceFormat = "generic-test";
+  property.text = "next(a) implies b";
+  property.statementText = "check: next(a) implies b;\nreport \"message\\path\"";
+  property.originalText = property.statementText;
+  property.contextText = "arbitrary source context\n";
+  property.bindings = {{"a", "binary", 0, 1, false, false}, {"b", "word", 1, 2, true, true}};
   for (auto kind : {P::Kind::Assert, P::Kind::Assume, P::Kind::Cover}) {
     property.kind = kind;
-    property.edge = P::Edge::Falling;
-    property.disable = P::Disable::AsyncHigh;
     NLDB0::setFormalProperty(instance, property);
     EXPECT_EQ(property, NLDB0::getFormalProperty(instance));
   }
   const auto valid = property;
-  property.nodes[0].left = 3;
+  property.bindings[1].offset = 0;
   EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
-  EXPECT_EQ(valid, NLDB0::getFormalProperty(instance)); // Failed setters are atomic.
-  property = valid; property.nodes.back().right = 2;
+  EXPECT_EQ(valid, NLDB0::getFormalProperty(instance));
+  property = valid; property.bindings[1].width = 3;
   EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
-  property = valid; property.nodes.push_back({P::Op::Not, 2});
+  property = valid; property.bindings[1].name = "a";
   EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
-  property = valid; property.nodes.back() = {P::Op::Not, 0};
-  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException); // Unused node.
-  property = valid; property.nodes.clear();
+  property = valid; property.text.clear();
   EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
   property = valid; property.kind = P::Kind(99);
   EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
-  auto* config = instance->getInstParameter(NLName("CONFIG"));
-  for (const auto* text : {"", "FP2 0 0 0 1 2 0 0", "FP1 0 0 0 1 99 0 0",
-      "FP1 0 0 0 1 0 3 0", "FP1 0 0 0 1 2 0 0 trailing", "FP1 0 0 0 1 2 0 0 "}) {
-    config->setValue(text);
+  property = valid; property.text.push_back('\0');
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  auto* bindings = instance->getInstParameter(NLName("BINDINGS"));
+  for (const auto* text : {"", "FPB2 0", "FPB1 1 \"a\" \"bit\" 0 4 0 0", "FPB1 0 trailing"}) {
+    bindings->setValue(text);
     EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException) << text;
   }
   NLDB0::setFormalProperty(instance, valid);

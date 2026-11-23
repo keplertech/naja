@@ -101,6 +101,7 @@
 #include "slang/syntax/SyntaxNode.h"
 #include "slang/syntax/AllSyntax.h"
 #include "slang/ast/types/TypePrinter.h"
+#include "slang/syntax/SyntaxPrinter.h"
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/text/Json.h"
 #include "slang/text/SourceManager.h"
@@ -4376,6 +4377,9 @@ endmodule
         case SymbolKind::Property:
         case SymbolKind::ElabSystemTask:
           return true;
+        case SymbolKind::ClockingBlock:
+          // An event-only block is assertion context, not executable RTL.
+          return sym.as<slang::ast::ClockingBlockSymbol>().members().empty();
         default:
           return false;
       }
@@ -34448,196 +34452,178 @@ endmodule
       }
     };
 
+    // Visit bound references without translating any property operators. Symbol
+    // sets are membership-only; emitted bindings follow the AST visitation order.
+    struct FormalSourceVisitor {
+      std::function<void(const Expression&)> reference;
+      std::function<void(const Symbol&)> declaration;
+      std::function<void(const std::string&)> unsupported;
+      std::unordered_set<const slang::ast::AssertionInstanceExpression*> expanded;
+      template<typename T> void visit(const T& node) {
+        if constexpr (std::is_same_v<T, Expression> || std::is_same_v<T, Statement> ||
+            std::is_same_v<T, TimingControl> || std::is_same_v<T, slang::ast::AssertionExpr>) {
+          node.visit(*this);
+        } else {
+          if constexpr (std::is_same_v<T, slang::ast::NamedValueExpression> ||
+              std::is_same_v<T, slang::ast::HierarchicalValueExpression>) {
+            reference(node);
+            return;
+          }
+          if constexpr (std::is_same_v<T, slang::ast::AssertionInstanceExpression>) {
+            declaration(node.symbol);
+            if (!expanded.insert(&node).second || node.isRecursiveProperty) return;
+            // Actuals can include values that slang folds out of the bound body.
+            for (const auto& [formal, actual] : node.arguments) {
+              (void)formal;
+              std::visit([&](auto* argument) { if (argument) argument->visit(*this); }, actual);
+            }
+          }
+          if constexpr (std::is_same_v<T, slang::ast::CallExpression>) {
+            if (!node.isSystemCall()) {
+              unsupported("non-system calls require subroutine-context capture");
+              return;
+            }
+          }
+          if constexpr (requires { node.visitExprs(*this); }) node.visitExprs(*this);
+          if constexpr (requires { node.visitStmts(*this); }) node.visitStmts(*this);
+        }
+      }
+    };
+
     void createFormalProperties(SNLDesign* design, const InstanceBodySymbol& body) {
       using P = NLDB0::FormalProperty;
-      using A = slang::ast::AssertionExpr;
-      using K = slang::ast::AssertionExprKind;
+      auto* sourceManager = compilation_->getSourceManager();
+      const auto sourceSlice = [&](slang::SourceRange range) -> std::optional<std::string> {
+        const auto start = range.start(), end = range.end();
+        if (!start.valid() || !end.valid() || !sourceManager->isFileLoc(start) ||
+            !sourceManager->isFileLoc(end) || start.buffer() != end.buffer() || end <= start)
+          return std::nullopt;
+        const auto text = sourceManager->getSourceText(start.buffer());
+        if (end.offset() > text.size()) return std::nullopt;
+        return std::string(text.substr(start.offset(), end.offset() - start.offset()));
+      };
+      const auto verbatim = [&](const slang::syntax::SyntaxNode& syntax) {
+        return sourceSlice(syntax.sourceRange());
+      };
+      const auto print = [&](const slang::syntax::SyntaxNode& syntax, bool expandMacros) {
+        slang::syntax::SyntaxPrinter printer(*sourceManager);
+        printer.setExpandMacros(expandMacros).setSquashNewlines(false).setIncludeSource(false);
+        return printer.print(syntax).str();
+      };
       auto collect = [&](const Symbol& symbol) {
         if (symbol.kind != SymbolKind::ProceduralBlock) return;
         const auto& block = symbol.as<slang::ast::ProceduralBlockSymbol>();
-        ConcurrentAssertionVisitor visitor;
-        visitor.visit(block.getBody());
-        for (const auto* assertion : visitor.assertions) {
-          const auto fail = [&](const std::string& reason) {
-            reportUnsupportedError("Unsupported concurrent assertion: " + reason,
+        ConcurrentAssertionVisitor statements;
+        statements.visit(block.getBody());
+        for (const auto* assertion : statements.assertions) {
+          if (!options_.preserveAssertions) {
+            reportUnsupportedWarning("ignored_concurrent_assertion",
+                "discarding concurrent assertion because preserve_assertions is disabled",
                 getSourceRange(*assertion));
-          };
-          if (!block.isFromAssertion) {
-            fail("procedural activation semantics are not supported");
             continue;
           }
-          const auto hasAction = [](const Statement* action) {
-            return action && action->kind != slang::ast::StatementKind::Empty;
+          bool failed = false;
+          const auto fail = [&](const std::string& reason) {
+            failed = true;
+            reportUnsupportedError("Cannot capture concurrent assertion: " + reason,
+                getSourceRange(*assertion));
           };
-          if (hasAction(assertion->ifTrue) || hasAction(assertion->ifFalse)) {
-            fail("action blocks are not supported");
+          if (!block.isFromAssertion || !assertion->syntax) {
+            fail("only module-level concurrent assertions have source-context capture");
             continue;
           }
           P property;
+          property.sourceFormat = "systemverilog";
           switch (assertion->assertionKind) {
             case slang::ast::AssertionKind::Assert: property.kind = P::Kind::Assert; break;
             case slang::ast::AssertionKind::Assume: property.kind = P::Kind::Assume; break;
             case slang::ast::AssertionKind::CoverProperty: property.kind = P::Kind::Cover; break;
-            default: fail("only assert, assume and cover property are supported"); continue;
+            default: fail("only assert, assume and cover property are captured"); continue;
           }
-          const TimingControl* clock = nullptr;
-          const Expression* disable = nullptr;
-          const A* root = &assertion->propertySpec;
-          // Expand named items using slang's bound body, never their source text.
-          const auto unwrap = [&](const A*& expr) {
-            for (size_t depth = 0; depth < 256; ++depth) {
-              if (expr->kind == K::Clocking) {
-                const auto& wrapped = expr->as<slang::ast::ClockingAssertionExpr>();
-                if (clock) return false;
-                clock = &wrapped.clocking; expr = &wrapped.expr;
-              } else if (expr->kind == K::DisableIff) {
-                const auto& wrapped = expr->as<slang::ast::DisableIffAssertionExpr>();
-                if (disable) return false;
-                disable = &wrapped.condition; expr = &wrapped.expr;
-              } else if (expr->kind == K::Simple) {
-                const auto& simple = expr->as<slang::ast::SimpleAssertionExpr>();
-                if (simple.repetition || simple.expr.kind != slang::ast::ExpressionKind::AssertionInstance)
-                  return true;
-                const auto& instance = simple.expr.as<slang::ast::AssertionInstanceExpression>();
-                if (instance.isRecursiveProperty || !instance.localVars.empty()) return false;
-                expr = &instance.body;
-              } else return true;
-            }
-            return false;
-          };
-          if (!unwrap(root)) { fail("nested clocks, disables or recursive/local-variable properties"); continue; }
-          if (!disable) disable = compilation_->getDefaultDisable(*block.getParentScope());
-          if (!clock || clock->kind != slang::ast::TimingControlKind::SignalEvent) {
-            fail("an explicit single posedge or negedge clock is required"); continue;
+          const auto& syntax = assertion->syntax->as<slang::syntax::ConcurrentAssertionStatementSyntax>();
+          if (auto text = sourceSlice(slang::SourceRange(syntax.openParen.range().end(), syntax.closeParen.location())))
+            property.text = *text;
+          else {
+            property.textOrigin = P::TextOrigin::MacroExpansion;
+            property.text = print(*syntax.propertySpec, true);
           }
-          const auto& event = clock->as<slang::ast::SignalEventControl>();
-          if (event.iffCondition || (event.edge != slang::ast::EdgeKind::PosEdge &&
-              event.edge != slang::ast::EdgeKind::NegEdge)) {
-            fail("conditional or unsupported clock event"); continue;
-          }
-          property.edge = event.edge == slang::ast::EdgeKind::PosEdge ? P::Edge::Rising : P::Edge::Falling;
+          property.statementText = print(syntax, true);
+          property.originalText = verbatim(syntax).value_or(print(syntax, false));
           std::vector<SNLBitNet*> data;
-          const auto knownConstant = [&](const Expression& expr) -> std::optional<bool> {
-            if (!expr.type->isIntegral()) return std::nullopt;
-            const auto* value = expr.getConstant();
-            std::vector<bool> bits;
-            if (!value || !flattenConstantValueToBits(*value, bits)) return std::nullopt;
-            return std::any_of(bits.begin(), bits.end(), [](bool bit) { return bit; });
-          };
-          const auto scalarTwoState = [](const Expression& expr) {
-            const auto* stripped = stripConversions(expr);
-            return stripped && stripped->type->isIntegral() &&
-                stripped->type->getBitWidth() == 1 && !stripped->type->isFourState();
-          };
-          const auto directReference = [](const Expression& expr) {
-            if (expr.kind == slang::ast::ExpressionKind::ElementSelect)
-              return expr.as<slang::ast::ElementSelectExpression>().selector().getConstant() != nullptr;
-            return expr.kind == slang::ast::ExpressionKind::NamedValue ||
-                expr.kind == slang::ast::ExpressionKind::MemberAccess;
-          };
-          std::function<bool(const Expression&)> predicate;
-          predicate = [&](const Expression& original) {
-            if (auto value = knownConstant(original)) {
-              property.nodes.push_back({*value ? P::Op::True : P::Op::False}); return true;
+          std::unordered_set<const Symbol*> declarations;
+          std::unordered_set<const Symbol*> references;
+          const auto declaration = [&](const Symbol& declared) {
+            if (!declarations.insert(&declared).second) return;
+            if (declared.kind == SymbolKind::Parameter) {
+              const auto& parameter = declared.as<slang::ast::ParameterSymbol>();
+              property.contextText += "localparam " + specializationType(parameter.getType()) + " " +
+                  std::string(parameter.name) + " = " + parameter.getValue().toString() + ";\n";
+            } else if (auto* declaredSyntax = declared.getSyntax()) {
+              property.contextText += print(*declaredSyntax, true) + "\n";
             }
-            const auto* expr = stripConversions(original);
-            if (!expr || !scalarTwoState(*expr)) return false;
-            if (expr->kind == slang::ast::ExpressionKind::UnaryOp) {
-              const auto& unary = expr->as<slang::ast::UnaryExpression>();
-              if (unary.op != slang::ast::UnaryOperator::LogicalNot &&
-                  unary.op != slang::ast::UnaryOperator::BitwiseNot) return false;
-              if (!predicate(unary.operand())) return false;
-              property.nodes.push_back({P::Op::Not, property.nodes.size() - 1}); return true;
-            }
-            if (expr->kind == slang::ast::ExpressionKind::BinaryOp) {
-              const auto& binary = expr->as<slang::ast::BinaryExpression>();
-              P::Op op;
-              switch (binary.op) {
-                case slang::ast::BinaryOperator::LogicalAnd:
-                case slang::ast::BinaryOperator::BinaryAnd: op = P::Op::And; break;
-                case slang::ast::BinaryOperator::LogicalOr:
-                case slang::ast::BinaryOperator::BinaryOr: op = P::Op::Or; break;
-                default: return false;
-              }
-              if (!predicate(binary.left())) return false;
-              const auto left = property.nodes.size() - 1;
-              if (!predicate(binary.right())) return false;
-              property.nodes.push_back({op, left, property.nodes.size() - 1}); return true;
-            }
-            if (!directReference(*expr)) return false;
-            std::vector<SNLBitNet*> bits;
-            if (!resolveExpressionBits(design, *expr, 1, bits) || bits.size() != 1 || !bits[0]) return false;
-            auto found = std::find(data.begin(), data.end(), bits[0]);
-            const auto index = size_t(found - data.begin());
-            if (found == data.end()) data.push_back(bits[0]);
-            property.nodes.push_back({P::Op::Input, index}); return true;
           };
-          std::function<bool(const A&)> booleanSequence;
-          booleanSequence = [&](const A& expr) {
-            if (expr.kind != K::Simple) return false;
-            const auto& simple = expr.as<slang::ast::SimpleAssertionExpr>();
-            if (simple.repetition) return false;
-            if (simple.expr.kind == slang::ast::ExpressionKind::AssertionInstance) {
-              const auto& instance = simple.expr.as<slang::ast::AssertionInstanceExpression>();
-              if (instance.isRecursiveProperty || !instance.localVars.empty()) return false;
-              return booleanSequence(instance.body);
-            }
-            return predicate(simple.expr);
-          };
-          bool supported = false;
-          if (root->kind == K::Binary) {
-            const auto& binary = root->as<slang::ast::BinaryAssertionExpr>();
-            if (binary.op == slang::ast::BinaryAssertionOperator::OverlappedImplication ||
-                binary.op == slang::ast::BinaryAssertionOperator::NonOverlappedImplication) {
-              if (booleanSequence(binary.left)) {
-                const auto left = property.nodes.size() - 1;
-                if (booleanSequence(binary.right)) {
-                  property.nodes.push_back({binary.op == slang::ast::BinaryAssertionOperator::OverlappedImplication
-                      ? P::Op::OverlappedImplication : P::Op::NonOverlappedImplication,
-                      left, property.nodes.size() - 1});
-                  supported = true;
-                }
-              }
-            }
-          } else supported = booleanSequence(*root);
-          std::vector<SNLBitNet*> clocks, disables;
-          if (!supported || !scalarTwoState(event.expr) || !directReference(*stripConversions(event.expr)) ||
-              !resolveExpressionBits(design, event.expr, 1, clocks) || clocks.size() != 1) {
-            fail("requires scalar two-state predicates and clock; supported temporal operators are |-> and |=>");
-            continue;
+          // Delay bounds and genvars can be folded out of the assertion AST.
+          // Keep their elaborated values without rewriting the stored source.
+          for (auto* scope = block.getParentScope(); scope; scope = scope->asSymbol().getParentScope()) {
+            for (const auto& member : scope->members())
+              if (member.kind == SymbolKind::Parameter) declaration(member);
+            if (&scope->asSymbol() == &body) break;
           }
-          if (disable) {
-            const auto* control = stripConversions(*disable);
-            bool supportedControl = control && directReference(*control);
-            if (control && control->kind == slang::ast::ExpressionKind::UnaryOp) {
-              const auto& unary = control->as<slang::ast::UnaryExpression>();
-              const auto* operand = stripConversions(unary.operand());
-              supportedControl = (unary.op == slang::ast::UnaryOperator::LogicalNot ||
-                  unary.op == slang::ast::UnaryOperator::BitwiseNot) && operand &&
-                  scalarTwoState(*operand) && directReference(*operand);
+          FormalSourceVisitor visitor;
+          visitor.declaration = declaration;
+          visitor.unsupported = fail;
+          visitor.reference = [&](const Expression& expr) {
+            const auto& value = expr.as<slang::ast::ValueExpressionBase>().symbol;
+            if (value.kind == SymbolKind::Parameter || value.kind == SymbolKind::EnumValue) {
+              declaration(value); return;
             }
-            if (auto value = knownConstant(*disable)) {
-              disables.push_back(static_cast<SNLBitNet*>(getConstNet(design, *value)));
-            } else if (!supportedControl || !scalarTwoState(*disable) ||
-                !resolveExpressionBits(design, *disable, 1, disables) || disables.size() != 1) {
-              fail("disable iff requires a scalar two-state condition"); continue;
+            if (value.kind == SymbolKind::LocalAssertionVar) return;
+            if (!references.insert(&value).second) return;
+            if (expr.kind == slang::ast::ExpressionKind::HierarchicalValue ||
+                (value.kind != SymbolKind::Net && value.kind != SymbolKind::Variable) ||
+                !value.getType().isIntegral()) {
+              fail("reference cannot be bound to a local packed net: " + std::string(value.name)); return;
             }
-            property.disable = P::Disable::AsyncHigh;
+            auto* net = getLoweredValueSymbolNet(design, value);
+            if (!net) net = design->getNet(NLName(getLoweredSymbolName(value)));
+            if (!net) { fail("missing net for " + std::string(value.name)); return; }
+            auto bits = collectBits(net);
+            if (bits.size() != value.getType().getBitWidth()) {
+              fail("net width differs from source symbol " + std::string(value.name)); return;
+            }
+            auto name = value.getHierarchicalPath();
+            const auto prefix = body.getHierarchicalPath() + ".";
+            if (name.starts_with(prefix)) name.erase(0, prefix.size());
+            if (name.empty()) name = std::string(value.name);
+            property.bindings.push_back({name, specializationType(value.getType()), data.size(),
+                bits.size(), value.getType().isSigned(), value.getType().isFourState()});
+            data.insert(data.end(), bits.begin(), bits.end());
+          };
+          // Preserve inherited contexts as text and connect their signal references.
+          if (const auto* clocking = compilation_->getDefaultClocking(*block.getParentScope())) {
+            declaration(*clocking);
+            if (clocking->kind == SymbolKind::ClockingBlock)
+              visitor.visit(clocking->as<slang::ast::ClockingBlockSymbol>().getEvent());
           }
-          auto* zero = static_cast<SNLBitNet*>(getConstNet(design, false));
-          if (data.empty()) data.push_back(zero);
+          if (const auto* disable = compilation_->getDefaultDisable(*block.getParentScope())) {
+            if (disable->syntax)
+              property.contextText += "default disable iff (" +
+                  verbatim(*disable->syntax).value_or(print(*disable->syntax, true)) + ");\n";
+            visitor.visit(*disable);
+          }
+          visitor.visit(*assertion);
+          if (failed) continue;
+          if (data.empty()) data.push_back(static_cast<SNLBitNet*>(getConstNet(design, false)));
           auto* model = NLDB0::getOrCreateFormalProperty(data.size());
           NLName name;
-          if (assertion->syntax && assertion->syntax->label) {
-            auto label = std::string(assertion->syntax->label->name.valueText());
+          if (syntax.label) {
+            auto label = std::string(syntax.label->name.valueText());
             if (isInsideGenerateScope(block))
               label = sanitizeName(block.getParentScope()->asSymbol().getHierarchicalPath() + "." + label);
             name = NLName(label);
           }
           auto* instance = SNLInstance::create(design, model, name);
           NLDB0::setFormalProperty(instance, property);
-          instance->setTermNet(NLDB0::getFormalPropertyClock(model), clocks[0]);
-          instance->setTermNet(NLDB0::getFormalPropertyDisable(model), disable ? disables[0] : zero);
           connectInstanceTermBits(instance, NLDB0::getFormalPropertyData(model), data);
           annotateSourceInfo(instance, getSourceRange(*assertion));
           bindLiveASTLink(instance, block);

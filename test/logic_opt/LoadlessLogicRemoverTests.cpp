@@ -77,13 +77,13 @@ TEST_F(LoadlessRemoveLogicTests, FormalPropertyPreservesObservedCone) {
   auto* model = NLDB0::getOrCreateFormalProperty(1);
   auto* property = SNLInstance::create(top, model, NLName("check"));
   NLDB0::FormalProperty config;
-  config.nodes = {{NLDB0::FormalProperty::Op::Input, 0}};
+  config.sourceFormat = "generic-test";
+  config.text = "observed";
+  config.statementText = "check observed;";
+  config.originalText = config.statementText;
+  config.bindings = {{"observed", "binary", 0, 1, false, false}};
   NLDB0::setFormalProperty(property, config);
   property->getInstTerm(NLDB0::getFormalPropertyData(model)->getBit(0))->setNet(observed);
-  property->getInstTerm(NLDB0::getFormalPropertyClock(model))->setNet(source);
-  auto* disabled = SNLScalarNet::create(top, NLName("disabled"));
-  disabled->setType(SNLNet::Type::Assign0);
-  property->getInstTerm(NLDB0::getFormalPropertyDisable(model))->setNet(disabled);
   LoadlessLogicRemover remover;
   remover.process();
   EXPECT_EQ(property, top->getInstance(NLName("check")));

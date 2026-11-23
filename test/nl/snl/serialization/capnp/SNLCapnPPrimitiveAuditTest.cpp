@@ -50,10 +50,13 @@ void configureFormalProperty(SNLInstance* instance, int mode = 0) {
   using P = NLDB0::FormalProperty;
   P property;
   property.kind = P::Kind(mode);
-  property.edge = mode == 1 ? P::Edge::Falling : P::Edge::Rising;
-  property.disable = P::Disable::AsyncHigh;
-  property.nodes = {{P::Op::Input, 0}, {P::Op::Input, 1},
-      {P::Op::NonOverlappedImplication, 0, 1}};
+  property.sourceFormat = "systemverilog";
+  property.text = "@(posedge clk) a |=> b";
+  property.statementText = "check: assert property (\n  @(posedge clk) a |=> b\n) else $error(\"check\\path\");";
+  property.originalText = property.statementText;
+  property.contextText = "localparam integer LIMIT = 3;\n";
+  property.bindings = {{"a", "logic [1:0]", 0, 2, false, true},
+      {"b", "bit signed [2:0]", 2, 3, true, false}};
   NLDB0::setFormalProperty(instance, property);
 }
 
@@ -140,7 +143,7 @@ std::string state(SNLDesign* top) {
     auto* model = instance->getModel();
     if (NLDB0::isFormalProperty(model)) {
       const auto property = NLDB0::getFormalProperty(instance);
-      out << "formal_property " << unsigned(property.kind) << ' ' << property.nodes.size() << '\n';
+      out << "formal_property " << unsigned(property.kind) << ' ' << property.bindings.size() << '\n';
     }
     out << instance->getNLID().getString() << ' ' << instance->getName().getString()
         << ' ' << model->getNLID().getString() << ' ' << model->getName().getString() << '\n';
@@ -453,7 +456,7 @@ TEST_F(SNLCapnPPrimitiveIdentityTest, InvalidFormalPropertiesAreRejectedAtSnapsh
   EXPECT_THROW(SNLCapnP::dumpImplementation(top->getDB(), path / "unfinished"), NLException);
   unfinished->destroy();
   // Build malformed wire records independently of the validating writer API.
-  for (const auto* config : {"", "FP2 0 0 0 1 2 0 0", "FP1 0 0 0 1 0 2 0"}) {
+  for (const auto* config : {"", "FPB2 0", "FPB1 1 \"a\" \"bit\" 0 3 0 0"}) {
     ::capnp::MallocMessageBuilder message;
     auto db = message.initRoot<DBImplementation>();
     db.setId(top->getDB()->getID());
@@ -468,9 +471,16 @@ TEST_F(SNLCapnPPrimitiveIdentityTest, InvalidFormalPropertiesAreRejectedAtSnapsh
     reference.setLibraryID(model->getLibrary()->getID());
     reference.setDesignID(model->getID());
     if (*config) {
-      auto parameter = instance.initInstParameters(1)[0];
-      parameter.setName("CONFIG");
-      parameter.setValue(config);
+      const NLDB0::PrimitiveParameters values{{"KIND", "0"}, {"TEXT_ORIGIN", "0"},
+          {"SOURCE_FORMAT", "systemverilog"}, {"PROPERTY_TEXT", "a"},
+          {"STATEMENT_TEXT", "assert property(a);"}, {"ORIGINAL_TEXT", "assert property(a);"},
+          {"CONTEXT_TEXT", ""}, {"BINDINGS", config}};
+      auto parameters = instance.initInstParameters(values.size());
+      size_t index = 0;
+      for (const auto& [name, value] : values) {
+        parameters[index].setName(name);
+        parameters[index++].setValue(value);
+      }
     }
     ::kj::VectorOutputStream packed;
     ::capnp::writePackedMessage(packed, message);
