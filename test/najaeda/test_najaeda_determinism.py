@@ -410,6 +410,11 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 original = artifacts(output / "original")
                 self.assertIn("state.txt", original)
+                # The input-only verification family participates in live-ID,
+                # connectivity, dump and fresh-process snapshot comparisons.
+                self.assertIn(b"naja_formal_property__w5", original["state.txt"])
+                self.assertIn(b"formal_property 2 3", original["state.txt"])
+                self.assertIn(b"FP1", original["state.txt"])
                 self.assertIn("design.dot", original)
                 self.assertIn("design.v", original)
                 self.assertIn("snapshot/db0_interface.snl", original)
@@ -423,6 +428,22 @@ class NajaEDADeterminismTest(unittest.TestCase):
                     baseline = original
                 else:
                     self.assert_artifacts_equal(baseline, original)
+
+    def test_systemverilog_formal_properties(self):
+        self.check_determinism("sv", """
+module leaf(input bit clk, reset, a, b);
+  property response; @(posedge clk) disable iff (reset) a |=> b; endproperty
+  check_response: assert property (response);
+  environment: assume property (@(negedge clk) !a || b);
+  reached: cover property (@(posedge clk) a && b);
+endmodule
+module top(input bit clk, reset, input bit [3:0] data);
+  for (genvar g = 0; g < 2; g++) begin: lanes
+    leaf u(clk, reset, data[g], data[g+2]);
+    check_bit: assert property (@(posedge clk) data[g] |-> data[g+2]);
+  end
+endmodule
+""")
 
     def test_systemverilog_appended_term_order(self):
         shapes = ["", "[4:2]", "[-2:1]", "[3:-1]"]

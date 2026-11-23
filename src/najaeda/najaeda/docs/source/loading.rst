@@ -541,6 +541,69 @@ fields when it is created and again when loading begins.  Entries in
 ``-W`` or ``-Wno-`` command-line prefix.  To load only from a command file,
 pass an empty file list and set ``flist``.
 
+SystemVerilog concurrent assertions
+-----------------------------------
+
+The SystemVerilog loader preserves a first subset of module-level concurrent
+``assert property``, ``assume property`` and ``cover property`` statements as
+input-only NLDB0 ``naja_formal_property`` instances. This records verification
+intent; loading does not execute assertions or prove properties.
+
+.. code-block:: systemverilog
+
+   module checked(input bit clk, reset, request, response);
+     check_response: assert property (@(posedge clk)
+       disable iff (reset) request |=> response);
+   endmodule
+
+Each instance connects scalar ``CLK`` and ``DISABLE`` terminals and a
+``DATA[width-1:0]`` bus to the referenced nets. Its validated configuration
+records assert/assume/cover kind, clock edge, asynchronous disable behavior,
+and a topologically ordered Boolean/temporal expression graph. Boolean
+predicates, ``!``, ``~``, ``&&``, ``||``, scalar ``&``/``|``, ``|->`` and ``|=>``
+are supported. Implication operands must be single-sample Boolean predicates.
+Named properties/sequences without recursion or local variables are expanded
+from slang's elaborated body. Generate scopes and repeated module instances
+retain distinct property occurrences. Labels and source locations are retained.
+
+This initial representation is explicitly two-state. Runtime predicates and
+clock signals must be scalar two-state values, such as ``bit`` declarations
+or constant-selected bits of packed two-state vectors. Known integral constants
+are supported. Runtime four-state ``logic`` predicates, unknown constants,
+dynamic selections, side-effecting expressions, and unsupported operators
+are rejected. The clock must explicitly select ``posedge`` or ``negedge`` of
+a scalar reference; default/inferred clocks and event ``iff`` conditions are
+not supported. ``disable iff`` and inherited ``default disable iff`` accept
+a two-state scalar reference, its negation, or a known integral constant.
+
+Predicates sample before edge-triggered state updates. ``|->`` checks the
+consequent at the same sample; ``|=>`` checks it at the next sample when the
+antecedent was true. Asynchronous disable aborts pending attempts. Assertions
+forbid failures, assumptions constrain allowed executions, and covers seek
+nonvacuous successful completion. These semantics form the contract for a
+future formal consumer; Naja does not create monitor registers or solver logic.
+
+Unsupported concurrent assertions now fail loading with a diagnostic rather
+than being discarded. This includes procedural concurrent assertions, action
+blocks, sequence delays/repetitions, sampled history functions, and multiclock
+properties. Immediate assertions retain their existing configuration-check or
+ignored synthesis handling and are not mapped to this primitive.
+
+The C++ representation is ``NLDB0::FormalProperty``. Canonical models are
+identified with ``NLDB0::isFormalProperty`` and queried with
+``NLDB0::getFormalProperty(instance)``. There is no Python property creation API.
+Existing instance/net/parameter traversal can inspect the loaded structure.
+The instance has no ordinary truth table or sequential-cell model; a formal
+consumer must recognize it explicitly rather than silently ignore it.
+
+NajaIF preserves the model, configuration and connectivity, including reload
+in a fresh process. The existing parameter schema carries a versioned
+``CONFIG`` encoding; malformed or unconfigured properties are rejected on
+save/load. Dead-logic removal preserves the instances and their feeding cones.
+Adding this fixed primitive family advances the DB0 identity version to 5,
+so older snapshots must be regenerated. Verilog and DOT dumps preserve the
+structure; they do not implement executable assertion semantics.
+
 VHDL
 ----
 

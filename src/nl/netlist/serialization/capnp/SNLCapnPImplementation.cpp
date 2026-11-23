@@ -72,6 +72,8 @@ void dumpInstParameter(
 void dumpInstance(
   DBImplementation::LibraryImplementation::SNLDesignImplementation::Instance::Builder& instance,
   const SNLInstance* snlInstance) {
+  if (NLDB0::isFormalProperty(snlInstance->getModel()))
+    NLDB0::getFormalProperty(snlInstance);
   instance.setId(snlInstance->getID());
   if (not snlInstance->isUnnamed()) {
     instance.setName(snlInstance->getName().getString());
@@ -346,6 +348,7 @@ void loadInstance(
       loadInstParameter(snlInstance, instParameter);
     }
   }
+  if (NLDB0::isFormalProperty(model)) NLDB0::getFormalProperty(snlInstance);
   loadAttributes(instance, snlInstance);
   if (instance.hasRtlInfos()) {
     loadRTLInfos(SNLRTLInfos::create(snlInstance), instance.getRtlInfos());

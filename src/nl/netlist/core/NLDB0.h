@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 #include "NLID.h"
 #include "SNLTruthTable.h"
 
@@ -37,7 +38,53 @@ class NLDB0 {
   friend class NLUniverse;
   public:
     // Snapshot compatibility version for canonical primitive library identities.
-    static constexpr unsigned LibraryIDVersion = 4;
+    static constexpr unsigned LibraryIDVersion = 5;
+
+    /// Language-neutral, single-clock, two-state verification observation.
+    /// Nodes are topologically ordered; the last node is the body root.
+    /// Input.left indexes DATA by bus bit number. Not uses left; binary
+    /// operators use left/right node indices. Unused operands must be zero.
+    /// Implication is allowed only at the root, with Boolean operands.
+    /// Predicates sample before the selected edge's state updates. Each edge
+    /// starts an attempt; nonoverlapped implication checks the consequent on
+    /// the next edge, overlapped implication on the same edge. A false
+    /// antecedent succeeds vacuously. AsyncHigh aborts pending attempts and
+    /// suppresses new attempts while DISABLE is high; None ignores DISABLE.
+    /// Assert forbids failures, Assume constrains executions, Cover seeks a
+    /// nonvacuous successful completion. Pending attempts are not failures or
+    /// completed covers. Consumers must reject unresolved/X/Z used inputs.
+    /// Enum values are part of the versioned CONFIG encoding.
+    struct FormalProperty {
+      enum class Kind { Assert = 0, Assume = 1, Cover = 2 };
+      enum class Edge { Rising = 0, Falling = 1 };
+      enum class Disable { None = 0, AsyncHigh = 1 };
+      enum class Op { Input = 0, False = 1, True = 2, Not = 3, And = 4, Or = 5,
+                      OverlappedImplication = 6, NonOverlappedImplication = 7 };
+      struct Node {
+        Op op {Op::False};
+        size_t left {0};
+        size_t right {0};
+        bool operator==(const Node&) const = default;
+      };
+      Kind kind {Kind::Assert};
+      Edge edge {Edge::Rising};
+      Disable disable {Disable::None};
+      std::vector<Node> nodes;
+      bool operator==(const FormalProperty&) const = default;
+      void validate(size_t width) const;
+    };
+
+    /// Input-only primitive; CONFIG has no valid implicit configuration.
+    /// No truth table or ordinary sequential-cell model is attached.
+    static SNLDesign* getOrCreateFormalProperty(size_t width);
+    static bool isFormalProperty(const SNLDesign* design);
+    static size_t getFormalPropertyWidth(const SNLDesign* design);
+    static size_t getFormalPropertyWidth(const SNLInstance* instance);
+    static SNLScalarTerm* getFormalPropertyClock(const SNLDesign* design);
+    static SNLScalarTerm* getFormalPropertyDisable(const SNLDesign* design);
+    static SNLBusTerm* getFormalPropertyData(const SNLDesign* design);
+    static void setFormalProperty(SNLInstance* instance, const FormalProperty& property);
+    static FormalProperty getFormalProperty(const SNLInstance* instance);
 
     enum class MemoryResetMode {
       None,

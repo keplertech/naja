@@ -34220,26 +34220,106 @@ TEST_F(SNLSVConstructorTestSimple, parseSequentialTimingMissingUnsupported) {
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, parseSequentialConcurrentAssertionIgnoredSupported) {
+TEST_F(SNLSVConstructorTestSimple, parseSequentialConcurrentAssertionActivationUnsupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path benchmarksPath(SNL_SV_BENCHMARKS_PATH);
-  constructor.construct(
+  expectUnsupportedConstruct(constructor,
     benchmarksPath / "seq_concurrent_assertion_ignored" /
-    "seq_concurrent_assertion_ignored.sv");
+    "seq_concurrent_assertion_ignored.sv",
+    {"Unsupported concurrent assertion", "procedural activation semantics"});
+}
 
-  auto top = library_->getSNLDesign(NLName("seq_concurrent_assertion_ignored"));
-  ASSERT_NE(top, nullptr);
-
-  auto dffModel = NLDB0::getDFF();
-  ASSERT_NE(dffModel, nullptr);
-
-  size_t dffCount = 0;
-  for (auto inst : top->getInstances()) {
-    if (isSequentialDFFPrimitive(inst->getModel())) {
-      dffCount += getPrimitiveWidth(inst);
-    }
+TEST_F(SNLSVConstructorTestSimple, FormalPropertiesFromSystemVerilog) {
+  const auto source = writeSVTestFile("formal_properties", R"(
+module top(input bit clk, reset, a, b, input bit [3:0] data);
+  property response; @(posedge clk) disable iff (reset) a |=> b; endproperty
+  check_response: assert property (response);
+  environment: assume property (@(negedge clk) !a || b);
+  reached: cover property (@(posedge clk) a && b);
+  unconditional: assert property (@(posedge clk) 1'b1);
+  for (genvar g = 0; g < 2; g++) begin: lanes
+    check_bit: assert property (@(posedge clk) data[g] |-> data[g+2]);
+  end
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  constructor.construct(source);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  using P = NLDB0::FormalProperty;
+  size_t count = 0;
+  for (auto* instance : top->getInstances()) {
+    if (!NLDB0::isFormalProperty(instance->getModel())) continue;
+    ++count;
+    EXPECT_NE(nullptr, instance->getRTLInfos());
+    for (auto* term : instance->getInstTerms()) EXPECT_NE(nullptr, term->getNet());
+    const auto property = NLDB0::getFormalProperty(instance);
+    EXPECT_FALSE(property.nodes.empty());
   }
-  EXPECT_EQ(1u, dffCount);
+  EXPECT_EQ(6u, count);
+  auto* check = top->getInstance(NLName("check_response"));
+  ASSERT_NE(nullptr, check);
+  auto* model = check->getModel();
+  auto property = NLDB0::getFormalProperty(check);
+  EXPECT_EQ(P::Kind::Assert, property.kind);
+  EXPECT_EQ(P::Disable::AsyncHigh, property.disable);
+  EXPECT_EQ(P::Op::NonOverlappedImplication, property.nodes.back().op);
+  EXPECT_EQ(top->getNet(NLName("clk")), check->getInstTerm(NLDB0::getFormalPropertyClock(model))->getNet());
+  EXPECT_EQ(top->getNet(NLName("reset")), check->getInstTerm(NLDB0::getFormalPropertyDisable(model))->getNet());
+  EXPECT_EQ(top->getNet(NLName("a")), check->getInstTerm(NLDB0::getFormalPropertyData(model)->getBit(0))->getNet());
+  EXPECT_EQ(top->getNet(NLName("b")), check->getInstTerm(NLDB0::getFormalPropertyData(model)->getBit(1))->getNet());
+  property = NLDB0::getFormalProperty(top->getInstance(NLName("environment")));
+  EXPECT_EQ(P::Kind::Assume, property.kind);
+  EXPECT_EQ(P::Edge::Falling, property.edge);
+  EXPECT_EQ(P::Op::Or, property.nodes.back().op);
+  EXPECT_EQ(P::Kind::Cover, NLDB0::getFormalProperty(top->getInstance(NLName("reached"))).kind);
+  EXPECT_EQ(P::Op::True, NLDB0::getFormalProperty(top->getInstance(NLName("unconditional"))).nodes.back().op);
+}
+
+TEST_F(SNLSVConstructorTestSimple, FormalPropertyDefaultDisableAndHierarchy) {
+  const auto source = writeSVTestFile("formal_property_context", R"(
+module leaf(input bit clk, reset, a);
+  default disable iff (reset);
+  check: assert property (@(posedge clk) a);
+endmodule
+module top(input bit clk, reset, a);
+  leaf u0(clk, reset, a);
+  leaf u1(clk, reset, a);
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  constructor.construct(source);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  auto* first = top->getInstance(NLName("u0"));
+  auto* second = top->getInstance(NLName("u1"));
+  ASSERT_NE(nullptr, first); ASSERT_NE(nullptr, second);
+  EXPECT_EQ(first->getModel(), second->getModel());
+  auto* check = first->getModel()->getInstance(NLName("check"));
+  ASSERT_NE(nullptr, check);
+  EXPECT_EQ(NLDB0::FormalProperty::Disable::AsyncHigh, NLDB0::getFormalProperty(check).disable);
+}
+
+TEST_F(SNLSVConstructorTestSimple, UnsupportedFormalPropertiesAreDiagnosed) {
+  const std::vector<std::string> declarations{
+    "check: assert property (@(posedge clk) a ##2 b);",
+    "check: assert property (@(posedge clk) $past(a));",
+    "check: assert property (@(posedge clk) a[*2]);",
+    "check: assert property (@(posedge clk) a) else $error(\"failed\");",
+    "check: assert property (@(posedge clk) mixed);",
+    "check: assert property (@(posedge mixed) a);",
+    "check: assert property (@(posedge clk) disable iff (mixed) a);",
+    "check: assert property (@(posedge clk iff a) b);",
+    "default clocking cb @(posedge clk); endclocking check: assert property(a);"
+  };
+  for (size_t i = 0; i < declarations.size(); ++i) {
+    SCOPED_TRACE(declarations[i]);
+    const auto source = writeSVTestFile("unsupported_formal_" + std::to_string(i),
+        "module property_case_" + std::to_string(i) +
+        "(input bit clk,a,b, input logic mixed); " + declarations[i] + " endmodule");
+    SNLSVConstructor constructor(library_);
+    expectUnsupportedConstruct(constructor, source, {"Unsupported concurrent assertion"});
+  }
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSequentialTimingEventListNegedgeResetSupported) {

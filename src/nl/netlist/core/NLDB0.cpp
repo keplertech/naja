@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cctype>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <vector>
 #if defined(_MSC_VER)
@@ -71,6 +72,7 @@ namespace {
     // One ID per GateType; designID carries fan-in or fan-out.
     // Add fixed families above this final enumerator.
     ClockGateLibraryID,
+    FormalPropertyLibraryID,
     GateLibraryIDBase
   };
 
@@ -3552,12 +3554,153 @@ SNLBusTerm* NLDB0::getGateNTerms(const SNLDesign* gate) {
   return nullptr;
 }
 
+void NLDB0::FormalProperty::validate(size_t width) const {
+  if (!width || unsigned(kind) > unsigned(Kind::Cover) ||
+      unsigned(edge) > unsigned(Edge::Falling) ||
+      unsigned(disable) > unsigned(Disable::AsyncHigh) || nodes.empty())
+    throw NLException("Invalid formal property header or empty body");
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    const auto& node = nodes[i];
+    switch (node.op) {
+      case Op::Input:
+        if (node.left >= width || node.right) throw NLException("Invalid formal property input");
+        break;
+      case Op::False:
+      case Op::True:
+        if (node.left || node.right) throw NLException("Invalid formal property constant");
+        break;
+      case Op::Not:
+        if (node.left >= i || node.right) throw NLException("Invalid formal property negation");
+        break;
+      case Op::OverlappedImplication:
+      case Op::NonOverlappedImplication:
+        if (i + 1 != nodes.size()) throw NLException("Formal implication must be the body root");
+        [[fallthrough]];
+      case Op::And:
+      case Op::Or:
+        if (node.left >= i || node.right >= i) throw NLException("Invalid formal property operands");
+        break;
+      default:
+        throw NLException("Unknown formal property operator");
+    }
+  }
+  std::vector<bool> used(nodes.size(), false);
+  used.back() = true;
+  for (size_t i = nodes.size(); i-- > 0;) {
+    if (!used[i]) throw NLException("Unreachable formal property node");
+    const auto& node = nodes[i];
+    if (node.op >= Op::Not) used[node.left] = true;
+    if (node.op >= Op::And) used[node.right] = true;
+  }
+}
+
+namespace {
+std::string encodeFormalProperty(const NLDB0::FormalProperty& property) {
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << "FP1 " << unsigned(property.kind) << ' ' << unsigned(property.edge)
+      << ' ' << unsigned(property.disable) << ' ' << property.nodes.size();
+  for (const auto& node : property.nodes)
+    out << ' ' << unsigned(node.op) << ' ' << node.left << ' ' << node.right;
+  return out.str();
+}
+}
+
+SNLDesign* NLDB0::getOrCreateFormalProperty(size_t width) {
+  if (!width || width > size_t(std::numeric_limits<NLID::Bit>::max()) - 2)
+    throw NLException("Invalid formal property width");
+  auto* library = getOrCreatePrimitiveLibrary(FormalPropertyLibraryID, "naja_formal_property");
+  if (!library) return nullptr;
+  if (auto* model = library->getSNLDesign(NLID::DesignID(width))) return model;
+  auto* model = SNLDesign::create(library, NLID::DesignID(width), SNLDesign::Type::Primitive,
+      NLName("naja_formal_property__w" + std::to_string(width)));
+  SNLParameter::create(model, NLName("WIDTH"), SNLParameter::Type::Decimal, std::to_string(width));
+  // Empty is deliberately invalid: an unconfigured observation cannot silently
+  // become a tautology. The setter and snapshot boundaries validate CONFIG.
+  SNLParameter::create(model, NLName("CONFIG"), SNLParameter::Type::String, "");
+  SNLScalarTerm::create(model, Term0ID, SNLTerm::Direction::Input, NLName("CLK"));
+  SNLScalarTerm::create(model, Term1ID, SNLTerm::Direction::Input, NLName("DISABLE"));
+  SNLBusTerm::create(model, Term2ID, SNLTerm::Direction::Input, width - 1, 0, NLName("DATA"));
+  return model;
+}
+
+bool NLDB0::isFormalProperty(const SNLDesign* design) {
+  return design && design->isPrimitive() &&
+      design->getLibrary() == getPrimitiveLibrary(FormalPropertyLibraryID);
+}
+
+size_t NLDB0::getFormalPropertyWidth(const SNLDesign* design) {
+  if (!isFormalProperty(design)) throw NLException("Design is not a formal property primitive");
+  const auto width = getMemoryDecimalParameter(design, "WIDTH");
+  if (width != design->getID()) throw NLException("Invalid canonical formal property width");
+  return width;
+}
+
+size_t NLDB0::getFormalPropertyWidth(const SNLInstance* instance) {
+  if (!instance) throw NLException("Null formal property instance");
+  const auto width = getFormalPropertyWidth(instance->getModel());
+  if (auto* parameter = instance->getInstParameter(NLName("WIDTH")))
+    if (parameter->getValue() != std::to_string(width))
+      throw NLException("Formal property instance width differs from its canonical model");
+  return width;
+}
+
+SNLScalarTerm* NLDB0::getFormalPropertyClock(const SNLDesign* design) {
+  getFormalPropertyWidth(design); return design->getScalarTerm(Term0ID);
+}
+SNLScalarTerm* NLDB0::getFormalPropertyDisable(const SNLDesign* design) {
+  getFormalPropertyWidth(design); return design->getScalarTerm(Term1ID);
+}
+SNLBusTerm* NLDB0::getFormalPropertyData(const SNLDesign* design) {
+  getFormalPropertyWidth(design); return design->getBusTerm(Term2ID);
+}
+
+void NLDB0::setFormalProperty(SNLInstance* instance, const FormalProperty& property) {
+  property.validate(getFormalPropertyWidth(instance));
+  const auto value = encodeFormalProperty(property);
+  if (auto* parameter = instance->getInstParameter(NLName("CONFIG"))) parameter->setValue(value);
+  else SNLInstParameter::create(instance, instance->getModel()->getParameter(NLName("CONFIG")), value);
+}
+
+NLDB0::FormalProperty NLDB0::getFormalProperty(const SNLInstance* instance) {
+  const auto width = getFormalPropertyWidth(instance);
+  const auto* parameter = instance->getInstParameter(NLName("CONFIG"));
+  if (!parameter) throw NLException("Formal property instance is not configured");
+  const auto value = parameter->getValue();
+  std::istringstream in(value);
+  in.imbue(std::locale::classic());
+  std::string version;
+  unsigned kind, edge, disable;
+  size_t count;
+  if (!(in >> version >> kind >> edge >> disable >> count) || version != "FP1" ||
+      !count || count > value.size() / 6 || kind > unsigned(FormalProperty::Kind::Cover) ||
+      edge > unsigned(FormalProperty::Edge::Falling) || disable > unsigned(FormalProperty::Disable::AsyncHigh))
+    throw NLException("Invalid or unsupported formal property CONFIG");
+  FormalProperty property;
+  property.kind = FormalProperty::Kind(kind);
+  property.edge = FormalProperty::Edge(edge);
+  property.disable = FormalProperty::Disable(disable);
+  for (size_t i = 0; i < count; ++i) {
+    unsigned op;
+    size_t left, right;
+    if (!(in >> op >> left >> right) || op > unsigned(FormalProperty::Op::NonOverlappedImplication))
+      throw NLException("Invalid formal property CONFIG node");
+    property.nodes.push_back({FormalProperty::Op(op), left, right});
+  }
+  property.validate(width);
+  if (encodeFormalProperty(property) != value)
+    throw NLException("Noncanonical formal property CONFIG");
+  return property;
+}
+
 SNLDesign* NLDB0::getOrCreatePrimitive(
     NLID::LibraryID libraryID,
     NLID::DesignID designID,
     const PrimitiveParameters& parameters) {
   // Width-based families use designID; compound signatures use parameters.
   switch (libraryID) {
+    case FormalPropertyLibraryID:
+      return getOrCreateFormalProperty(designID);
     case RootLibraryID:
       return (designID == FADesignID) ? getFA() : nullptr;
     case AssignLibraryID:

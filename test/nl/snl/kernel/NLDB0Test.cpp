@@ -6,6 +6,8 @@
 
 #include "NLUniverse.h"
 #include "NLDB0.h"
+#include "NLDB.h"
+#include "NLLibrary.h"
 #include "NLBitDependencies.h"
 #include "NLLibraryTruthTables.h"
 #include "SNLScalarTerm.h"
@@ -14,10 +16,62 @@
 #include "SNLDesignModeling.h"
 #include "SNLInstance.h"
 #include "SNLParameter.h"
+#include "SNLInstParameter.h"
 #include "NLException.h"
 #include <algorithm>
 #include <limits>
 using namespace naja::NL;
+
+TEST(NLDB0FormalPropertyTest, ContractAndValidation) {
+  auto* universe = NLUniverse::create();
+  auto* top = SNLDesign::create(NLLibrary::create(NLDB::create(universe)));
+  using P = NLDB0::FormalProperty;
+  auto* model = NLDB0::getOrCreateFormalProperty(3);
+  ASSERT_TRUE(NLDB0::isFormalProperty(model));
+  EXPECT_EQ(model, NLDB0::getOrCreateFormalProperty(3));
+  EXPECT_EQ(model, NLDB0::getOrCreatePrimitive(model->getLibrary()->getID(), model->getID()));
+  EXPECT_EQ(3u, NLDB0::getFormalPropertyWidth(model));
+  EXPECT_EQ(5u, model->getBitTerms().size());
+  for (auto* term : model->getBitTerms()) EXPECT_EQ(SNLTerm::Direction::Input, term->getDirection());
+  EXPECT_FALSE(SNLDesignModeling::hasSequentialModel(model));
+  auto* instance = SNLInstance::create(top, model);
+  EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException);
+  P property;
+  property.nodes = {{P::Op::Input, 0}, {P::Op::Input, 2}, {P::Op::NonOverlappedImplication, 0, 1}};
+  for (auto kind : {P::Kind::Assert, P::Kind::Assume, P::Kind::Cover}) {
+    property.kind = kind;
+    property.edge = P::Edge::Falling;
+    property.disable = P::Disable::AsyncHigh;
+    NLDB0::setFormalProperty(instance, property);
+    EXPECT_EQ(property, NLDB0::getFormalProperty(instance));
+  }
+  const auto valid = property;
+  property.nodes[0].left = 3;
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  EXPECT_EQ(valid, NLDB0::getFormalProperty(instance)); // Failed setters are atomic.
+  property = valid; property.nodes.back().right = 2;
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.nodes.push_back({P::Op::Not, 2});
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.nodes.back() = {P::Op::Not, 0};
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException); // Unused node.
+  property = valid; property.nodes.clear();
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.kind = P::Kind(99);
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  auto* config = instance->getInstParameter(NLName("CONFIG"));
+  for (const auto* text : {"", "FP2 0 0 0 1 2 0 0", "FP1 0 0 0 1 99 0 0",
+      "FP1 0 0 0 1 0 3 0", "FP1 0 0 0 1 2 0 0 trailing", "FP1 0 0 0 1 2 0 0 "}) {
+    config->setValue(text);
+    EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException) << text;
+  }
+  NLDB0::setFormalProperty(instance, valid);
+  SNLInstParameter::create(instance, model->getParameter(NLName("WIDTH")), "4");
+  EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateFormalProperty(0), NLException);
+  EXPECT_FALSE(NLDB0::isFormalProperty(nullptr));
+  universe->destroy();
+}
 
 namespace {
 
@@ -2431,7 +2485,8 @@ TEST_F(NLDB0Test, CanonicalLibraryGroupsEndWithGateFamilies) {
     NLDB0::getOrCreateDFFSSNE(4),
     NLDB0::getOrCreateVectorUpdate({4, 2, 3, true}),
     NLDB0::getOrCreateVectorSelect({4, 2, 3, true}),
-    NLDB0::getOrCreateClockGate()
+    NLDB0::getOrCreateClockGate(),
+    NLDB0::getOrCreateFormalProperty(4)
   };
   for (size_t id = 0; id < fixedFamilies.size(); ++id) {
     if (auto* model = fixedFamilies[id]) {

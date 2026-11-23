@@ -11,6 +11,9 @@
 #include "NLUniverse.h"
 #include "NetlistGraph.h"
 #include "RemoveLoadlessLogic.h"
+#include "NLDB0.h"
+#include "SNLBusTerm.h"
+#include "SNLBusTermBit.h"
 #include "NLException.h"
 #include "SNLOccurrence.h"
 #include "SNLEquipotential.h"
@@ -56,6 +59,38 @@ class LoadlessRemoveLogicTests : public ::testing::Test {
     NLUniverse::get()->destroy();
   }
 };
+
+TEST_F(LoadlessRemoveLogicTests, FormalPropertyPreservesObservedCone) {
+  auto* universe = NLUniverse::create();
+  auto* top = SNLDesign::create(NLLibrary::create(NLDB::create(universe)), NLName("top"));
+  universe->setTopDesign(top);
+  auto* source = SNLScalarNet::create(top, NLName("source"));
+  auto* observed = SNLScalarNet::create(top, NLName("observed"));
+  auto* input = SNLScalarTerm::create(top, SNLTerm::Direction::Input, NLName("input"));
+  input->setNet(source);
+  auto* driver = SNLInstance::create(top, NLDB0::getAssign(), NLName("driver"));
+  driver->getInstTerm(NLDB0::getAssignInput())->setNet(source);
+  driver->getInstTerm(NLDB0::getAssignOutput())->setNet(observed);
+  auto* dead = SNLInstance::create(top, NLDB0::getAssign(), NLName("dead"));
+  dead->getInstTerm(NLDB0::getAssignInput())->setNet(source);
+  dead->getInstTerm(NLDB0::getAssignOutput())->setNet(SNLScalarNet::create(top, NLName("unused")));
+  auto* model = NLDB0::getOrCreateFormalProperty(1);
+  auto* property = SNLInstance::create(top, model, NLName("check"));
+  NLDB0::FormalProperty config;
+  config.nodes = {{NLDB0::FormalProperty::Op::Input, 0}};
+  NLDB0::setFormalProperty(property, config);
+  property->getInstTerm(NLDB0::getFormalPropertyData(model)->getBit(0))->setNet(observed);
+  property->getInstTerm(NLDB0::getFormalPropertyClock(model))->setNet(source);
+  auto* disabled = SNLScalarNet::create(top, NLName("disabled"));
+  disabled->setType(SNLNet::Type::Assign0);
+  property->getInstTerm(NLDB0::getFormalPropertyDisable(model))->setNet(disabled);
+  LoadlessLogicRemover remover;
+  remover.process();
+  EXPECT_EQ(property, top->getInstance(NLName("check")));
+  EXPECT_EQ(driver, top->getInstance(NLName("driver")));
+  EXPECT_EQ(nullptr, top->getInstance(NLName("dead")));
+  EXPECT_EQ(observed, property->getInstTerm(NLDB0::getFormalPropertyData(model)->getBit(0))->getNet());
+}
 
 // Create a test to check the LoadlessLogicRemover
 // 1. Create a simple blackbox design with a single input and output
