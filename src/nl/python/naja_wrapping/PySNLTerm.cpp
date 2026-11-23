@@ -64,8 +64,10 @@ PyObject* PySNLTerm_Link(SNLTerm* object) {
   } else if (auto bundleTerm = dynamic_cast<SNLBundleTerm*>(object)) {
     return PySNLBundleTerm_Link(bundleTerm);
   }
+  // LCOV_EXCL_START Defensive fallback: all concrete term types are handled above.
   setError("Unsupported SNLTerm subtype");
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyTypeNLAbstractObjectWithNLIDLinkPyType(SNLTerm)

@@ -36,8 +36,10 @@ PyObject* linkOccurrenceObject(SNLDesignObject* object) {
   if (auto* component = dynamic_cast<SNLNetComponent*>(object)) return PySNLNetComponent_Link(component);
   if (auto* net = dynamic_cast<SNLNet*>(object)) return PySNLNet_Link(net);
   if (auto* instance = dynamic_cast<SNLInstance*>(object)) return PySNLInstance_Link(instance);
+  // LCOV_EXCL_START Defensive fallback: all concrete design-object types are handled above.
   setError("Unsupported occurrence object");
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyObject* occurrenceOwners(const SNLOccurrence& occurrence) {

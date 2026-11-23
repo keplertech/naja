@@ -72,8 +72,10 @@ PyObject* PySNLBitNet_Link(SNLBitNet* object) {
   } else if (auto scalarNet = dynamic_cast<SNLScalarNet*>(object)) {
     return PySNLScalarNet_Link(scalarNet);
   }
+  // LCOV_EXCL_START Defensive fallback: all concrete bit-net types are handled above.
   setError("Unsupported SNLBitNet subtype");
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyTypeNLAbstractObjectWithNLIDLinkPyType(SNLBitNet)

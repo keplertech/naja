@@ -41,8 +41,10 @@ PyObject* PySNLNet_Link(SNLNet* object) {
   } else if (auto scalarNet = dynamic_cast<SNLScalarNet*>(object)) {
     return PySNLScalarNet_Link(scalarNet);
   }
+  // LCOV_EXCL_START Defensive fallback: all concrete net types are handled above.
   setError("Unsupported SNLNet subtype");
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 static PyObject* setType(PySNLNet* self, PyObject* arg) {

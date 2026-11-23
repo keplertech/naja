@@ -185,8 +185,10 @@ PyObject* PySNLBitTerm_Link(SNLBitTerm* object) {
   } else if (auto scalarTerm = dynamic_cast<SNLScalarTerm*>(object)) {
     return PySNLScalarTerm_Link(scalarTerm);
   }
+  // LCOV_EXCL_START Defensive fallback: all concrete bit-term types are handled above.
   setError("Unsupported SNLBitTerm subtype");
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyTypeNLAbstractObjectWithNLIDLinkPyType(SNLBitTerm)

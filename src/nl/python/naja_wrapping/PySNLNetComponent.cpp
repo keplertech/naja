@@ -66,8 +66,10 @@ PyObject* PySNLNetComponent_Link(SNLNetComponent* object) {
   } else if (auto term = dynamic_cast<SNLTerm*>(object)) {
     return PySNLTerm_Link(term);
   }
+  // LCOV_EXCL_START Defensive fallback: all concrete net-component types are handled above.
   setError("Unsupported SNLNetComponent subtype");
   return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyTypeNLAbstractObjectWithNLIDLinkPyType(SNLNetComponent)
