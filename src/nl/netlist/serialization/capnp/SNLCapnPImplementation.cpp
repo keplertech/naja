@@ -524,7 +524,7 @@ void loadScalarNet(
 
 void loadDesignImplementation(
   NLLibrary* library,
-  const DBImplementation::LibraryImplementation::SNLDesignImplementation::Reader& designImplementation) {
+  const DBImplementation::LibraryImplementation::SNLDesignImplementation::Reader& designImplementation, naja::NajaProgressReporter& progress) {
   auto designID = designImplementation.getId();
   SNLDesign* snlDesign = library->getSNLDesign(NLID::DesignID(designID));
   //LCOV_EXCL_START
@@ -538,10 +538,12 @@ void loadDesignImplementation(
   if (designImplementation.hasInstances()) {
     for (auto instance: designImplementation.getInstances()) {
       loadInstance(snlDesign, instance);
+      if (progress) progress.checkpoint(snlDesign->getName().getString());
     }
   }
   if (designImplementation.hasNets()) {
     for (auto net: designImplementation.getNets()) {
+      if (progress) progress.checkpoint(snlDesign->getName().getString());
       if (net.isScalarNet()) {
         auto scalarNet = net.getScalarNet();
         loadScalarNet(snlDesign, scalarNet);
@@ -553,7 +555,7 @@ void loadDesignImplementation(
   }
 }
 
-void loadLibraryImplementation(NLDB* db, const DBImplementation::LibraryImplementation::Reader& libraryImplementation) {
+void loadLibraryImplementation(NLDB* db, const DBImplementation::LibraryImplementation::Reader& libraryImplementation, naja::NajaProgressReporter& progress) {
   auto libraryID = libraryImplementation.getId();
   NLLibrary* snlLibrary = db->getLibrary(NLID::LibraryID(libraryID));
   //LCOV_EXCL_START
@@ -574,7 +576,8 @@ void loadLibraryImplementation(NLDB* db, const DBImplementation::LibraryImplemen
   //LCOV_EXCL_STOP
   if (libraryImplementation.hasSnlDesignImplementations()) {
     for (auto designImplementation: libraryImplementation.getSnlDesignImplementations()) {
-      loadDesignImplementation(snlLibrary, designImplementation);
+      loadDesignImplementation(snlLibrary, designImplementation, progress);
+      if (progress) progress.advance();
     } 
   }
 }
@@ -646,6 +649,9 @@ void SNLCapnP::dumpImplementation(const NLDB* snlDB, const std::filesystem::path
 NLDB* SNLCapnP::loadImplementation(
   int fileDescriptor,
   LoadingConfiguration loadingConfiguration) {
+  naja::NajaProgressReporter progress;
+  progress.setCallback(loadingConfiguration.progress);
+  progress.begin("construct", "snapshot connectivity");
   ::capnp::ReaderOptions options;
   options.traversalLimitInWords = std::numeric_limits<uint64_t>::max();
   ::capnp::PackedFdMessageReader message(fileDescriptor, options);
@@ -664,9 +670,11 @@ NLDB* SNLCapnP::loadImplementation(
   auto snldb = universe->getDB(dbID);
   if (dbImplementation.hasLibraryImplementations()) {
     for (auto libraryImplementation: dbImplementation.getLibraryImplementations()) {
-      loadLibraryImplementation(snldb, libraryImplementation);
+      loadLibraryImplementation(snldb, libraryImplementation, progress);
     }
   }
+  progress.finish();
+  if (!loadingConfiguration.nested_) progress.begin("done");
   return snldb;
 }
 

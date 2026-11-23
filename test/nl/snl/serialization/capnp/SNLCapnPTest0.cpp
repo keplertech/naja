@@ -434,3 +434,26 @@ TEST_F(SNLCapNpTest0, incompatibleDB0LibraryIDsThrowBeforePayloadLoad) {
     }
   }
 }
+
+TEST_F(SNLCapNpTest0, ProgressAndCancellation) {
+  const auto path = std::filesystem::path(SNL_CAPNP_TEST_PATH) / "progress_snapshot";
+  SNLCapnP::dump(db_, path);
+  db_->destroy();
+  auto* loaded = SNLCapnP::load(path);
+  const auto baseline = NLUniverse::get()->getContentHash();
+  loaded->destroy();
+  SNLCapnP::LoadingConfiguration config;
+  std::vector<std::string> stages;
+  config.progress = [&](const NajaProgress& event) {
+    if (stages.empty() || stages.back() != event.stage) stages.emplace_back(event.stage);
+    EXPECT_TRUE(event.total == 0 || event.current <= event.total);
+    return true;
+  };
+  loaded = SNLCapnP::load(path, config);
+  EXPECT_EQ(baseline, NLUniverse::get()->getContentHash());
+  EXPECT_EQ((std::vector<std::string>{"parse", "construct", "done"}), stages);
+  loaded->destroy();
+  config.progress = [](const NajaProgress& event) { return event.current == 0; };
+  EXPECT_THROW(SNLCapnP::load(path, config), NajaCancelled);
+  // Fixture teardown destroys any interfaces created before cancellation.
+}

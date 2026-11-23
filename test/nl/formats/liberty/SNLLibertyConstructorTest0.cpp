@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "gtest/gtest.h"
+#include "NLDB.h"
+#include "NLLibrary.h"
+#include <filesystem>
 
 #include <chrono>
 #include <fstream>
@@ -1006,5 +1009,51 @@ TEST_F(SNLLibertyConstructorTest0, testInconsistentBundleDirections) {
     FAIL() << "Expected SNLLibertyConstructorException";
   } catch (const SNLLibertyConstructorException& e) {
     EXPECT_NE(std::string::npos, e.getReason().find("Inconsistent child directions for bundle D"));
+  }
+}
+
+
+TEST(LoaderProgressTests, SNLLibertyConstructor) {
+  const auto path = std::filesystem::temp_directory_path() /
+    ("naja-progress-SNLLibertyConstructor-" + std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count()));
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() {
+      if (NLUniverse::get()) NLUniverse::get()->destroy();
+      std::error_code error;
+      std::filesystem::remove(path, error);
+    }
+  } cleanup{path};
+  { std::ofstream file(path); file << R"source(library(synthetic) {cell(buffer) {pin(A) {direction: input;} pin(Y) {direction: output; function: "A";} }})source"; }
+  const auto destination = [] {
+    auto* db = NLDB::create(NLUniverse::create());
+    return NLLibrary::create(db, NLLibrary::Type::Primitives, NLName("DESIGN"));
+  };
+  {
+    SNLLibertyConstructor constructor(destination());
+    constructor.construct(path);
+  }
+  const auto baseline = NLUniverse::get()->getContentHash();
+  NLUniverse::get()->destroy();
+  std::vector<std::string> stages;
+  {
+    SNLLibertyConstructor constructor(destination());
+    constructor.setProgressCallback([&](const naja::NajaProgress& event) {
+      if (stages.empty() || stages.back() != event.stage) stages.emplace_back(event.stage);
+      EXPECT_TRUE(event.total == 0 || event.current <= event.total);
+      return true;
+    });
+    constructor.construct(path);
+  }
+  EXPECT_EQ(baseline, NLUniverse::get()->getContentHash());
+  EXPECT_EQ((std::vector<std::string>{"parse", "liberty", "done"}), stages);
+  NLUniverse::get()->destroy();
+  {
+    SNLLibertyConstructor constructor(destination());
+    constructor.setProgressCallback([](const naja::NajaProgress& event) {
+      return !(event.stage == "liberty" && event.current > 0);
+    });
+    EXPECT_THROW(constructor.construct(path), naja::NajaCancelled);
   }
 }

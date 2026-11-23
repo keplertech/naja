@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "NajaProgress.h"
 
 #include "VerilogConstructor.h"
 
@@ -55,6 +56,8 @@ class SNLVRLConstructor: public naja::verilog::VerilogConstructor {
       std::string     instanceName_ {};
       Connections     connections_  {};
     };
+
+    void setProgressCallback(NajaProgressCallback callback) { progress_.setCallback(std::move(callback)); }
 
     SNLVRLConstructor() = delete;
     SNLVRLConstructor(const SNLVRLConstructor&) = delete;
@@ -113,6 +116,7 @@ class SNLVRLConstructor: public naja::verilog::VerilogConstructor {
     void endModule() override;
 
   private:
+    NajaProgressReporter progress_;
     void restoreDeclarationAttributes();
     SourceRange attributesRange_ {};
     Attributes declarationAttributes_ {};

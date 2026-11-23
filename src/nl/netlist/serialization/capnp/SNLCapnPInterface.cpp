@@ -462,7 +462,7 @@ void loadDesignInterface(
 void loadLibraryInterface(
   NajaObject* parent,
   const DBInterface::LibraryInterface::Reader& libraryInterface,
-  SNLCapnP::LoadingConfiguration loadingConfiguration) {
+  SNLCapnP::LoadingConfiguration loadingConfiguration, naja::NajaProgressReporter& progress) {
   NLLibrary* parentLibrary = nullptr;
   NLDB* parentDB = dynamic_cast<NLDB*>(parent);
   if (not parentDB) {
@@ -519,11 +519,12 @@ void loadLibraryInterface(
   if (libraryInterface.hasSnlDesignInterfaces()) {
     for (auto designInterface: libraryInterface.getSnlDesignInterfaces()) {
       loadDesignInterface(snlLibrary, designInterface);
+      if (progress) progress.advance(designInterface.getName().cStr());
     } 
   }
   if (libraryInterface.hasLibraryInterfaces()) {
     for (auto subLibraryInterface: libraryInterface.getLibraryInterfaces()) {
-      loadLibraryInterface(snlLibrary, subLibraryInterface, loadingConfiguration);
+      loadLibraryInterface(snlLibrary, subLibraryInterface, loadingConfiguration, progress);
     }
   }
   if (snlLibrary->isPrimitives()) {
@@ -614,6 +615,9 @@ void SNLCapnP::dumpInterface(const NLDB* snlDB, const std::filesystem::path& int
 NLDB* SNLCapnP::loadInterface(
   int fileDescriptor,
   LoadingConfiguration loadingConfiguration) {
+  naja::NajaProgressReporter progress;
+  progress.setCallback(loadingConfiguration.progress);
+  progress.begin("construct", "snapshot interfaces");
   ::capnp::PackedFdMessageReader message(fileDescriptor);
 
   DBInterface::Reader dbInterface = message.getRoot<DBInterface>();
@@ -624,6 +628,8 @@ NLDB* SNLCapnP::loadInterface(
   }
   if (dbID == 0) {
     for (auto library : dbInterface.getLibraryInterfaces()) loadDB0LibraryInterface(library);
+    progress.finish();
+    if (!loadingConfiguration.nested_) progress.begin("done");
     return NLDB0::getDB0();
   }
   NLDB* snldb = universe->getDB(dbID);
@@ -640,7 +646,7 @@ NLDB* SNLCapnP::loadInterface(
   
   if (dbInterface.hasLibraryInterfaces()) {
     for (auto libraryInterface: dbInterface.getLibraryInterfaces()) {
-      loadLibraryInterface(snldb, libraryInterface, loadingConfiguration);
+      loadLibraryInterface(snldb, libraryInterface, loadingConfiguration, progress);
     }
   }
   if (dbInterface.hasTopDesignReference()) {
@@ -660,6 +666,8 @@ NLDB* SNLCapnP::loadInterface(
     }
     snldb->setTopDesign(topDesign);
   }
+  progress.finish();
+  if (!loadingConfiguration.nested_) progress.begin("done");
   return snldb;
 }
 

@@ -17,6 +17,44 @@ class NajaNetlistTestErrors(unittest.TestCase):
     def tearDown(self):
         netlist.reset()
 
+    def test_loader_progress_forwarding(self):
+        sources = {
+            "v": "module top(input a, output y); assign y=a; endmodule",
+            "sv": "module top(input logic a, output logic y); assign y=a; endmodule",
+            "vhd": ("entity top is port(a: in bit; y: out bit); end; "
+                    "architecture rtl of top is begin y <= a; end;"),
+            "lib": ('library(synthetic) {cell(buffer) {pin(A) {direction: input;} '
+                    'pin(Y) {direction: output; function: "A";} }}'),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix, text in sources.items():
+                Path(directory, "source." + suffix).write_text(text)
+            loaders = [
+                ("v", netlist.load_gate_level_verilog),
+                ("sv", netlist.load_system_verilog),
+                ("vhd", netlist.load_vhdl),
+                ("lib", netlist.load_liberty),
+            ]
+            for suffix, load in loaders:
+                with self.subTest(loader=suffix):
+                    netlist.reset()
+                    stages = []
+                    load(str(Path(directory, "source." + suffix)),
+                         progress=lambda **event: stages.append(event["stage"]))
+                    self.assertEqual("done", stages[-1])
+                    netlist.reset()
+                    with self.assertRaises(naja.NajaCancelled):
+                        load(str(Path(directory, "source." + suffix)),
+                             progress=lambda **event: False)
+            netlist.reset()
+            netlist.load_gate_level_verilog(str(Path(directory, "source.v")))
+            snapshot = str(Path(directory, "snapshot"))
+            netlist.dump_naja_if(snapshot)
+            netlist.reset()
+            stages = []
+            netlist.load_naja_if(snapshot, progress=lambda **event: stages.append(event["stage"]))
+            self.assertEqual("done", stages[-1])
+
     def test_gate_level_verilog_names(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "input.v"

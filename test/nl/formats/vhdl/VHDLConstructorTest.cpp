@@ -8793,3 +8793,28 @@ end;
   }
   EXPECT_TRUE(library_->getSNLDesigns().empty());
 }
+
+TEST_F(VHDLConstructorTest, ProgressAndCancellation) {
+  const std::string source =
+    "entity top is port(a: in bit; y: out bit); end; "
+    "architecture rtl of top is begin y <= a; end;";
+  VHDLConstructor::ConstructOptions options;
+  options.diagnosticsReportPath = std::nullopt;
+  VHDLConstructor constructor(library_, options);
+  std::vector<std::string> stages;
+  constructor.setProgressCallback([&](const naja::NajaProgress& progress) {
+    if (stages.empty() || stages.back() != progress.stage) stages.emplace_back(progress.stage);
+    EXPECT_TRUE(progress.total == 0 || progress.current <= progress.total);
+    return true;
+  });
+  ASSERT_NE(nullptr, constructor.construct(source));
+  EXPECT_EQ((std::vector<std::string>{"parse", "construct", "done"}), stages);
+  // A separate destination ensures cancellation occurs after objects are created.
+  auto* destination = NLLibrary::create(library_->getDB(), NLName("OTHER"));
+  VHDLConstructor cancelled(destination, options);
+  cancelled.setProgressCallback([](const naja::NajaProgress& progress) {
+    return !(progress.stage == "construct" && progress.current > 0);
+  });
+  EXPECT_THROW(cancelled.construct(source), naja::NajaCancelled);
+  // Fixture teardown destroys the entire partially loaded database.
+}
