@@ -5,12 +5,12 @@
 #include "PySNLNetComponent.h"
 
 #include "SNLNet.h"
-#include "SNLBitTerm.h"
+#include "SNLTerm.h"
 #include "SNLInstTerm.h"
 
 #include "PyInterface.h"
 #include "PySNLInstTerm.h"
-#include "PySNLBitTerm.h"
+#include "PySNLTerm.h"
 #include "PySNLBitNet.h"
 
 namespace PYNAJA {
@@ -63,10 +63,13 @@ PyObject* PySNLNetComponent_Link(SNLNetComponent* object) {
   }
   if (auto instTerm = dynamic_cast<SNLInstTerm*>(object)) {
     return PySNLInstTerm_Link(instTerm);
-  } else {
-    auto bitTerm = static_cast<SNLBitTerm*>(object);
-    return PySNLBitTerm_Link(bitTerm);
+  } else if (auto term = dynamic_cast<SNLTerm*>(object)) {
+    return PySNLTerm_Link(term);
   }
+  // LCOV_EXCL_START Defensive fallback: all concrete net-component types are handled above.
+  setError("Unsupported SNLNetComponent subtype");
+  return nullptr;
+  // LCOV_EXCL_STOP
 }
 
 PyTypeNLAbstractObjectWithNLIDLinkPyType(SNLNetComponent)

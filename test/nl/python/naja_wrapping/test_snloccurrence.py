@@ -21,6 +21,39 @@ class SNLOccurrenceTest(unittest.TestCase):
     if naja.NLUniverse.get():
       naja.NLUniverse.get().destroy()
     
+  def testBusNetBitObject(self):
+    bus = naja.SNLBusNet.create(self.top, 2, 0, "bus")
+    pin = naja.SNLScalarTerm.create(self.top, naja.SNLTerm.Direction.Input, "pin")
+    pin.setNet(bus.getBit(1))
+    occurrence = naja.SNLOccurrence(bus.getBit(1))
+    self.assertIs(type(pin.getNet()), naja.SNLBusNetBit)
+    for net in (occurrence.getObject(), pin.getNet()):
+      self.assertIs(type(net), naja.SNLBusNetBit)
+      self.assertEqual(1, net.getBit())
+      self.assertEqual(bus, net.getBus())
+
+  def testTermObjects(self):
+    occurrence = naja.SNLOccurrence(self.i1.getBusTermBit(3))
+    term = occurrence.getNetComponent()
+    self.assertIs(type(term), naja.SNLBusTermBit)
+    self.assertEqual(3, term.getBit())
+    self.assertEqual(self.i1, term.getBus())
+    self.assertIs(term, occurrence.getObject())
+    bus_occurrence = naja.SNLOccurrence(self.i1)
+    self.assertIs(bus_occurrence.getNetComponent(), self.i1)
+    self.assertIs(bus_occurrence.getObject(), self.i1)
+    scalar_occurrence = naja.SNLOccurrence(self.i0)
+    self.assertIs(scalar_occurrence.getObject(), self.i0)
+    self.assertIsNone(naja.SNLOccurrence().getObject())
+
+  def testOtherObjectTypes(self):
+    bus = naja.SNLBusNet.create(self.top, 2, 0, "bus")
+    scalar = naja.SNLScalarNet.create(self.top, "scalar")
+    inst = naja.SNLInstance.create(self.top, self.model, "child")
+    for obj in (bus, scalar, inst, inst.getInstTerm(self.i0)):
+      occurrence = naja.SNLOccurrence(obj)
+      self.assertIs(occurrence.getObject(), obj)
+
   def testFunctions(self):
     ins2 = naja.SNLInstance.create(self.model, self.submodel, "ins2")
     ins1 = naja.SNLInstance.create(self.top, self.model, "ins1")

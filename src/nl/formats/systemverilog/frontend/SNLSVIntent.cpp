@@ -78,7 +78,9 @@ SNLSourceLoc sourceLocOf(
   const auto endColumn = sourceManager->getColumnNumber(end);
   if (column > std::numeric_limits<std::uint32_t>::max() ||
       endColumn > std::numeric_limits<std::uint32_t>::max()) {
+    // LCOV_EXCL_START Defensive overflow guard: requires a source line larger than 4 GiB.
     throw NLException("SystemVerilog source column exceeds the 32-bit coordinate limit");
+    // LCOV_EXCL_STOP
   }
   result.column = static_cast<std::uint32_t>(column);
   result.endLine = sourceManager->getLineNumber(end);
