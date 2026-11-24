@@ -14,6 +14,7 @@
 #include <capnp/serialize-packed.h>
 #include <kj/io.h>
 #include "naja_nl_interface.capnp.h"
+#include "naja_nl_implementation.capnp.h"
 
 #include "gtest/gtest.h"
 #include "NLUniverse.h"
@@ -44,9 +45,25 @@ void PrintTo(const PrimitiveCase& primitive, std::ostream* out) {
   *out << primitive.name;
 }
 
+void configureFormalProperty(SNLInstance* instance, int mode = 0) {
+  if (!NLDB0::isFormalProperty(instance->getModel())) return;
+  using P = NLDB0::FormalProperty;
+  P property;
+  property.kind = P::Kind(mode);
+  property.sourceFormat = "systemverilog";
+  property.text = "@(posedge clk) a |=> b";
+  property.statementText = "check: assert property (\n  @(posedge clk) a |=> b\n) else $error(\"check\\path\");";
+  property.originalText = property.statementText;
+  property.contextText = "localparam integer LIMIT = 3;\n";
+  property.bindings = {{"a", "logic [1:0]", 0, 2, false, true},
+      {"b", "bit signed [2:0]", 2, 3, true, false}};
+  NLDB0::setFormalProperty(instance, property);
+}
+
 std::vector<PrimitiveCase> primitiveCases(bool wide = true) {
   std::vector<PrimitiveCase> cases{{"assign", NLDB0::getAssign}, {"fa", NLDB0::getFA},
-    {"clock_gate", NLDB0::getOrCreateClockGate}};
+    {"clock_gate", NLDB0::getOrCreateClockGate},
+    {"formal_property", [] { return NLDB0::getOrCreateFormalProperty(5); }}};
   const std::vector<std::pair<std::string, SNLDesign*(*)(size_t)>> sized{
     {"mux", NLDB0::getOrCreateMux2}, {"latch", NLDB0::getOrCreateDLatch},
     {"dff", NLDB0::getOrCreateDFF}, {"dffn", NLDB0::getOrCreateDFFN},
@@ -124,6 +141,10 @@ std::string state(SNLDesign* top) {
   std::ostringstream out;
   for (auto* instance : top->getInstances()) {
     auto* model = instance->getModel();
+    if (NLDB0::isFormalProperty(model)) {
+      const auto property = NLDB0::getFormalProperty(instance);
+      out << "formal_property " << unsigned(property.kind) << ' ' << property.bindings.size() << '\n';
+    }
     out << instance->getNLID().getString() << ' ' << instance->getName().getString()
         << ' ' << model->getNLID().getString() << ' ' << model->getName().getString() << '\n';
     for (auto* parameter : model->getParameters()) {
@@ -253,6 +274,7 @@ void SNLCapnPPrimitiveAuditTest::roundTrip(bool explicitOnly) {
       if (mode == 2 && parameter->getName() == NLName("INIT_ENABLE"))
         SNLInstParameter::create(instance, parameter, "1");
     }
+    configureFormalProperty(instance, mode);
     for (auto* term : instance->getInstTerms())
       term->setNet(SNLScalarNet::create(top, NLName("n" + std::to_string(top->getNets().size()))));
   }
@@ -306,6 +328,7 @@ class SNLCapnPPrimitiveIdentityTest : public ::testing::Test {
       if (initialize && parameter->getName() == NLName("INIT_ENABLE")) value = "1";
       SNLInstParameter::create(instance, parameter, value);
     }
+    configureFormalProperty(instance);
     for (auto* term : instance->getInstTerms())
       term->setNet(SNLScalarNet::create(top, NLName("n" + std::to_string(top->getNets().size()))));
   }
@@ -406,6 +429,7 @@ TEST_F(SNLCapnPPrimitiveIdentityTest, AllFamiliesArtifacts) {
   // Model creation order deliberately differs from first instance use.
   for (auto it = models.rbegin(); it != models.rend(); ++it) {
     auto* inherited = SNLInstance::create(top, it->second, NLName(it->first + "_inherited"));
+    configureFormalProperty(inherited, 2);
     for (auto* term : inherited->getInstTerms())
       term->setNet(SNLScalarNet::create(top, NLName("n" + std::to_string(top->getNets().size()))));
     add(top, it->second, (it->first + "_explicit").c_str());
@@ -421,6 +445,54 @@ TEST_F(SNLCapnPPrimitiveIdentityTest, AllFamiliesArtifacts) {
   auto* db = SNLCapnP::load(directory / "original" / "snapshot");
   EXPECT_EQ(expected, state(db->getTopDesign()));
   emit(db->getTopDesign(), directory / "reloaded");
+}
+
+TEST_F(SNLCapnPPrimitiveIdentityTest, InvalidFormalPropertiesAreRejectedAtSnapshotBoundaries) {
+  auto* top = createTop();
+  auto* model = NLDB0::getOrCreateFormalProperty(2);
+  auto* unfinished = SNLInstance::create(top, model);
+  const auto path = std::filesystem::path(SNL_CAPNP_TEST_PATH) / "invalid_formal_property";
+  std::filesystem::create_directories(path);
+  EXPECT_THROW(SNLCapnP::dumpImplementation(top->getDB(), path / "unfinished"), NLException);
+  unfinished->destroy();
+  // Build malformed wire records independently of the validating writer API.
+  for (const auto* config : {"", "FPB2 0", "FPB1 1 \"a\" \"bit\" 0 3 0 0"}) {
+    ::capnp::MallocMessageBuilder message;
+    auto db = message.initRoot<DBImplementation>();
+    db.setId(top->getDB()->getID());
+    auto library = db.initLibraryImplementations(1)[0];
+    library.setId(top->getLibrary()->getID());
+    auto design = library.initSnlDesignImplementations(1)[0];
+    design.setId(top->getID());
+    auto instance = design.initInstances(1)[0];
+    instance.setId(0);
+    auto reference = instance.initModelReference();
+    reference.setDbID(0);
+    reference.setLibraryID(model->getLibrary()->getID());
+    reference.setDesignID(model->getID());
+    if (*config) {
+      const NLDB0::PrimitiveParameters values{{"KIND", "0"}, {"TEXT_ORIGIN", "0"},
+          {"SOURCE_FORMAT", "systemverilog"}, {"PROPERTY_TEXT", "a"},
+          {"STATEMENT_TEXT", "assert property(a);"}, {"ORIGINAL_TEXT", "assert property(a);"},
+          {"CONTEXT_TEXT", ""}, {"BINDINGS", config}};
+      auto parameters = instance.initInstParameters(values.size());
+      size_t index = 0;
+      for (const auto& [name, value] : values) {
+        parameters[index].setName(name);
+        parameters[index++].setValue(value);
+      }
+    }
+    ::kj::VectorOutputStream packed;
+    ::capnp::writePackedMessage(packed, message);
+    {
+      std::ofstream output(path / "malformed", std::ios::binary);
+      auto data = packed.getArray();
+      output.write(reinterpret_cast<const char*>(data.begin()), data.size());
+      ASSERT_TRUE(output.good());
+    }
+    EXPECT_THROW(SNLCapnP::loadImplementation(path / "malformed", SNLCapnP::LoadingConfiguration()), NLException);
+    if (auto* partial = top->getInstance(NLID::DesignObjectID(0))) partial->destroy();
+  }
 }
 
 TEST_F(SNLCapnPPrimitiveIdentityTest, MissingDB0DefinitionsAreRejected) {

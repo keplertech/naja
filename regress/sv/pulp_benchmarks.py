@@ -114,6 +114,11 @@ def targets(package):
 
 
 def validate_diagnostics(diagnostics):
+    # Functional RTL checks use the default opt-out of assertion preservation.
+    ignored_assertion = ('diagnostic stage="naja_unsupported_warning" severity="warning" '
+                         'code="ignored_concurrent_assertion" ')
+    diagnostics = "\n".join(line for line in diagnostics.splitlines()
+                            if not line.startswith(ignored_assertion))
     if ("summary.status=success" not in diagnostics
             or 'severity="error"' in diagnostics
             or 'severity="fatal"' in diagnostics

@@ -20,6 +20,9 @@
 #include <cstdint>
 #include <cctype>
 #include <limits>
+#include <locale>
+#include <iomanip>
+#include <set>
 #include <sstream>
 #include <vector>
 #if defined(_MSC_VER)
@@ -71,6 +74,7 @@ namespace {
     // One ID per GateType; designID carries fan-in or fan-out.
     // Add fixed families above this final enumerator.
     ClockGateLibraryID,
+    FormalPropertyLibraryID,
     GateLibraryIDBase
   };
 
@@ -3552,12 +3556,149 @@ SNLBusTerm* NLDB0::getGateNTerms(const SNLDesign* gate) {
   return nullptr;
 }
 
+void NLDB0::FormalProperty::validate(size_t width) const {
+  const auto validText = [](const std::string& value) {
+    return value.find('\0') == std::string::npos;
+  };
+  if (!width || unsigned(kind) > unsigned(Kind::Cover) ||
+      unsigned(textOrigin) > unsigned(TextOrigin::MacroExpansion) || sourceFormat.empty() ||
+      text.empty() || statementText.empty() || originalText.empty())
+    throw NLException("Invalid formal property source capture");
+  for (const auto* value : {&sourceFormat, &text, &statementText, &originalText, &contextText})
+    if (!validText(*value)) throw NLException("NUL in formal property text");
+  size_t offset = 0;
+  std::set<std::string> names;
+  for (const auto& binding : bindings) {
+    if (binding.name.empty() || binding.type.empty() || !validText(binding.name) ||
+        !validText(binding.type) || !names.insert(binding.name).second ||
+        !binding.width || binding.offset != offset || binding.width > width - offset)
+      throw NLException("Invalid formal property signal binding");
+    offset += binding.width;
+  }
+  // Constant-only properties have one unused DATA input tied to zero.
+  if (offset != width && !(bindings.empty() && width == 1))
+    throw NLException("Formal property bindings do not cover DATA");
+}
+
+namespace {
+std::string encodeFormalBindings(const NLDB0::FormalProperty& property) {
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << "FPB1 " << property.bindings.size();
+  for (const auto& binding : property.bindings)
+    out << ' ' << std::quoted(binding.name) << ' ' << std::quoted(binding.type)
+        << ' ' << binding.offset << ' ' << binding.width << ' '
+        << unsigned(binding.isSigned) << ' ' << unsigned(binding.isFourState);
+  return out.str();
+}
+}
+
+SNLDesign* NLDB0::getOrCreateFormalProperty(size_t width) {
+  if (!width || width > size_t(std::numeric_limits<NLID::Bit>::max()) - 2)
+    throw NLException("Invalid formal property width");
+  auto* library = getOrCreatePrimitiveLibrary(FormalPropertyLibraryID, "naja_formal_property");
+  if (!library) return nullptr;
+  if (auto* model = library->getSNLDesign(NLID::DesignID(width))) return model;
+  auto* model = SNLDesign::create(library, NLID::DesignID(width), SNLDesign::Type::Primitive,
+      NLName("naja_formal_property__w" + std::to_string(width)));
+  SNLParameter::create(model, NLName("WIDTH"), SNLParameter::Type::Decimal, std::to_string(width));
+  for (const auto* name : {"SOURCE_FORMAT", "PROPERTY_TEXT", "STATEMENT_TEXT",
+      "ORIGINAL_TEXT", "CONTEXT_TEXT", "BINDINGS"})
+    SNLParameter::create(model, NLName(name), SNLParameter::Type::String, "");
+  SNLParameter::create(model, NLName("KIND"), SNLParameter::Type::Decimal, "0");
+  SNLParameter::create(model, NLName("TEXT_ORIGIN"), SNLParameter::Type::Decimal, "0");
+  SNLBusTerm::create(model, Term0ID, SNLTerm::Direction::Input, width - 1, 0, NLName("DATA"));
+  return model;
+}
+
+bool NLDB0::isFormalProperty(const SNLDesign* design) {
+  return design && design->isPrimitive() &&
+      design->getLibrary() == getPrimitiveLibrary(FormalPropertyLibraryID);
+}
+
+size_t NLDB0::getFormalPropertyWidth(const SNLDesign* design) {
+  if (!isFormalProperty(design)) throw NLException("Design is not a formal property primitive");
+  const auto width = getMemoryDecimalParameter(design, "WIDTH");
+  if (width != design->getID()) throw NLException("Invalid canonical formal property width");
+  return width;
+}
+
+size_t NLDB0::getFormalPropertyWidth(const SNLInstance* instance) {
+  if (!instance) throw NLException("Null formal property instance");
+  const auto width = getFormalPropertyWidth(instance->getModel());
+  if (auto* parameter = instance->getInstParameter(NLName("WIDTH")))
+    if (parameter->getValue() != std::to_string(width))
+      throw NLException("Formal property instance width differs from its canonical model");
+  return width;
+}
+
+SNLBusTerm* NLDB0::getFormalPropertyData(const SNLDesign* design) {
+  getFormalPropertyWidth(design); return design->getBusTerm(Term0ID);
+}
+
+void NLDB0::setFormalProperty(SNLInstance* instance, const FormalProperty& property) {
+  property.validate(getFormalPropertyWidth(instance));
+  const PrimitiveParameters values{{"SOURCE_FORMAT", property.sourceFormat},
+      {"PROPERTY_TEXT", property.text}, {"STATEMENT_TEXT", property.statementText},
+      {"ORIGINAL_TEXT", property.originalText}, {"CONTEXT_TEXT", property.contextText},
+      {"KIND", std::to_string(unsigned(property.kind))},
+      {"TEXT_ORIGIN", std::to_string(unsigned(property.textOrigin))},
+      {"BINDINGS", encodeFormalBindings(property)}};
+  for (const auto& [name, value] : values) {
+    if (auto* parameter = instance->getInstParameter(NLName(name))) parameter->setValue(value);
+    else SNLInstParameter::create(instance, instance->getModel()->getParameter(NLName(name)), value);
+  }
+}
+
+NLDB0::FormalProperty NLDB0::getFormalProperty(const SNLInstance* instance) {
+  const auto width = getFormalPropertyWidth(instance);
+  const auto value = [&](const char* name) {
+    const auto* parameter = instance->getInstParameter(NLName(name));
+    if (!parameter) throw NLException(std::string("Formal property is missing ") + name);
+    return parameter->getValue();
+  };
+  FormalProperty property;
+  const auto kind = value("KIND"), origin = value("TEXT_ORIGIN");
+  if (kind != "0" && kind != "1" && kind != "2") throw NLException("Invalid formal property kind");
+  if (origin != "0" && origin != "1") throw NLException("Invalid formal property text origin");
+  property.kind = FormalProperty::Kind(kind[0] - '0');
+  property.textOrigin = FormalProperty::TextOrigin(origin[0] - '0');
+  property.sourceFormat = value("SOURCE_FORMAT");
+  property.text = value("PROPERTY_TEXT");
+  property.statementText = value("STATEMENT_TEXT");
+  property.originalText = value("ORIGINAL_TEXT");
+  property.contextText = value("CONTEXT_TEXT");
+  const auto bindings = value("BINDINGS");
+  std::istringstream in(bindings);
+  in.imbue(std::locale::classic());
+  std::string version;
+  size_t count;
+  if (!(in >> version >> count) || version != "FPB1" || count > bindings.size() / 12)
+    throw NLException("Invalid or unsupported formal property BINDINGS");
+  for (size_t i = 0; i < count; ++i) {
+    FormalProperty::Binding binding;
+    unsigned isSigned, isFourState;
+    if (!(in >> std::quoted(binding.name) >> std::quoted(binding.type) >> binding.offset >>
+        binding.width >> isSigned >> isFourState) || isSigned > 1 || isFourState > 1)
+      throw NLException("Invalid formal property binding record");
+    binding.isSigned = isSigned;
+    binding.isFourState = isFourState;
+    property.bindings.push_back(std::move(binding));
+  }
+  property.validate(width);
+  if (encodeFormalBindings(property) != bindings)
+    throw NLException("Noncanonical formal property BINDINGS");
+  return property;
+}
+
 SNLDesign* NLDB0::getOrCreatePrimitive(
     NLID::LibraryID libraryID,
     NLID::DesignID designID,
     const PrimitiveParameters& parameters) {
   // Width-based families use designID; compound signatures use parameters.
   switch (libraryID) {
+    case FormalPropertyLibraryID:
+      return getOrCreateFormalProperty(designID);
     case RootLibraryID:
       return (designID == FADesignID) ? getFA() : nullptr;
     case AssignLibraryID:

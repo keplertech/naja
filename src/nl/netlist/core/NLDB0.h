@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 #include "NLID.h"
 #include "SNLTruthTable.h"
 
@@ -37,7 +38,44 @@ class NLDB0 {
   friend class NLUniverse;
   public:
     // Snapshot compatibility version for canonical primitive library identities.
-    static constexpr unsigned LibraryIDVersion = 4;
+    static constexpr unsigned LibraryIDVersion = 6;
+
+    /// Opaque verification-source capture. This primitive does not interpret
+    /// source text or define a Boolean / temporal execution model. Bindings
+    /// connect source symbols to contiguous DATA bit slices, LSB first.
+    struct FormalProperty {
+      enum class Kind { Assert = 0, Assume = 1, Cover = 2 };
+      enum class TextOrigin { Source = 0, MacroExpansion = 1 };
+      struct Binding {
+        std::string name;
+        std::string type;
+        size_t offset {0};
+        size_t width {0};
+        bool isSigned {false};
+        bool isFourState {false};
+        bool operator==(const Binding&) const = default;
+      };
+      Kind kind {Kind::Assert};
+      TextOrigin textOrigin {TextOrigin::Source};
+      std::string sourceFormat;
+      std::string text;
+      std::string statementText;
+      std::string originalText;
+      std::string contextText;
+      std::vector<Binding> bindings;
+      bool operator==(const FormalProperty&) const = default;
+      void validate(size_t width) const;
+    };
+
+    /// Input-only primitive with one DATA bus; unconfigured instances are
+    /// invalid at query / snapshot boundaries. No execution model is attached.
+    static SNLDesign* getOrCreateFormalProperty(size_t width);
+    static bool isFormalProperty(const SNLDesign* design);
+    static size_t getFormalPropertyWidth(const SNLDesign* design);
+    static size_t getFormalPropertyWidth(const SNLInstance* instance);
+    static SNLBusTerm* getFormalPropertyData(const SNLDesign* design);
+    static void setFormalProperty(SNLInstance* instance, const FormalProperty& property);
+    static FormalProperty getFormalProperty(const SNLInstance* instance);
 
     enum class MemoryResetMode {
       None,

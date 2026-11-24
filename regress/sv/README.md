@@ -810,8 +810,11 @@ Naja uses its ordinary strict loading behavior. The upstream Yosys flow's
 `--compat-mode`, `--compat=vcs`, `--allow-use-before-declare`,
 `--best-effort-hierarchy`, and variant-specific `yosys-slang.args` are not
 silently forwarded or emulated. In particular, unknown-module blackboxing is
-disabled. Naja unsupported diagnostics fail the run. Ordinary Slang warnings,
-2-state comparison warnings, and memory-inference fallbacks remain in reports;
+disabled. Naja unsupported diagnostics fail the run, except the
+`ignored_concurrent_assertion` warning: these functional RTL checks leave
+assertion preservation disabled by default. That warning remains in the report.
+Ordinary Slang warnings, 2-state comparison warnings, and memory-inference
+fallbacks remain in reports;
 a fallback to generic sequential lowering is not itself an unsupported error.
 
 Artifacts default to `build/pulp-benchmarks/<design>.<variant>/` with an aggregate

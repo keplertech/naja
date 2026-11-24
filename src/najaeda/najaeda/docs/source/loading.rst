@@ -541,6 +541,89 @@ fields when it is created and again when loading begins.  Entries in
 ``-W`` or ``-Wno-`` command-line prefix.  To load only from a command file,
 pass an empty file list and set ``flist``.
 
+SystemVerilog concurrent assertions
+-----------------------------------
+
+Concurrent assertions are ignored by default during netlist construction.
+The diagnostic code ``ignored_concurrent_assertion`` records discarded
+assertions. Slang still parses and elaborates source, so malformed assertions
+can still be errors. Enable source capture explicitly:
+
+.. code-block:: python
+
+   config = netlist.SystemVerilogConfig(preserve_assertions=True)
+   top = netlist.load_system_verilog("checked.sv", config=config)
+
+The raw loader accepts ``NLDB.loadSystemVerilog(..., preserve_assertions=True)``;
+C++ uses ``SNLSVConstructor::ConstructOptions::preserveAssertions``. All default
+to false. There is no direct Python property-creation API.
+
+Capture creates one input-only NLDB0 ``naja_formal_property`` instance per
+module-level ``assert property``, ``assume property`` or ``cover property``.
+The former temporal expression graph has been removed. Property content is
+stored as string parameters declared on the shared canonical model, with
+separate parameter overrides on each instance:
+
+.. list-table:: Source capture parameters
+   :header-rows: 1
+
+   * - Parameter
+     - Content
+   * - ``PROPERTY_TEXT``
+     - For directly written assertions, the exact bytes between the outer property parentheses, including whitespace and comments.
+   * - ``TEXT_ORIGIN``
+     - ``0`` for original source; ``1`` for a macro-expanded property token stream.
+   * - ``STATEMENT_TEXT``
+     - Expanded assertion syntax, including labels and pass/fail action blocks.
+   * - ``ORIGINAL_TEXT``
+     - The original assertion source; for macros, the invocation printed from retained syntax trivia.
+   * - ``CONTEXT_TEXT``
+     - Referenced property/sequence declarations, resolved lexical parameters, and inherited clocking/disable context.
+   * - ``SOURCE_FORMAT``
+     - ``systemverilog`` for this frontend. The primitive contract itself is language-neutral.
+   * - ``KIND``
+     - ``0`` for assert, ``1`` for assume, ``2`` for cover.
+   * - ``BINDINGS``
+     - Versioned source-symbol names relative to the containing model, types, DATA offsets/widths, signedness and four-state flags.
+
+``DATA[width-1:0]`` connects the referenced packed signals, including clock,
+reset, predicate and action-block references. Each symbol occupies one
+contiguous slice, with its least significant bit at the slice's lowest DATA
+index. References are ordered by deterministic AST traversal, not pointer or
+hash order. A constant-only property uses one dummy DATA bit tied to zero.
+There are no separate CLK/DISABLE ports and no parsed temporal CONFIG parameter.
+The C++ API ``NLDB0::getFormalProperty(instance)`` returns the source capture
+and its binding table; existing Python instance/parameter traversal can inspect
+these same values without a new property-specific API.
+
+Four-state ``logic`` signals, case equality/inequality, history functions,
+sequence delays/repetitions, multiclock expressions, and reporting action blocks
+can now be retained as text without interpreting their semantics. This does
+not mean Naja can execute or prove them. No monitor registers, truth table,
+sequential-cell model or solver logic is created. A consumer must explicitly
+recognize this opaque source representation and implement its own semantics.
+
+Named declarations and resolved parameters supply useful context, but the
+capture is not a standalone compiled verification program. Procedural assertion
+activation contexts, non-system subroutine bodies, hierarchical signal taps,
+unpacked/dynamic values, and other references without a faithful local packed
+net binding are diagnosed when capture is enabled. Immediate assertions retain
+their previous configuration-check / ignored synthesis handling.
+
+Labels, source locations, generate scopes and hierarchical instance occurrences
+are retained. NajaIF saves the text and bindings verbatim and reconstructs the
+canonical model in a fresh process; malformed or unconfigured captures are
+rejected. The binding string uses the canonical grammar
+``FPB1 count "name" "type" offset width signed four_state ...``. Strings use
+C++ quoted-string escaping, counts/offsets/widths are unsigned decimal integers,
+and flags are zero or one. Model WIDTH is immutable per canonical width.
+Dead-logic removal retains the observation and its feeding cones. Verilog dumps
+escape quotes, backslashes and line breaks in string parameters.
+
+The changed primitive interface advances the DB0 identity version to 6; older
+snapshots must be regenerated. Verilog/DOT exports preserve structure and text,
+not executable assertion behavior.
+
 VHDL
 ----
 

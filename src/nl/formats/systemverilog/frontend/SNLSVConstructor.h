@@ -121,6 +121,9 @@ class SNLSVConstructor {
       bool includeSourceInfoInElaboratedASTJson {true};
       /// Request retention of live frontend AST to SNL object links after load.
       bool keepASTLink {false};
+      /// Capture concurrent assertion source and bindings in DB0 instances.
+      /// False retains synthesis loading; true rejects unbindable references.
+      bool preserveAssertions {false};
       /// SystemVerilog preprocessor defines (passed as -D<name>[=<value>] to the driver).
       std::vector<std::string> preprocessorDefines {};
       /// SystemVerilog frontend warning names to suppress.

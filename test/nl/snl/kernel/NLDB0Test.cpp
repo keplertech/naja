@@ -6,6 +6,8 @@
 
 #include "NLUniverse.h"
 #include "NLDB0.h"
+#include "NLDB.h"
+#include "NLLibrary.h"
 #include "NLBitDependencies.h"
 #include "NLLibraryTruthTables.h"
 #include "SNLScalarTerm.h"
@@ -14,10 +16,96 @@
 #include "SNLDesignModeling.h"
 #include "SNLInstance.h"
 #include "SNLParameter.h"
+#include "SNLInstParameter.h"
 #include "NLException.h"
 #include <algorithm>
 #include <limits>
 using namespace naja::NL;
+
+TEST(NLDB0FormalPropertyTest, ContractAndValidation) {
+  auto* universe = NLUniverse::create();
+  auto* top = SNLDesign::create(NLLibrary::create(NLDB::create(universe)));
+  using P = NLDB0::FormalProperty;
+  auto* model = NLDB0::getOrCreateFormalProperty(3);
+  ASSERT_TRUE(NLDB0::isFormalProperty(model));
+  EXPECT_EQ(model, NLDB0::getOrCreateFormalProperty(3));
+  EXPECT_EQ(model, NLDB0::getOrCreatePrimitive(model->getLibrary()->getID(), model->getID()));
+  EXPECT_EQ(3u, NLDB0::getFormalPropertyWidth(model));
+  EXPECT_EQ(3u, model->getBitTerms().size());
+  for (auto* term : model->getBitTerms()) EXPECT_EQ(SNLTerm::Direction::Input, term->getDirection());
+  EXPECT_FALSE(SNLDesignModeling::hasSequentialModel(model));
+  EXPECT_EQ(nullptr, model->getParameter(NLName("CONFIG")));
+  auto* instance = SNLInstance::create(top, model);
+  EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException);
+  P property;
+  property.sourceFormat = "generic-test";
+  property.text = "next(a) implies b";
+  property.statementText = "check: next(a) implies b;\nreport \"message\\path\"";
+  property.originalText = property.statementText;
+  property.contextText = "arbitrary source context\n";
+  property.bindings = {{"a", "binary", 0, 1, false, false}, {"b", "word", 1, 2, true, true}};
+  for (auto kind : {P::Kind::Assert, P::Kind::Assume, P::Kind::Cover}) {
+    property.kind = kind;
+    NLDB0::setFormalProperty(instance, property);
+    EXPECT_EQ(property, NLDB0::getFormalProperty(instance));
+  }
+  const auto valid = property;
+  property.bindings[1].offset = 0;
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  EXPECT_EQ(valid, NLDB0::getFormalProperty(instance));
+  property = valid; property.bindings[1].width = 3;
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.bindings[1].name = "a";
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.text.clear();
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.kind = P::Kind(99);
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  property = valid; property.text.push_back('\0');
+  EXPECT_THROW(NLDB0::setFormalProperty(instance, property), NLException);
+  auto* bindings = instance->getInstParameter(NLName("BINDINGS"));
+  for (const auto* text : {"", "FPB2 0", "FPB1 1 \"a\" \"bit\" 0 4 0 0", "FPB1 0 trailing"}) {
+    bindings->setValue(text);
+    EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException) << text;
+  }
+  NLDB0::setFormalProperty(instance, valid);
+  SNLInstParameter::create(instance, model->getParameter(NLName("WIDTH")), "4");
+  EXPECT_THROW(NLDB0::getFormalProperty(instance), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateFormalProperty(0), NLException);
+  EXPECT_FALSE(NLDB0::isFormalProperty(nullptr));
+  universe->destroy();
+}
+
+TEST(NLDB0FormalPropertyTest, BindingEncodingEscapesAndEmptyBindings) {
+  auto* universe = NLUniverse::create();
+  auto* top = SNLDesign::create(NLLibrary::create(NLDB::create(universe)));
+  NLDB0::FormalProperty property;
+  property.sourceFormat = "generic-test";
+  property.text = "predicate";
+  property.statementText = "check: predicate;";
+  property.originalText = property.statementText;
+  property.bindings = {{R"(signal "quoted"\path)", R"(packed "word"\type)",
+      0, 2, true, false}};
+  auto* instance = SNLInstance::create(top, NLDB0::getOrCreateFormalProperty(2));
+  NLDB0::setFormalProperty(instance, property);
+  auto* bindings = instance->getInstParameter(NLName("BINDINGS"));
+  ASSERT_NE(nullptr, bindings);
+  EXPECT_EQ(R"(FPB1 1 "signal \"quoted\"\\path" "packed \"word\"\\type" 0 2 1 0)",
+      bindings->getValue());
+  EXPECT_EQ(property, NLDB0::getFormalProperty(instance));
+
+  property.text = "true";
+  property.statementText = "check: true;";
+  property.originalText = property.statementText;
+  property.bindings.clear();
+  auto* constant = SNLInstance::create(top, NLDB0::getOrCreateFormalProperty(1));
+  NLDB0::setFormalProperty(constant, property);
+  auto* emptyBindings = constant->getInstParameter(NLName("BINDINGS"));
+  ASSERT_NE(nullptr, emptyBindings);
+  EXPECT_EQ("FPB1 0", emptyBindings->getValue());
+  EXPECT_EQ(property, NLDB0::getFormalProperty(constant));
+  universe->destroy();
+}
 
 namespace {
 
@@ -2431,7 +2519,8 @@ TEST_F(NLDB0Test, CanonicalLibraryGroupsEndWithGateFamilies) {
     NLDB0::getOrCreateDFFSSNE(4),
     NLDB0::getOrCreateVectorUpdate({4, 2, 3, true}),
     NLDB0::getOrCreateVectorSelect({4, 2, 3, true}),
-    NLDB0::getOrCreateClockGate()
+    NLDB0::getOrCreateClockGate(),
+    NLDB0::getOrCreateFormalProperty(4)
   };
   for (size_t id = 0; id < fixedFamilies.size(); ++id) {
     if (auto* model = fixedFamilies[id]) {

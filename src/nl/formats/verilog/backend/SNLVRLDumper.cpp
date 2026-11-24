@@ -40,6 +40,24 @@
 
 namespace {
 
+void dumpStringLiteral(std::ostream& output, const std::string& value) {
+  output << '"';
+  for (unsigned char c : value) {
+    switch (c) {
+      case '\\': output << "\\\\"; break;
+      case '"': output << "\\\""; break;
+      case '\n': output << "\\n"; break;
+      case '\r': output << "\\r"; break;
+      case '\t': output << "\\t"; break;
+      default:
+        if (c < 32 || c == 127)
+          output << '\\' << char('0' + (c >> 6)) << char('0' + ((c >> 3) & 7)) << char('0' + (c & 7));
+        else output << char(c);
+    }
+  }
+  output << '"';
+}
+
 std::vector<const naja::NL::SNLTerm*> getVerilogInterfaceTerms(const naja::NL::SNLDesign* design) {
   std::vector<const naja::NL::SNLTerm*> terms;
   for (auto term: design->getTerms()) {
@@ -1830,7 +1848,7 @@ void SNLVRLDumper::dumpInstParameters(
       o << "  ." << parameter->getName().getString();
       o << "(";
       if (parameter->getType() == SNLParameter::Type::String) {
-        o << "\"" << value << "\"";
+        dumpStringLiteral(o, value);
       } else if (parameter->getType() == SNLParameter::Type::Boolean) {
         if (value=="0" or value=="FALSE") {
           o << (NLDB0::isDB0Primitive(instance->getModel()) ? "0" : "\"FALSE\"");
@@ -2401,7 +2419,7 @@ void SNLVRLDumper::dumpParameter(const SNLParameter* parameter, std::ostream& o)
   }
   o << "parameter " << parameter->getName().getString() << " = ";
   if (parameter->getType()==SNLParameter::Type::String) {
-    o << "\"" << parameter->getValue() << "\"";
+    dumpStringLiteral(o, parameter->getValue());
   } else if (parameter->getType()==SNLParameter::Type::Boolean) {
     if (parameter->getValue()=="0") {
       o << "\"FALSE\"";

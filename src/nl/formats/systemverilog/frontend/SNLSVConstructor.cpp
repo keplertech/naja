@@ -101,6 +101,7 @@
 #include "slang/syntax/SyntaxNode.h"
 #include "slang/syntax/AllSyntax.h"
 #include "slang/ast/types/TypePrinter.h"
+#include "slang/syntax/SyntaxPrinter.h"
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/text/Json.h"
 #include "slang/text/SourceManager.h"
@@ -3777,6 +3778,7 @@ endmodule
           svPerfReport_.createSequentialLogicDuration);
 #endif
         createSequentialLogic(design, body);
+        createFormalProperties(design, body);
       }
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
       maybeWriteSVPerfReportSnapshot();
@@ -4381,6 +4383,9 @@ endmodule
         case SymbolKind::Property:
         case SymbolKind::ElabSystemTask:
           return true;
+        case SymbolKind::ClockingBlock:
+          // An event-only block is assertion context, not executable RTL.
+          return sym.as<slang::ast::ClockingBlockSymbol>().members().empty();
         default:
           return false;
       }
@@ -34444,6 +34449,196 @@ endmodule
         inst->setTermNet(term, qNet);
       }
       attachDFFInitParameter(inst, collectBits(qNet));
+    }
+
+    struct ConcurrentAssertionVisitor {
+      std::vector<const slang::ast::ConcurrentAssertionStatement*> assertions;
+      template<typename T> void visit(const T& stmt) {
+        if constexpr (std::is_same_v<T, Statement>) stmt.visit(*this);
+        else if constexpr (std::is_same_v<T, slang::ast::ConcurrentAssertionStatement>)
+          assertions.push_back(&stmt);
+        else if constexpr (requires { stmt.visitStmts(*this); }) stmt.visitStmts(*this);
+      }
+    };
+
+    // Visit bound references without translating any property operators. Symbol
+    // sets are membership-only; emitted bindings follow the AST visitation order.
+    struct FormalSourceVisitor {
+      std::function<void(const Expression&)> reference;
+      std::function<void(const Symbol&)> declaration;
+      std::function<void(const std::string&)> unsupported;
+      std::unordered_set<const slang::ast::AssertionInstanceExpression*> expanded;
+      template<typename T> void visit(const T& node) {
+        if constexpr (std::is_same_v<T, Expression> || std::is_same_v<T, Statement> ||
+            std::is_same_v<T, TimingControl> || std::is_same_v<T, slang::ast::AssertionExpr>) {
+          node.visit(*this);
+        } else {
+          if constexpr (std::is_same_v<T, slang::ast::NamedValueExpression> ||
+              std::is_same_v<T, slang::ast::HierarchicalValueExpression>) {
+            reference(node);
+            return;
+          }
+          if constexpr (std::is_same_v<T, slang::ast::AssertionInstanceExpression>) {
+            declaration(node.symbol);
+            if (!expanded.insert(&node).second || node.isRecursiveProperty) return;
+            // Actuals can include values that slang folds out of the bound body.
+            for (const auto& [formal, actual] : node.arguments) {
+              (void)formal;
+              std::visit([&](auto* argument) { if (argument) argument->visit(*this); }, actual);
+            }
+          }
+          if constexpr (std::is_same_v<T, slang::ast::CallExpression>) {
+            if (!node.isSystemCall()) {
+              unsupported("non-system calls require subroutine-context capture");
+              return;
+            }
+          }
+          if constexpr (requires { node.visitExprs(*this); }) node.visitExprs(*this);
+          if constexpr (requires { node.visitStmts(*this); }) node.visitStmts(*this);
+        }
+      }
+    };
+
+    void createFormalProperties(SNLDesign* design, const InstanceBodySymbol& body) {
+      using P = NLDB0::FormalProperty;
+      auto* sourceManager = compilation_->getSourceManager();
+      const auto sourceSlice = [&](slang::SourceRange range) -> std::optional<std::string> {
+        const auto start = range.start(), end = range.end();
+        if (!start.valid() || !end.valid() || !sourceManager->isFileLoc(start) ||
+            !sourceManager->isFileLoc(end) || start.buffer() != end.buffer() || end <= start)
+          return std::nullopt;
+        const auto text = sourceManager->getSourceText(start.buffer());
+        if (end.offset() > text.size()) return std::nullopt;
+        return std::string(text.substr(start.offset(), end.offset() - start.offset()));
+      };
+      const auto verbatim = [&](const slang::syntax::SyntaxNode& syntax) {
+        return sourceSlice(syntax.sourceRange());
+      };
+      const auto print = [&](const slang::syntax::SyntaxNode& syntax, bool expandMacros) {
+        slang::syntax::SyntaxPrinter printer(*sourceManager);
+        printer.setExpandMacros(expandMacros).setSquashNewlines(false).setIncludeSource(false);
+        return printer.print(syntax).str();
+      };
+      auto collect = [&](const Symbol& symbol) {
+        if (symbol.kind != SymbolKind::ProceduralBlock) return;
+        const auto& block = symbol.as<slang::ast::ProceduralBlockSymbol>();
+        ConcurrentAssertionVisitor statements;
+        statements.visit(block.getBody());
+        for (const auto* assertion : statements.assertions) {
+          if (!options_.preserveAssertions) {
+            reportUnsupportedWarning("ignored_concurrent_assertion",
+                "discarding concurrent assertion because preserve_assertions is disabled",
+                getSourceRange(*assertion));
+            continue;
+          }
+          bool failed = false;
+          const auto fail = [&](const std::string& reason) {
+            failed = true;
+            reportUnsupportedError("Cannot capture concurrent assertion: " + reason,
+                getSourceRange(*assertion));
+          };
+          if (!block.isFromAssertion || !assertion->syntax) {
+            fail("only module-level concurrent assertions have source-context capture");
+            continue;
+          }
+          P property;
+          property.sourceFormat = "systemverilog";
+          switch (assertion->assertionKind) {
+            case slang::ast::AssertionKind::Assert: property.kind = P::Kind::Assert; break;
+            case slang::ast::AssertionKind::Assume: property.kind = P::Kind::Assume; break;
+            case slang::ast::AssertionKind::CoverProperty: property.kind = P::Kind::Cover; break;
+            default: fail("only assert, assume and cover property are captured"); continue;
+          }
+          const auto& syntax = assertion->syntax->as<slang::syntax::ConcurrentAssertionStatementSyntax>();
+          if (auto text = sourceSlice(slang::SourceRange(syntax.openParen.range().end(), syntax.closeParen.location())))
+            property.text = *text;
+          else {
+            property.textOrigin = P::TextOrigin::MacroExpansion;
+            property.text = print(*syntax.propertySpec, true);
+          }
+          property.statementText = print(syntax, true);
+          property.originalText = verbatim(syntax).value_or(print(syntax, false));
+          std::vector<SNLBitNet*> data;
+          std::unordered_set<const Symbol*> declarations;
+          std::unordered_set<const Symbol*> references;
+          const auto declaration = [&](const Symbol& declared) {
+            if (!declarations.insert(&declared).second) return;
+            if (declared.kind == SymbolKind::Parameter) {
+              const auto& parameter = declared.as<slang::ast::ParameterSymbol>();
+              property.contextText += "localparam " + specializationType(parameter.getType()) + " " +
+                  std::string(parameter.name) + " = " + parameter.getValue().toString() + ";\n";
+            } else if (auto* declaredSyntax = declared.getSyntax()) {
+              property.contextText += print(*declaredSyntax, true) + "\n";
+            }
+          };
+          // Delay bounds and genvars can be folded out of the assertion AST.
+          // Keep their elaborated values without rewriting the stored source.
+          for (auto* scope = block.getParentScope(); scope; scope = scope->asSymbol().getParentScope()) {
+            for (const auto& member : scope->members())
+              if (member.kind == SymbolKind::Parameter) declaration(member);
+            if (&scope->asSymbol() == &body) break;
+          }
+          FormalSourceVisitor visitor;
+          visitor.declaration = declaration;
+          visitor.unsupported = fail;
+          visitor.reference = [&](const Expression& expr) {
+            const auto& value = expr.as<slang::ast::ValueExpressionBase>().symbol;
+            if (value.kind == SymbolKind::Parameter || value.kind == SymbolKind::EnumValue) {
+              declaration(value); return;
+            }
+            if (value.kind == SymbolKind::LocalAssertionVar) return;
+            if (!references.insert(&value).second) return;
+            if (expr.kind == slang::ast::ExpressionKind::HierarchicalValue ||
+                (value.kind != SymbolKind::Net && value.kind != SymbolKind::Variable) ||
+                !value.getType().isIntegral()) {
+              fail("reference cannot be bound to a local packed net: " + std::string(value.name)); return;
+            }
+            auto* net = getLoweredValueSymbolNet(design, value);
+            if (!net) net = design->getNet(NLName(getLoweredSymbolName(value)));
+            if (!net) { fail("missing net for " + std::string(value.name)); return; }
+            auto bits = collectBits(net);
+            if (bits.size() != value.getType().getBitWidth()) {
+              fail("net width differs from source symbol " + std::string(value.name)); return;
+            }
+            auto name = value.getHierarchicalPath();
+            const auto prefix = body.getHierarchicalPath() + ".";
+            if (name.starts_with(prefix)) name.erase(0, prefix.size());
+            if (name.empty()) name = std::string(value.name);
+            property.bindings.push_back({name, specializationType(value.getType()), data.size(),
+                bits.size(), value.getType().isSigned(), value.getType().isFourState()});
+            data.insert(data.end(), bits.begin(), bits.end());
+          };
+          // Preserve inherited contexts as text and connect their signal references.
+          if (const auto* clocking = compilation_->getDefaultClocking(*block.getParentScope())) {
+            declaration(*clocking);
+            if (clocking->kind == SymbolKind::ClockingBlock)
+              visitor.visit(clocking->as<slang::ast::ClockingBlockSymbol>().getEvent());
+          }
+          if (const auto* disable = compilation_->getDefaultDisable(*block.getParentScope())) {
+            if (disable->syntax)
+              property.contextText += "default disable iff (" +
+                  verbatim(*disable->syntax).value_or(print(*disable->syntax, true)) + ");\n";
+            visitor.visit(*disable);
+          }
+          visitor.visit(*assertion);
+          if (failed) continue;
+          if (data.empty()) data.push_back(static_cast<SNLBitNet*>(getConstNet(design, false)));
+          auto* model = NLDB0::getOrCreateFormalProperty(data.size());
+          NLName name;
+          if (syntax.label) {
+            auto label = std::string(syntax.label->name.valueText());
+            if (isInsideGenerateScope(block))
+              label = sanitizeName(block.getParentScope()->asSymbol().getHierarchicalPath() + "." + label);
+            name = NLName(label);
+          }
+          auto* instance = SNLInstance::create(design, model, name);
+          NLDB0::setFormalProperty(instance, property);
+          connectInstanceTermBits(instance, NLDB0::getFormalPropertyData(model), data);
+          annotateSourceInfo(instance, getSourceRange(*assertion));
+          bindLiveASTLink(instance, block);
+        }
+      };
+      visitElaboratedNonGenerateMembers(body, collect);
     }
 
     void createSequentialLogic(SNLDesign* design, const InstanceBodySymbol& body) {

@@ -2310,6 +2310,8 @@ class SystemVerilogConfig:
     blackbox_multi_writer_memories: bool = False
     # Backend-specific option tokens; only the active frontend is accepted.
     frontend_options: Optional[Dict[str, List[str]]] = None
+    # Capture concurrent assertion text and referenced signal bindings.
+    preserve_assertions: bool = False
 
     def __post_init__(self):
         self.validate()
@@ -2321,7 +2323,8 @@ class SystemVerilogConfig:
                 "include_source_info_in_elaborated_ast_json",
                 "keep_ast_link",
                 "blackbox_unknown_modules",
-                "blackbox_multi_writer_memories"):
+                "blackbox_multi_writer_memories",
+                "preserve_assertions"):
             value = getattr(self, field_name)
             if not isinstance(value, bool):
                 raise TypeError(
@@ -2612,6 +2615,7 @@ def load_system_verilog(
             frontend_options=config.frontend_options,
             progress=progress,
             keep_ast_link=config.keep_ast_link,
+            preserve_assertions=config.preserve_assertions,
         )
     finally:
         if temp_flist_path and os.path.exists(temp_flist_path):

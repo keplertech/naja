@@ -26,6 +26,25 @@ class PulpBenchmarksTest(unittest.TestCase):
             with self.subTest(report=report), self.assertRaises(RuntimeError):
                 pulp.validate_diagnostics(report)
 
+    def test_ignored_assertions_do_not_fail_functional_rtl_checks(self):
+        ignored = ('diagnostic stage="naja_unsupported_warning" severity="warning" '
+                   'code="ignored_concurrent_assertion" file="source.sv" line=2 column=3 '
+                   'message="assertion preservation is disabled"\n')
+        success = "summary.status=success\n"
+        pulp.validate_diagnostics(success + ignored)
+        for report in (
+                ignored,
+                success + ignored + 'diagnostic stage="slang" severity="error"',
+                success + ignored + 'diagnostic stage="slang" severity="fatal"',
+                success + ignored + ignored.replace('severity="warning"', 'severity="error"'),
+                success + ignored + ignored.replace('naja_unsupported_warning', 'naja_unsupported_error'),
+                success + ignored + ignored.replace('code="ignored_concurrent_assertion"',
+                                                    'code="another_unsupported_construct"'),
+                success + ignored + ignored.replace('code="ignored_concurrent_assertion"',
+                                                    'code="ignored_concurrent_assertion_extra"')):
+            with self.subTest(report=report), self.assertRaises(RuntimeError):
+                pulp.validate_diagnostics(report)
+
     def make_package(self, root):
         package = root / pulp.PACKAGE
         package.mkdir(parents=True)

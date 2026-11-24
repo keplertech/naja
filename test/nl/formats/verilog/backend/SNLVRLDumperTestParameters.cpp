@@ -23,6 +23,7 @@
 #include "SNLBusNetBit.h"
 #include "SNLInstTerm.h"
 #include "SNLParameter.h"
+#include "SNLInstParameter.h"
 #include "SNLRTLInfos.h"
 
 using namespace naja::NL;
@@ -220,6 +221,22 @@ class SNLVRLDumperTestParameters: public ::testing::Test {
     SNLDesign*  top_;
     SNLDesign*  model_;
 };
+
+TEST_F(SNLVRLDumperTestParameters, SourceTextStringParametersAreEscaped) {
+  auto* parameter = SNLParameter::create(model_, NLName("TEXT"), SNLParameter::Type::String,
+      "first \"quote\"\\path\n\tlast");
+  auto* instance = SNLInstance::create(top_, model_, NLName("u"));
+  SNLInstParameter::create(instance, parameter, "override\n\"line\"");
+  const auto path = std::filesystem::path(SNL_VRL_DUMPER_TEST_PATH) / "escaped_source_parameters";
+  std::filesystem::create_directories(path);
+  SNLVRLDumper dumper;
+  dumper.setSingleFile(true);
+  dumper.setTopFileName("design.v");
+  dumper.dumpDesign(top_, path);
+  const auto text = readTextFile(path / "design.v");
+  EXPECT_NE(std::string::npos, text.find("\"first \\\"quote\\\"\\\\path\\n\\tlast\""));
+  EXPECT_NE(std::string::npos, text.find("\"override\\n\\\"line\\\"\""));
+}
 
 TEST_F(SNLVRLDumperTestParameters, test0) {
   ASSERT_TRUE(top_);

@@ -26,6 +26,50 @@ class NajaEDASystemVerilogTest(unittest.TestCase):
     def tearDown(self):
         netlist.reset()
 
+    def test_assertion_preservation_is_opt_in(self):
+        self.assertFalse(netlist.SystemVerilogConfig().preserve_assertions)
+        with self.assertRaises(TypeError):
+            netlist.SystemVerilogConfig(preserve_assertions="yes")
+        sources = {
+            True: """module top(input bit clk, a, b, output bit y);
+              assign y = a;
+              check: assert property (@(posedge clk) a |=> b);
+            endmodule""",
+            False: """module top(input logic clk, reset, a, b, output logic y);
+              assign y = a;
+              check: assert property (@(posedge clk) disable iff (reset !== 1'b0) a |-> b)
+                else begin $error("check failed"); end
+            endmodule""",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.sv"
+            for raw in (False, True):
+                for supported, source in sources.items():
+                    for preserve in (False, True):
+                        with self.subTest(raw=raw, supported=supported, preserve=preserve):
+                            netlist.reset()
+                            path.write_text(source)
+                            if raw:
+                                db = naja.NLDB.create(naja.NLUniverse.create())
+                                load = lambda: db.loadSystemVerilog([str(path)],
+                                    preserve_assertions=preserve, diagnostics_report_path=None)
+                            else:
+                                config = netlist.SystemVerilogConfig(
+                                    preserve_assertions=preserve, diagnostics_report_path=None)
+                                load = lambda: netlist.load_system_verilog(str(path), config=config)
+                            load()
+                            top = naja.NLUniverse.get().getTopDesign()
+                            checks = [i for i in top.getInstances()
+                                      if i.getModel().getName().startswith("naja_formal_property__")]
+                            self.assertEqual(int(preserve), len(checks))
+                            if preserve:
+                                self.assertIsNone(checks[0].getModel().getParameter("CONFIG"))
+                                self.assertIn("a |", checks[0].getInstParameter("PROPERTY_TEXT").getValue())
+                                if not supported:
+                                    self.assertIn('$error("check failed")',
+                                                  checks[0].getInstParameter("STATEMENT_TEXT").getValue())
+                            self.assertIsNotNone(top.getScalarTerm("y").getNet())
+
     def test_lowering_efficiency_report(self):
         with tempfile.TemporaryDirectory(dir=najaeda_test_path) as directory:
             path = Path(directory) / "source.sv"
