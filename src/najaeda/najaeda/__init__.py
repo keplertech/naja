@@ -19,10 +19,10 @@ def _load_naja():
 naja = _load_naja()
 
 from ._version import version, git_hash  # noqa: E402
-from ._logging import configure_native_logging  # noqa: E402
+from ._logging import configure_native_logging, forward_native_logging  # noqa: E402
 
 __version__ = version()
 
 configure_native_logging()
 
-__all__ = ["naja", "version", "git_hash", "__version__", "configure_native_logging"]
+__all__ = ["naja", "version", "git_hash", "__version__", "configure_native_logging", "forward_native_logging"]

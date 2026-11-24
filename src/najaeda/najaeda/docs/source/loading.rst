@@ -1340,3 +1340,37 @@ The callback receives ``const naja::NajaProgress&`` and returns ``bool``;
 cancellation throws ``naja::NajaCancelled``. The ``stage`` and ``detail`` string
 views are valid only during the callback: copy them before queuing an update.
 An empty callback disables reporting without clock reads or progress allocations.
+
+
+Receiving native log messages
+-----------------------------
+
+Native loader warnings and diagnostic summaries can be forwarded to Python
+logging with the opt-in ``najaeda.forward_native_logging()`` helper. Attach an
+application handler to ``najaeda.native`` first. Python logging levels and
+handler filters apply normally; ``trace`` is mapped to ``DEBUG``.
+
+.. code-block:: python
+
+   import logging
+   import najaeda
+
+   logger = logging.getLogger("najaeda.native")
+   logger.addHandler(logging.StreamHandler())  # or your application's handler
+   logger.setLevel(logging.INFO)
+   handle = najaeda.forward_native_logging(level="info")
+   najaeda.naja.set_console_logging(False)
+   try:
+       # Load or process a design here.
+       ...
+   finally:
+       najaeda.naja.remove_log_callback(handle)
+       najaeda.naja.set_console_logging(True)
+
+Forwarding is synchronous on the native logging thread. Schedule UI changes on
+your application's UI thread. The helper marks native records so the default
+``NativeLogHandler`` does not send them back to the native console or file sinks.
+Each helper call creates a registration; remove its handle when finished.
+See :doc:`raw_api` for direct callback integration and callback lifetime details.
+
+.. autofunction:: najaeda.forward_native_logging

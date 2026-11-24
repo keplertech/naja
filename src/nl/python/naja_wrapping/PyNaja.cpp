@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <map>
 
 #include "NajaLog.h"
 #include "NajaPerf.h"
@@ -360,6 +361,150 @@ static bool parseLogLevel_(const char* levelName,
   return true;
 }
 
+namespace {
+// callable is accessed only with the GIL. In-flight sinks retain this state,
+// but never own Python references outside the module's traversable registry.
+struct LogCallbackState { PyObject* callable = nullptr; };
+
+void invokeLogCallback(const LogCallbackState& state,
+                       spdlog::level::level_enum severity,
+                       std::string_view message) {
+#if PY_VERSION_HEX >= 0x030D0000
+  if (Py_IsFinalizing()) return;
+#endif
+  const auto gil = PyGILState_Ensure();
+  if (state.callable) {
+    // Preserve a pending loader/progress exception and keep the callable
+    // alive even if it unregisters itself from inside this invocation.
+    PyObject *errorType, *errorValue, *errorTraceback;
+    PyErr_Fetch(&errorType, &errorValue, &errorTraceback);
+    auto* callable = state.callable;
+    Py_INCREF(callable);
+    const auto name = spdlog::level::to_string_view(severity);
+    PyObject* result = PyObject_CallFunction(callable, "s#s#",
+      name.data(), Py_ssize_t(name.size()),
+      message.data(), Py_ssize_t(message.size()));
+    if (!result) PyErr_WriteUnraisable(callable);
+    Py_XDECREF(result);
+    Py_DECREF(callable);
+    PyErr_Restore(errorType, errorValue, errorTraceback);
+  }
+  PyGILState_Release(gil);
+}
+
+using LogCallbacks = std::map<naja::log::SinkHandle, std::shared_ptr<LogCallbackState>>;
+struct LogModuleState {
+  LogCallbacks* callbacks = nullptr;
+  bool closing = false;
+};
+
+LogModuleState* logModuleState(PyObject* module) {
+  return static_cast<LogModuleState*>(PyModule_GetState(module));
+}
+
+int traverseLogCallbacks(PyObject* module, visitproc visit, void* arg) {
+  auto* state = logModuleState(module);
+  if (state->callbacks) {
+    for (const auto& entry: *state->callbacks) Py_VISIT(entry.second->callable);
+  }
+  return 0;
+}
+
+int unregisterLogCallbacks(PyObject* module) {
+  auto* state = logModuleState(module);
+  if (state->callbacks) {
+    LogCallbacks retired;
+    retired.swap(*state->callbacks);
+    for (auto& entry: retired) {
+      naja::log::removeSink(entry.first);
+      Py_CLEAR(entry.second->callable);
+    }
+  }
+  return 0;
+}
+
+int clearLogCallbacks(PyObject* module) {
+  logModuleState(module)->closing = true;
+  return unregisterLogCallbacks(module);
+}
+
+void freeLogCallbacks(void* module) {
+  auto* object = static_cast<PyObject*>(module);
+  clearLogCallbacks(object);
+  delete logModuleState(object)->callbacks;
+}
+}  // namespace
+
+static PyObject* addLogCallback(PyObject* module, PyObject* args, PyObject* kwargs) {
+  PyObject* callable = nullptr;
+  const char* levelName = "info";
+  static const char* keywords[] = {"fn", "level", nullptr};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|s:add_log_callback",
+      const_cast<char**>(keywords), &callable, &levelName)) return nullptr;
+  if (!PyCallable_Check(callable)) {
+    PyErr_SetString(PyExc_TypeError, "fn must be callable");
+    return nullptr;
+  }
+  spdlog::level::level_enum level;
+  if (!parseLogLevel_(levelName, level)) {
+    PyErr_SetString(PyExc_ValueError, "Invalid log level");
+    return nullptr;
+  }
+  try {
+    auto* moduleState = logModuleState(module);
+    if (moduleState->closing) {
+      PyErr_SetString(PyExc_RuntimeError, "naja module is shutting down");
+      return nullptr;
+    }
+    if (!moduleState->callbacks) moduleState->callbacks = new LogCallbacks;
+    auto state = std::make_shared<LogCallbackState>();
+    auto handle = naja::log::addCallbackSink([state](auto severity, std::string_view message) {
+      invokeLogCallback(*state, severity, message);
+    }, level);
+    PyObject* result = PyLong_FromUnsignedLongLong(handle);
+    if (!result) {
+      naja::log::removeSink(handle);
+      return nullptr;
+    }
+    try {
+      moduleState->callbacks->emplace(handle, state);
+    } catch (...) {
+      naja::log::removeSink(handle);
+      Py_DECREF(result);
+      throw;
+    }
+    Py_INCREF(callable);
+    state->callable = callable;
+    return result;
+  } catch (const std::exception& error) {
+    PyErr_SetString(PyExc_RuntimeError, error.what());
+    return nullptr;
+  }
+}
+
+static PyObject* removeLogCallback(PyObject* module, PyObject* arg) {
+  auto handle = PyLong_AsUnsignedLongLong(arg);
+  if (PyErr_Occurred()) return nullptr;
+  auto* callbacks = logModuleState(module)->callbacks;
+  if (callbacks) {
+    auto found = callbacks->find(handle);
+    if (found != callbacks->end()) {
+      auto state = found->second;
+      callbacks->erase(found);
+      naja::log::removeSink(handle);
+      Py_CLEAR(state->callable);
+    }
+  }
+  Py_RETURN_NONE;
+}
+
+static PyObject* setConsoleLogging(PyObject*, PyObject* arg) {
+  int enabled = PyObject_IsTrue(arg);
+  if (enabled < 0) return nullptr;
+  naja::log::setConsoleLogging(enabled);
+  Py_RETURN_NONE;
+}
+
 static PyObject* logInfo(PyObject* self, PyObject* args) {
   const char* message;
 
@@ -367,6 +512,7 @@ static PyObject* logInfo(PyObject* self, PyObject* args) {
     setError("Failed to parse arguments in logInfo");
     return nullptr;
   }
+  naja::log::ScopedCallbackSuppression suppress;
   NAJA_LOG_INFO("{}", message);
   Py_RETURN_NONE;
 }
@@ -383,6 +529,7 @@ static PyObject* logMessage(PyObject* self, PyObject* args) {
     setError("Invalid log level");
     return nullptr;
   }
+  naja::log::ScopedCallbackSuppression suppress;
   naja::log::get()->log(level, "{}", message);
   Py_RETURN_NONE;
 }
@@ -427,6 +574,8 @@ class _NajaNativeLogHandler(_logging.Handler):
     _naja_native_handler = True
 
     def emit(self, record):
+        if getattr(record, "_naja_native_record", False):
+            return
         try:
             _naja_log(_native_level(record.levelno), self.format(record))
         except Exception:
@@ -485,6 +634,7 @@ static PyObject* logCritical(PyObject* self, PyObject* args) {
     setError("Failed to parse arguments in logCritical");
     return nullptr;
   }
+  naja::log::ScopedCallbackSuppression suppress;
   NAJA_LOG_CRITICAL("{}", message);
   Py_RETURN_NONE;
 }
@@ -495,6 +645,7 @@ static PyObject* logWarn(PyObject* self, PyObject* args) {
     setError("Failed to parse arguments in logWarning");
     return nullptr;
   }
+  naja::log::ScopedCallbackSuppression suppress;
   NAJA_LOG_WARN("{}", message);
   Py_RETURN_NONE;
 }
@@ -537,6 +688,7 @@ static PyObject* addLogFile(PyObject* self, PyObject* args) {
 }
 
 static PyObject* clearLogSinks(PyObject* self, PyObject* args) {
+  unregisterLogCallbacks(self);
   naja::log::clearSinks();
   Py_RETURN_NONE;
 }
@@ -787,6 +939,12 @@ static PyMethodDef NajaMethods[] = {
   { "getGitHash", getGitHash, METH_NOARGS, "get the Naja git hash" },
   { "snapshotManifest", PyNLDB_snapshotManifest, METH_VARARGS,
     "read a NajaIF snapshot manifest without loading the snapshot" },
+  { "add_log_callback", (PyCFunction)addLogCallback, METH_VARARGS|METH_KEYWORDS,
+    "add_log_callback(fn, level='info'): receive native (level, message) records; return a handle." },
+  { "remove_log_callback", removeLogCallback, METH_O,
+    "remove_log_callback(handle): stop callback delivery; unknown handles are ignored." },
+  { "set_console_logging", setConsoleLogging, METH_O,
+    "set_console_logging(enabled): enable or disable native console output." },
   { "log", logMessage, METH_VARARGS, "log a message at the requested level" },
   { "installLoggingHandler", installLoggingHandler, METH_NOARGS,
     "route standard Python logging through the native Naja logger" },
@@ -835,8 +993,12 @@ static struct PyModuleDef najaModule = {
   PyModuleDef_HEAD_INIT,
   "naja",
   "Python interface for Naja API",
-  -1,
-  NajaMethods
+  sizeof(LogModuleState),
+  NajaMethods,
+  nullptr,
+  traverseLogCallbacks,
+  clearLogCallbacks,
+  freeLogCallbacks
 };
 
 PyMODINIT_FUNC PyInit_naja(void) {

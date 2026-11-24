@@ -7,6 +7,9 @@
 
 #include <chrono>
 #include <memory>
+#include <functional>
+#include <cstdint>
+#include <string_view>
 #include <string>
 
 #include <spdlog/spdlog.h>
@@ -22,6 +25,24 @@ void setPattern(const std::string& pattern);
 void addConsoleSink(spdlog::level::level_enum level = spdlog::level::info);
 void addFileSink(const std::string& path,
                  spdlog::level::level_enum level = spdlog::level::trace);
+using SinkHandle = std::uint64_t;
+// Callbacks receive the formatted payload on the logging thread. The view is
+// valid only during the call. An in-flight dispatch may invoke a removed sink.
+SinkHandle addCallbackSink(
+  std::function<void(spdlog::level::level_enum, std::string_view)> callback,
+  spdlog::level::level_enum level = spdlog::level::info);
+void removeSink(SinkHandle handle);
+void setConsoleLogging(bool enabled);
+
+// Suppress callback delivery for this thread, including nested native logging.
+class ScopedCallbackSuppression {
+ public:
+  ScopedCallbackSuppression();
+  ~ScopedCallbackSuppression();
+  ScopedCallbackSuppression(const ScopedCallbackSuppression&) = delete;
+  ScopedCallbackSuppression& operator=(const ScopedCallbackSuppression&) = delete;
+};
+
 void flushEvery(std::chrono::seconds interval);
 void clearSinks();
 void shutdown();

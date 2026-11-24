@@ -8,6 +8,9 @@
 #include <fstream>
 #include <cstdlib>
 #include <regex>
+#include <atomic>
+#include <thread>
+#include <vector>
 #include <string>
 
 #include "NajaLog.h"
@@ -175,4 +178,56 @@ TEST(NajaLogTests, initFromEnvUsesEnvVars) {
   unsetEnvVar("NAJA_LOG_PATTERN");
   unsetEnvVar("NAJA_LOG_FILE");
   unsetEnvVar("NAJA_LOG_LEVEL");
+}
+
+TEST(NajaLogTests, callbacksAndConcurrentConfiguration) {
+  log::clearSinks();
+  log::setConsoleLogging(false);
+  log::setLevel(spdlog::level::trace);
+  std::atomic<unsigned> delivered{0};
+  auto retainedLogger = log::get();
+  auto handle = log::addCallbackSink([&](auto level, std::string_view message) {
+    EXPECT_EQ(level, spdlog::level::warn);
+    EXPECT_EQ(message, "native payload 17");
+    ++delivered;
+  }, spdlog::level::warn);
+  retainedLogger->info("filtered");
+  {
+    log::ScopedCallbackSuppression suppress;
+    retainedLogger->warn("suppressed");
+  }
+  std::vector<std::thread> workers;
+  for (unsigned i = 0; i < 4; ++i) {
+    workers.emplace_back([&] {
+      for (unsigned j = 0; j < 500; ++j) retainedLogger->warn("native payload {}", 17);
+    });
+  }
+  for (unsigned i = 0; i < 100; ++i) {
+    auto temporary = log::addCallbackSink([](auto, auto) {});
+    log::removeSink(temporary);
+    log::setPattern("%v");
+    log::setConsoleLogging(false);
+  }
+  for (auto& worker: workers) worker.join();
+  EXPECT_EQ(delivered, 2000);
+  log::removeSink(handle);
+  retainedLogger->warn("removed");
+  EXPECT_EQ(delivered, 2000);
+  log::clearSinks();
+}
+
+TEST(NajaLogTests, callbackCanRemoveItselfAndLog) {
+  log::clearSinks();
+  log::setConsoleLogging(false);
+  unsigned count = 0;
+  log::SinkHandle handle = 0;
+  handle = log::addCallbackSink([&](auto, auto) {
+    ++count;
+    log::removeSink(handle);
+    NAJA_LOG_WARN("nested");
+  });
+  NAJA_LOG_WARN("first");
+  NAJA_LOG_WARN("second");
+  EXPECT_EQ(count, 1);
+  log::clearSinks();
 }

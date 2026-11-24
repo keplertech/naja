@@ -18,8 +18,13 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 cc_test(
     name = "najaPythonPropertyTests",
-    srcs = ["NajaPythonPropertyTest.cpp"],
+    srcs = [
+        "NajaPythonPropertyTest.cpp",
+        "NajaPythonLogTest.cpp",
+        "//src/nl/python/naja_wrapping:PyNaja.cpp",
+    ],
     deps = [
+        "//src/core:naja_core",
         "//src/nl/python/naja_wrapping:naja_python",
         "@googletest//:gtest_main",
         "@rules_python//python/cc:current_py_cc_libs",

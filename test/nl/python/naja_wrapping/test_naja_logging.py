@@ -160,3 +160,110 @@ class NajaLoggingTest(unittest.TestCase):
   def test_log_critical_invalid_args(self):
     with self.assertRaises(RuntimeError):
       naja.logCritical()
+
+
+class NativeLogCallbackTest(unittest.TestCase):
+  def setUp(self):
+    naja.clearLogSinks()
+    naja.setLogLevel("trace")
+    naja.set_console_logging(False)
+    self.db = naja.NLDB.create(naja.NLUniverse.create())
+
+  def tearDown(self):
+    naja.NLUniverse.get().destroy()
+    naja.clearLogSinks()
+    naja.setLogLevel("info")
+
+  def load_warning(self):
+    with tempfile.TemporaryDirectory() as directory:
+      source = pathlib.Path(directory) / "sample.sv"
+      source.write_text("module sample(output [2:0] q); assign q = 5'b10101; endmodule")
+      return self.db.loadSystemVerilog([str(source)], diagnostics_report_path=None)
+
+  def test_native_warning_and_removal(self):
+    records = []
+    handle = naja.add_log_callback(lambda *record: records.append(record), level="warning")
+    self.assertIsNotNone(self.load_warning())
+    summaries = [(level, text) for level, text in records if "diagnostics summary:" in text]
+    self.assertEqual(1, len(summaries))
+    self.assertEqual("warning", summaries[0][0])
+    self.assertTrue(summaries[0][1].startswith("SystemVerilog diagnostics summary:"))
+    naja.remove_log_callback(handle)
+    naja.remove_log_callback(handle)
+    records.clear()
+    self.db = naja.NLDB.create(naja.NLUniverse.get())
+    self.assertIsNotNone(self.load_warning())
+    self.assertEqual([], records)
+
+  def test_python_records_do_not_return(self):
+    records = []
+    handle = naja.add_log_callback(lambda *record: records.append(record), level="trace")
+    try:
+      naja.log("warning", "from Python")
+      naja.logInfo("from Python")
+      naja.logWarn("from Python")
+      naja.logCritical("from Python")
+      self.assertEqual([], records)
+    finally:
+      naja.remove_log_callback(handle)
+
+  def test_callback_exception_is_unraisable_and_load_succeeds(self):
+    errors = []
+    def broken(level, message):
+      raise ValueError("callback failed")
+    handle = naja.add_log_callback(broken, level="warning")
+    original = sys.unraisablehook
+    sys.unraisablehook = errors.append
+    try:
+      self.assertIsNotNone(self.load_warning())
+      self.assertTrue(errors)
+      self.assertTrue(all(error.exc_type is ValueError for error in errors))
+      self.assertTrue(all(error.object is broken for error in errors))
+    finally:
+      sys.unraisablehook = original
+      naja.remove_log_callback(handle)
+
+  def test_callback_can_unregister_itself(self):
+    calls = []
+    def callback(level, message):
+      calls.append(message)
+      naja.remove_log_callback(handle)
+      naja.log("warning", "nested Python record")
+    handle = naja.add_log_callback(callback, "warning")
+    self.load_warning()
+    self.assertEqual(1, len(calls))
+
+  def test_validation_and_callable_lifetime(self):
+    import weakref
+    with self.assertRaises(TypeError):
+      naja.add_log_callback(None)
+    with self.assertRaises(ValueError):
+      naja.add_log_callback(lambda *args: None, level="invalid")
+    with self.assertRaises(TypeError):
+      naja.remove_log_callback("invalid")
+    callback = lambda *args: None
+    reference = weakref.ref(callback)
+    handle = naja.add_log_callback(callback)
+    del callback
+    self.assertIsNotNone(reference())
+    naja.remove_log_callback(handle)
+    self.assertIsNone(reference())
+
+  def test_console_switch(self):
+    script = """
+import naja, pathlib, tempfile
+naja.setLogLevel('info')
+naja.set_console_logging(CONSOLE)
+with tempfile.TemporaryDirectory() as directory:
+    source = pathlib.Path(directory) / 'sample.sv'
+    source.write_text('module sample(output q); assign q = 1; endmodule')
+    db = naja.NLDB.create(naja.NLUniverse.create())
+    db.loadSystemVerilog([str(source)], diagnostics_report_path=None)
+    naja.NLUniverse.get().destroy()
+"""
+    enabled = subprocess.run([sys.executable, "-c", script.replace("CONSOLE", "True")],
+                             check=True, capture_output=True, text=True)
+    disabled = subprocess.run([sys.executable, "-c", script.replace("CONSOLE", "False")],
+                              check=True, capture_output=True, text=True)
+    self.assertIn("SystemVerilog diagnostics summary:", enabled.stdout)
+    self.assertEqual("", disabled.stdout)
