@@ -34321,6 +34321,101 @@ endmodule
     EXPECT_TRUE(binding.name == "clk" || binding.name == "reset" || binding.name == "a");
 }
 
+TEST_F(SNLSVConstructorTestSimple, FormalPropertyInheritedContextBindings) {
+  SNLSVConstructor::ConstructOptions options;
+  options.preserveAssertions = true;
+  const auto source = writeSVTestFile("formal_inherited_context", R"(
+module top(input logic clk, reset, a);
+  default clocking cb @(posedge clk); endclocking
+  default disable iff (reset);
+  check: assume property (a && a);
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  constructor.construct(source, options);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  auto* check = top->getInstance(NLName("check"));
+  ASSERT_NE(nullptr, check);
+  const auto property = NLDB0::getFormalProperty(check);
+  EXPECT_EQ(NLDB0::FormalProperty::Kind::Assume, property.kind);
+  EXPECT_EQ("a && a", property.text);
+  EXPECT_NE(std::string::npos, property.contextText.find("default clocking cb @(posedge clk)"));
+  EXPECT_NE(std::string::npos, property.contextText.find("default disable iff ((reset));"));
+  ASSERT_EQ(3u, property.bindings.size());
+  const std::vector<std::string> names{"clk", "reset", "a"};
+  for (size_t i = 0; i < names.size(); ++i) {
+    const auto& binding = property.bindings[i];
+    EXPECT_EQ(names[i], binding.name);
+    EXPECT_EQ(i, binding.offset);
+    EXPECT_EQ(1u, binding.width);
+    EXPECT_EQ(top->getNet(NLName(names[i])),
+        check->getInstTerm(NLDB0::getFormalPropertyData(check->getModel())->getBit(i))->getNet());
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, FormalPropertyNamedArgumentsAndLocalVariables) {
+  SNLSVConstructor::ConstructOptions options;
+  options.preserveAssertions = true;
+  const auto source = writeSVTestFile("formal_named_arguments", R"(
+module top #(parameter int DELAY = 3)(input bit clk, a, b);
+  property response(x, unused);
+    bit sampled;
+    @(posedge clk) (x, sampled = x) |-> ##DELAY sampled;
+  endproperty
+  check: assert property (response(a, b));
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  constructor.construct(source, options);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  auto* check = top->getInstance(NLName("check"));
+  ASSERT_NE(nullptr, check);
+  const auto property = NLDB0::getFormalProperty(check);
+  EXPECT_EQ("response(a, b)", property.text);
+  EXPECT_NE(std::string::npos, property.contextText.find("DELAY = 3"));
+  EXPECT_NE(std::string::npos, property.contextText.find("property response(x, unused)"));
+  EXPECT_NE(std::string::npos, property.contextText.find("bit sampled;"));
+  std::set<std::string> names;
+  for (const auto& binding : property.bindings) {
+    EXPECT_TRUE(names.insert(binding.name).second);
+    EXPECT_EQ(1u, binding.width);
+    EXPECT_EQ(top->getNet(NLName(binding.name)),
+        check->getInstTerm(NLDB0::getFormalPropertyData(check->getModel())->getBit(binding.offset))->getNet());
+  }
+  EXPECT_EQ((std::set<std::string>{"clk", "a", "b"}), names);
+}
+
+TEST_F(SNLSVConstructorTestSimple, FormalPropertyRejectsSubroutineCalls) {
+  const auto source = writeSVTestFile("formal_subroutine_reference", R"(
+module top(input bit clk, a);
+  function automatic bit predicate(bit x); return x; endfunction
+  check: assert property (@(posedge clk) predicate(a));
+endmodule
+)");
+  SNLSVConstructor::ConstructOptions options;
+  options.preserveAssertions = true;
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, source,
+      {"Cannot capture concurrent assertion", "non-system calls require subroutine-context capture"}, options);
+}
+
+TEST_F(SNLSVConstructorTestSimple, FormalPropertyRejectsHierarchicalReferences) {
+  const auto source = writeSVTestFile("formal_hierarchical_reference", R"(
+module leaf(input bit a); endmodule
+module top(input bit clk, a);
+  leaf child(a);
+  check: assert property (@(posedge clk) child.a);
+endmodule
+)");
+  SNLSVConstructor::ConstructOptions options;
+  options.preserveAssertions = true;
+  SNLSVConstructor constructor(library_);
+  expectUnsupportedConstruct(constructor, source,
+      {"Cannot capture concurrent assertion", "reference cannot be bound to a local packed net: a"}, options);
+}
+
 TEST_F(SNLSVConstructorTestSimple, RawFormalPropertiesCaptureComplexSyntax) {
   SNLSVConstructor::ConstructOptions options;
   options.preserveAssertions = true;

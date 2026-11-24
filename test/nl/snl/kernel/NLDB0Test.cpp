@@ -76,6 +76,37 @@ TEST(NLDB0FormalPropertyTest, ContractAndValidation) {
   universe->destroy();
 }
 
+TEST(NLDB0FormalPropertyTest, BindingEncodingEscapesAndEmptyBindings) {
+  auto* universe = NLUniverse::create();
+  auto* top = SNLDesign::create(NLLibrary::create(NLDB::create(universe)));
+  NLDB0::FormalProperty property;
+  property.sourceFormat = "generic-test";
+  property.text = "predicate";
+  property.statementText = "check: predicate;";
+  property.originalText = property.statementText;
+  property.bindings = {{R"(signal "quoted"\path)", R"(packed "word"\type)",
+      0, 2, true, false}};
+  auto* instance = SNLInstance::create(top, NLDB0::getOrCreateFormalProperty(2));
+  NLDB0::setFormalProperty(instance, property);
+  auto* bindings = instance->getInstParameter(NLName("BINDINGS"));
+  ASSERT_NE(nullptr, bindings);
+  EXPECT_EQ(R"(FPB1 1 "signal \"quoted\"\\path" "packed \"word\"\\type" 0 2 1 0)",
+      bindings->getValue());
+  EXPECT_EQ(property, NLDB0::getFormalProperty(instance));
+
+  property.text = "true";
+  property.statementText = "check: true;";
+  property.originalText = property.statementText;
+  property.bindings.clear();
+  auto* constant = SNLInstance::create(top, NLDB0::getOrCreateFormalProperty(1));
+  NLDB0::setFormalProperty(constant, property);
+  auto* emptyBindings = constant->getInstParameter(NLName("BINDINGS"));
+  ASSERT_NE(nullptr, emptyBindings);
+  EXPECT_EQ("FPB1 0", emptyBindings->getValue());
+  EXPECT_EQ(property, NLDB0::getFormalProperty(constant));
+  universe->destroy();
+}
+
 namespace {
 
 template <typename T>
