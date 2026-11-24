@@ -1694,10 +1694,6 @@ endmodule
         source.write("module typed_internal; endmodule\n")
 
       db = naja.NLDB.create(u)
-      with self.assertRaises(ValueError) as context:
-        db.loadSystemVerilog([valid_path], diagnostics_report_path="")
-      self.assertIn("diagnostics_report_path must not be empty", str(context.exception))
-      self.assertIn("pass None to disable", str(context.exception))
 
       report_directory = os.path.join(tempdir, "report_directory")
       os.mkdir(report_directory)
@@ -1717,11 +1713,18 @@ endmodule
       original_cwd = os.getcwd()
       try:
         os.chdir(tempdir)
-        db = naja.NLDB.create(u)
-        top = db.loadSystemVerilog([sv_path], diagnostics_report_path=None)
-        self.assertIsNotNone(top)
-        self.assertFalse(os.path.exists("naja_sv_diagnostics.log"))
-        db.destroy()
+        for destination in (None, "", "reports/diagnostics.log"):
+          with self.subTest(destination=destination):
+            db = naja.NLDB.create(u)
+            top = db.loadSystemVerilog([sv_path], diagnostics_report_path=destination)
+            self.assertIsNotNone(top)
+            self.assertFalse(os.path.exists("naja_sv_diagnostics.log"))
+            if destination:
+              with open(destination, encoding="utf-8") as report:
+                self.assertIn("summary.status=success", report.read())
+            else:
+              self.assertEqual(["console_only.sv"], os.listdir(tempdir))
+            db.destroy()
       finally:
         os.chdir(original_cwd)
 

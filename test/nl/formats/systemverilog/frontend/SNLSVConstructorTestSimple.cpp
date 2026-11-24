@@ -39283,21 +39283,20 @@ endmodule
   EXPECT_NE(stdoutOutput.find("console-only"), std::string::npos);
 }
 
-TEST_F(SNLSVConstructorTestSimple, parseEmptyDiagnosticsReportPathThrows) {
-  SNLSVConstructor constructor(library_);
-  std::filesystem::path benchmarksPath(SNL_SV_BENCHMARKS_PATH);
+TEST_F(SNLSVConstructorTestSimple, parseEmptyDiagnosticsReportPathDisablesReport) {
   SNLSVConstructor::ConstructOptions options;
   options.diagnosticsReportPath = std::filesystem::path();
-
-  try {
-    constructor.construct(benchmarksPath / "simple" / "simple.sv", options);
-    FAIL() << "Expected empty diagnostics report path exception";
-  } catch (const SNLSVInternalError& e) {
-    const std::string reason = e.what();
-    EXPECT_NE(
-      std::string::npos,
-      reason.find("Empty path for diagnostics report dump"));
-  }
+  const auto benchmarksPath = std::filesystem::absolute(SNL_SV_BENCHMARKS_PATH);
+  const auto outPath = std::filesystem::absolute(SNL_SV_DUMPER_TEST_PATH) /
+    "empty_diagnostics_report_path";
+  std::filesystem::create_directories(outPath);
+  const ScopedCurrentPath scopedCurrentPath(outPath);
+  SNLSVConstructor constructor(library_);
+  testing::internal::CaptureStdout();
+  EXPECT_NO_THROW(constructor.construct(benchmarksPath / "simple" / "simple.sv", options));
+  const auto output = testing::internal::GetCapturedStdout();
+  EXPECT_FALSE(std::filesystem::exists("naja_sv_diagnostics.log"));
+  EXPECT_NE(output.find("no report file written"), std::string::npos);
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseEmptyElaboratedASTJsonPathThrows) {

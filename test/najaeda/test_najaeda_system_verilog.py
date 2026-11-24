@@ -699,6 +699,35 @@ endmodule
                     netlist.load_naja_if(snapshot)
                     self.assertEqual(source_range, netlist.get_top().get_source_range())
 
+    def test_diagnostics_report_destinations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.sv"
+            source.write_text("module top; endmodule\n", encoding="utf-8")
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(directory)
+                for via_config in (True, False):
+                    for destination in (None, "", Path("reports/diagnostics.log")):
+                        with self.subTest(via_config=via_config, destination=destination):
+                            netlist.reset()
+                            config = netlist.SystemVerilogConfig(
+                                diagnostics_report_path=destination if via_config else "unused.log")
+                            kwargs = {} if via_config else {"diagnostics_report_path": destination}
+                            self.assertIsNotNone(netlist.load_system_verilog(source, config, **kwargs))
+                            self.assertFalse(Path("naja_sv_diagnostics.log").exists())
+                            self.assertFalse(Path("unused.log").exists())
+                            self.assertEqual(
+                                destination if via_config else "unused.log", config.diagnostics_report_path)
+                            if destination:
+                                report = Path(destination)
+                                self.assertIn("summary.status=success", report.read_text())
+                                report.unlink()
+                                report.parent.rmdir()
+                            else:
+                                self.assertEqual(["source.sv"], os.listdir(directory))
+            finally:
+                os.chdir(original_cwd)
+
     def test_load_system_verilog_single_arg(self):
         design_file = os.path.join(systemverilog_benchmarks, "simple", "simple.sv")
         top = netlist.load_system_verilog(design_file)
@@ -922,11 +951,6 @@ endmodule
     def test_load_system_verilog_configuration_errors_are_actionable(self):
         design_files = [os.path.join(systemverilog_benchmarks, "simple", "simple.sv")]
         cases = [
-            (
-                {"diagnostics_report_path": ""},
-                ValueError,
-                r"diagnostics_report_path must not be empty",
-            ),
             (
                 {"suppress_warnings": [1]},
                 TypeError,
