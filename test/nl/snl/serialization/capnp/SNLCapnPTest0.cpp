@@ -417,6 +417,7 @@ TEST_F(SNLCapNpTest0, incompatibleDB0LibraryIDsThrowBeforePayloadLoad) {
   // No payloads are needed: compatibility must be checked first, including
   // when producer hashes are identical for two dirty builds.
   for (const auto& record : {std::string(), std::string("D 0\n"),
+      "D " + std::to_string(NLDB0::LibraryIDVersion - 1) + "\n",
       "D " + std::to_string(NLDB0::LibraryIDVersion + 1) + "\n"}) {
     {
       std::ofstream manifest(outPath/SNLDumpManifest::ManifestFileName);

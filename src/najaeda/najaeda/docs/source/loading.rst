@@ -620,8 +620,8 @@ and flags are zero or one. Model WIDTH is immutable per canonical width.
 Dead-logic removal retains the observation and its feeding cones. Verilog dumps
 escape quotes, backslashes and line breaks in string parameters.
 
-The changed primitive interface advances the DB0 identity version to 6; older
-snapshots must be regenerated. Verilog/DOT exports preserve structure and text,
+The current DB0 identity version is 7; older snapshots must be regenerated.
+Verilog/DOT exports preserve structure and text,
 not executable assertion behavior.
 
 VHDL
@@ -1304,28 +1304,21 @@ If an initialization file changes after its design has been cached in a library,
 load into a fresh library rather than reusing the cached design. Existing array
 size and elaboration-step limits continue to apply.
 
-Clock-gate inference
+Clock-gate structure
 --------------------
 
-SystemVerilog and VHDL loading share conservative post-elaboration inference
-of the canonical ``naja_clock_gate`` primitive. Inference requires a latch
-transparent in the low phase of the other AND input and evidence that the
-signals belong to a clock network. Clock declarations and actual Clock-role
-input connections provide evidence; signal names and ordinary latch enables
-do not. Mixed data uses, multiple drivers and ambiguous shared occurrences
-retain the original latch and gates. Inferred instances retain their names,
-IDs and source attributes and add ``naja_clock_gate_inference`` for inspection.
+SystemVerilog and VHDL loaders preserve clock gates as unit primitives: a latch
+captures the enable during the low clock phase, and an AND gate combines the
+held enable with the clock. Test-enable OR logic remains explicit. Loading
+preserves the original wrapper hierarchy and shared models, including when a
+wrapper is used in both clock and data paths.
 
-The primitive captures ``EN | TEST_EN`` while ``CLK`` is low and holds it while
-high; it never truncates a pulse in response to a high-phase enable change.
-Its identity, connections and derived modeling survive NajaIF round trips.
-See :doc:`raw_api` for model inspection and the four-state contract.
+Removing the composite primitive also removes its library ID slot. Later
+primitive families are renumbered, and snapshots with the previous DB0 identity
+version must be regenerated.
 
-Inference preserves wrapper instances, ports and hierarchy paths. When all uses
-of a model qualify, the latch and AND are fused inside that model. With mixed
-clock/data uses, qualifying instances use a specialized wrapper model while data
-instances retain the original model. Instance identities and source links remain
-intact; specialization names and creation order are deterministic.
+Timing analysis recognizes supported decomposed clock-gate patterns without
+rewriting this structure. See :doc:`raw_api` for analysis queries.
 
 VHDL can express the source latch as a single ``if`` without ``else`` in a
 sensitivity-list or ``process(all)`` process. This subset accepts uninitialized

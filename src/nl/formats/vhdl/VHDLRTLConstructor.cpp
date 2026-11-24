@@ -26,7 +26,6 @@
 #include "SNLRTLPrimitives.h"
 #include "SNLHDLMuxSelection.h"
 #include "SNLUtils.h"
-#include "SNLClockGating.h"
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 
@@ -6626,20 +6625,6 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     auto* design = build(library, selected, {});
     if (noRoot) fail("cannot infer a unique RTL top entity; specify an explicit top");
     for (auto* owner : namingLibraries) SNLHDLSpecialization::finalizeNames(owner);
-    std::optional<VHDLIntentValue> gateIntent;
-    SNLClockGating::Hooks clockGateHooks;
-    clockGateHooks.beforeReplace = [&](SNLInstance* instance) {
-      gateIntent.reset();
-      if (const auto* record = VHDLIntent::get(instance)) gateIntent = *record;
-    };
-    clockGateHooks.afterReplace = [&](SNLInstance* instance) {
-      if (gateIntent) VHDLIntent::attach(instance, intentSession, std::move(*gateIntent));
-      gateIntent.reset();
-    };
-    clockGateHooks.afterClone = [&](const NLObject* source, NLObject* clone) {
-      if (const auto* record = VHDLIntent::get(source)) VHDLIntent::attach(clone, intentSession, *record);
-    };
-    SNLClockGating::infer(design, clockGateHooks);
     return design;
   } catch (...) {
     for (auto* design : created) design->destroy();

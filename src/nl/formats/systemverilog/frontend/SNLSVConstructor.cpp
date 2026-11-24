@@ -55,7 +55,6 @@
 #include "SNLInstance.h"
 #include "SNLInstTerm.h"
 #include "SNLUtils.h"
-#include "SNLClockGating.h"
 #include "SNLParameter.h"
 #include "SNLHDLSpecialization.h"
 #include "SNLRTLInfos.h"
@@ -1570,32 +1569,6 @@ class SNLSVConstructorImpl {
           SNLUtils::mergeRepeatedMuxSelections(design);
           warnUndrivenInlinedCallNets(design);
         }
-        std::vector<SNLDesign*> clockGateRoots;
-        for (const auto* top : root.topInstances) {
-          auto found = bodyToDesign_.find(&top->body);
-          if (found != bodyToDesign_.end()) clockGateRoots.push_back(found->second);
-        }
-        const slang::ast::Symbol* gateSymbol = nullptr;
-        SNLClockGating::Hooks clockGateHooks;
-        const auto unbindGate = [&](SNLInstance* instance) {
-          if (!liveASTLink_) return;
-          liveASTLink_->unbind(instance);
-          for (auto* term : instance->getInstTerms()) liveASTLink_->unbind(term);
-        };
-        clockGateHooks.beforeReplace = [&](SNLInstance* instance) {
-          gateSymbol = liveASTLink_ ? liveASTLink_->getSymbol(instance) : nullptr;
-          unbindGate(instance);
-        };
-        clockGateHooks.afterReplace = [&](SNLInstance* instance) {
-          if (liveASTLink_ && gateSymbol) liveASTLink_->bind(instance, *gateSymbol);
-          gateSymbol = nullptr;
-        };
-        clockGateHooks.beforeRemove = unbindGate;
-        clockGateHooks.afterClone = [&](const NLObject* source, NLObject* clone) {
-          if (liveASTLink_)
-            if (const auto* symbol = liveASTLink_->getSymbol(source)) liveASTLink_->bind(clone, *symbol);
-        };
-        SNLClockGating::infer(clockGateRoots, clockGateHooks);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         maybeWriteSVPerfReportSnapshot();
 #endif
