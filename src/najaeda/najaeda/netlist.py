@@ -13,7 +13,7 @@ import os
 import tempfile
 from enum import Enum
 from typing import Union, List, Iterator, Optional, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from najaeda import naja
 
@@ -2293,7 +2293,7 @@ class VerilogDumpConfig(GateLevelVerilogDumpConfig):
 class SystemVerilogConfig:
     keep_assigns: bool = True
     elaborated_ast_json_path: str = None
-    # Set to None to disable the diagnostics report file (console-only diagnostics).
+    # None or an empty string disables the report file (console-only diagnostics).
     diagnostics_report_path: Optional[str] = "naja_sv_diagnostics.log"
     pretty_print_elaborated_ast_json: bool = True
     include_source_info_in_elaborated_ast_json: bool = True
@@ -2341,6 +2341,8 @@ class SystemVerilogConfig:
                     f"SystemVerilogConfig.{field_name} must be a path string or None "
                     f"(got {type(value).__name__})")
             path = os.fspath(value)
+            if field_name == "diagnostics_report_path" and path == "":
+                continue
             if not path.strip():
                 raise ValueError(
                     f"SystemVerilogConfig.{field_name} must not be empty")
@@ -2521,9 +2523,13 @@ def _validate_hdl_library(library):
         raise ValueError("library must not be empty")
 
 
+_DIAGNOSTICS_REPORT_UNSET = object()
+
+
 def load_system_verilog(
         files: Union[str, List[str]],
-        config: SystemVerilogConfig = None, *, library: str = "DESIGN", progress=None) -> Instance:
+        config: SystemVerilogConfig = None, *, library: str = "DESIGN", progress=None,
+        diagnostics_report_path=_DIAGNOSTICS_REPORT_UNSET) -> Instance:
     """Elaborate Verilog or SystemVerilog RTL into the top design using slang.
 
     Accepts ``.v`` and ``.sv`` sources within the frontend's supported RTL
@@ -2537,6 +2543,9 @@ def load_system_verilog(
         files in source order, including files supplied through flist.
         By default each file is a separate compilation unit.
     :param library: destination root library name (default "DESIGN").
+    :param diagnostics_report_path: report path, or None/empty string to disable
+        file output. If omitted, use config (default "naja_sv_diagnostics.log").
+        An explicit value overrides config without modifying it.
     :return: the top Instance.
     :rtype: Instance
     :raises TypeError: if files or config have the wrong type.
@@ -2550,6 +2559,8 @@ def load_system_verilog(
         raise TypeError(
             "load_system_verilog config must be a SystemVerilogConfig or None "
             f"(got {type(config).__name__})")
+    if diagnostics_report_path is not _DIAGNOSTICS_REPORT_UNSET:
+        config = replace(config, diagnostics_report_path=diagnostics_report_path)
     # Revalidate in case callers mutated a config after constructing it.
     config.validate()
     files = _normalize_input_files(files, "SystemVerilog", allow_empty=True)

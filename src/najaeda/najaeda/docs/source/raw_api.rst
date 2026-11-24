@@ -942,8 +942,13 @@ additional frontend settings. Common loader settings retain their typed APIs;
 see :doc:`loading` for configuration examples.
 
 ``NLDB.loadSystemVerilog`` writes incremental frontend diagnostics to
-``naja_sv_diagnostics.log`` by default. Pass ``diagnostics_report_path=None``
-to disable the report file and keep diagnostics console-only.
+``naja_sv_diagnostics.log`` in the current directory by default. Pass
+``diagnostics_report_path="logs/sv.log"`` to choose a destination, or
+``diagnostics_report_path=None`` / ``diagnostics_report_path=""`` to disable
+file output and keep console diagnostics. The logged summary names the report
+path or states that no report file was written. The high-level
+``netlist.load_system_verilog`` keyword and ``SystemVerilogConfig`` field provide
+the same option.
 
 ``NLDB.loadSystemVerilog`` infers shared memories for direct nonblocking indexed
 writes from multiple clocked processes, with the same supported forms and

@@ -522,9 +522,23 @@ intermediate logic can also cause an undriven local to produce the warning.
 The normal warning suppression and diagnostics-report settings apply.
 
 By default, an incremental diagnostics report is written to
-``naja_sv_diagnostics.log``. Set ``diagnostics_report_path=None`` in
-:class:`najaeda.netlist.SystemVerilogConfig` to disable that file and retain
-console diagnostics only.
+``naja_sv_diagnostics.log`` in the current directory. Pass a path to write the
+report elsewhere, or ``None`` / ``""`` to create no report file and retain console
+diagnostics. This option is available directly on ``load_system_verilog`` and
+``NLDB.loadSystemVerilog``, and in :class:`najaeda.netlist.SystemVerilogConfig`.
+An explicit loader keyword overrides the config without modifying it; omitting
+the keyword uses the config's value. The logged summary identifies the report
+path or states that no report file was written.
+
+.. code-block:: python
+
+   top = netlist.load_system_verilog("design.sv", diagnostics_report_path=None)
+   # Or write all diagnostics to a chosen path:
+   top = netlist.load_system_verilog("design.sv", diagnostics_report_path="logs/sv.log")
+
+C++ callers use ``SNLSVConstructor::ConstructOptions::diagnosticsReportPath``:
+a path selects the destination; ``std::nullopt`` or an empty path disables the
+file. The default remains ``naja_sv_diagnostics.log`` for every entry point.
 
 Set ``SystemVerilogConfig(frontend_options={"slang": ["--timescale=1ns/1ps"]})``
 to supply the default

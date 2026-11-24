@@ -3158,13 +3158,13 @@ endmodule
     }
 
     void initializeDiagnosticsReport() {
+      if (options_.diagnosticsReportPath && options_.diagnosticsReportPath->empty()) {
+        options_.diagnosticsReportPath.reset();
+      }
       if (!options_.diagnosticsReportPath) {
         return;
       }
       const auto& reportPath = *options_.diagnosticsReportPath;
-      if (reportPath.empty()) {
-        throw SNLSVInternalError("Empty path for diagnostics report dump");
-      }
 
       auto parent = reportPath.parent_path();
       if (!parent.empty()) {
@@ -3317,7 +3317,7 @@ endmodule
     std::string diagnosticsReportDestination() const {
       return options_.diagnosticsReportPath
         ? options_.diagnosticsReportPath->string()
-        : "console-only";
+        : "console-only (no report file written)";
     }
 
     void dumpElaboratedASTJson(const slang::ast::RootSymbol& root) const {

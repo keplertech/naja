@@ -799,13 +799,6 @@ PyObject* PyNLDB_loadSystemVerilog(PyNLDB* self, PyObject* args, PyObject* kwarg
       return nullptr;
     }
     const std::string path = PyUnicode_AsUTF8(diagnostics_report_path);
-    if (path.empty()) {
-      PyErr_SetString(
-        PyExc_ValueError,
-        "NLDB.loadSystemVerilog: diagnostics_report_path must not be empty; "
-        "pass None to disable the report");
-      return nullptr;
-    }
     options.diagnosticsReportPath = std::filesystem::path(path);
   }
 
@@ -1134,7 +1127,7 @@ PyMethodDef PyNLDB_Methods[] = {
     "  include_source_info_in_elaborated_ast_json (bool, optional): include source info in AST JSON (default True)\n"
     "  flist (str, optional): frontend file-list command path\n"
     "  diagnostics_report_path (str | None, optional): incremental frontend diagnostics report path "
-    "(default naja_sv_diagnostics.log; None disables the report file)\n"
+    "(default naja_sv_diagnostics.log; None or an empty string disables the report file)\n"
     "  defines (list[str], optional): SystemVerilog preprocessor defines passed as -D<name>[=<value>]\n"
     "  suppress_warnings (list[str], optional): frontend warning names to suppress\n"
     "  preserve_assertions (bool, optional): capture concurrent assertion text and signal bindings in DB0 properties (default False)\n"

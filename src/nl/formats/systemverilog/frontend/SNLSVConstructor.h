@@ -113,8 +113,7 @@ class SNLSVConstructor {
       bool blackboxDetection {true};
       std::optional<std::filesystem::path> elaboratedASTJsonPath {};
       /// Incremental diagnostics report. By default it is written to this path;
-      /// reset the optional to emit diagnostics to the console only. An empty
-      /// path remains invalid.
+      /// reset the optional or use an empty path for console-only diagnostics.
       std::optional<std::filesystem::path> diagnosticsReportPath {
         "naja_sv_diagnostics.log"};
       bool prettyPrintElaboratedASTJson {true};
