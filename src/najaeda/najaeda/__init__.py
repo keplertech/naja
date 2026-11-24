@@ -25,4 +25,11 @@ __version__ = version()
 
 configure_native_logging()
 
-__all__ = ["naja", "version", "git_hash", "__version__", "configure_native_logging", "forward_native_logging"]
+__all__ = [
+    "naja",
+    "version",
+    "git_hash",
+    "__version__",
+    "configure_native_logging",
+    "forward_native_logging",
+]
