@@ -26,6 +26,7 @@
 #include "DNL.h"
 #include "NLUniverse.h"
 #include "NLDB0.h"
+#include "SNLDesignModeling.h"
 #include "SNLBusNet.h"
 #include "SNLBusNetBit.h"
 #include "SNLBusTerm.h"
@@ -42921,7 +42922,7 @@ endmodule
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, clockGateInferencePreservesDataUseAndLiveAST) {
+TEST_F(SNLSVConstructorTestSimple, clockGateUnitPrimitivesPreserveDataUseAndLiveAST) {
   const auto path = writeSVTestFile("clock_gate_context", R"(
 module phase_cell(input source, request, test, output result);
   reg held;
@@ -42947,12 +42948,18 @@ endmodule
   ASSERT_NE(nullptr, data);
   EXPECT_FALSE(clock->getModel()->isPrimitive());
   EXPECT_FALSE(data->getModel()->isPrimitive());
-  EXPECT_NE(clock->getModel(), data->getModel());
-  size_t clockGates = 0, dataGates = 0;
-  for (auto* instance : clock->getModel()->getInstances()) clockGates += NLDB0::isClockGate(instance->getModel());
-  for (auto* instance : data->getModel()->getInstances()) dataGates += NLDB0::isClockGate(instance->getModel());
-  EXPECT_EQ(1u, clockGates);
-  EXPECT_EQ(0u, dataGates);
+  EXPECT_EQ(clock->getModel(), data->getModel());
+  size_t latches = 0, ands = 0, ors = 0, inverters = 0;
+  for (auto* instance : clock->getModel()->getInstances()) {
+    latches += NLDB0::isDLatch(instance->getModel());
+    ands += SNLDesignModeling::isAnd(instance->getModel());
+    ors += SNLDesignModeling::isOr(instance->getModel());
+    inverters += SNLDesignModeling::isInv(instance->getModel());
+  }
+  EXPECT_EQ(1u, latches);
+  EXPECT_EQ(1u, ands);
+  EXPECT_EQ(1u, ors);
+  EXPECT_EQ(1u, inverters);
   EXPECT_EQ(4u, clock->getInstTerms().size());
   EXPECT_EQ(NLName("clock_use"), clock->getName());
   ASSERT_NE(nullptr, clock->getRTLInfos());
@@ -42962,15 +42969,15 @@ endmodule
   ASSERT_NE(nullptr, symbol);
   const auto& objects = link->getObjects(symbol);
   EXPECT_NE(objects.end(), std::find(objects.begin(), objects.end(), clock));
-  auto* originalNet = data->getModel()->getScalarNet(NLName("held"));
-  auto* clonedNet = clock->getModel()->getScalarNet(NLName("held"));
-  ASSERT_NE(nullptr, originalNet);
-  ASSERT_NE(nullptr, clonedNet);
-  ASSERT_NE(nullptr, link->getSymbol(originalNet));
-  EXPECT_EQ(link->getSymbol(originalNet), link->getSymbol(clonedNet));
+  auto* held = clock->getModel()->getScalarNet(NLName("held"));
+  ASSERT_NE(nullptr, held);
+  EXPECT_EQ(held, data->getModel()->getScalarNet(NLName("held")));
+  ASSERT_NE(nullptr, link->getSymbol(held));
+  const auto& heldObjects = link->getObjects(link->getSymbol(held));
+  EXPECT_NE(heldObjects.end(), std::find(heldObjects.begin(), heldObjects.end(), held));
 }
 
-TEST_F(SNLSVConstructorTestSimple, clockGateInferencePreservesWrapperAndTop) {
+TEST_F(SNLSVConstructorTestSimple, clockGateUnitPrimitivesPreserveWrapperAndTop) {
   const auto path = writeSVTestFile("clock_gate_root", R"(
 module phase_cell(input source, request, output result);
   reg held;
@@ -42996,7 +43003,7 @@ endmodule
   EXPECT_EQ(wrapper, top->getInstance(NLName("control"))->getModel());
   EXPECT_EQ(1u, wrapper->getSlaveInstances().size());
   EXPECT_TRUE(std::any_of(wrapper->getInstances().begin(), wrapper->getInstances().end(),
-    [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
+    [](auto* instance) { return NLDB0::isDLatch(instance->getModel()); }));
 }
 
 TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {

@@ -2519,7 +2519,6 @@ TEST_F(NLDB0Test, CanonicalLibraryGroupsEndWithGateFamilies) {
     NLDB0::getOrCreateDFFSSNE(4),
     NLDB0::getOrCreateVectorUpdate({4, 2, 3, true}),
     NLDB0::getOrCreateVectorSelect({4, 2, 3, true}),
-    NLDB0::getOrCreateClockGate(),
     NLDB0::getOrCreateFormalProperty(4)
   };
   for (size_t id = 0; id < fixedFamilies.size(); ++id) {

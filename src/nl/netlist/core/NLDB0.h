@@ -38,7 +38,7 @@ class NLDB0 {
   friend class NLUniverse;
   public:
     // Snapshot compatibility version for canonical primitive library identities.
-    static constexpr unsigned LibraryIDVersion = 6;
+    static constexpr unsigned LibraryIDVersion = 7;
 
     /// Opaque verification-source capture. This primitive does not interpret
     /// source text or define a Boolean / temporal execution model. Bindings
@@ -374,14 +374,6 @@ class NLDB0 {
     static SNLScalarTerm* getDFFClock();
     static SNLScalarTerm* getDFFData();
     static SNLScalarTerm* getDFFOutput();
-    /// Low-phase enable capture, GCLK = CLK & held(EN | TEST_EN).
-    /// Initially unknown state; independent of clock-domain classification.
-    static SNLDesign* getOrCreateClockGate();
-    static bool isClockGate(const SNLDesign* design);
-    static SNLScalarTerm* getClockGateClock();
-    static SNLScalarTerm* getClockGateEnable();
-    static SNLScalarTerm* getClockGateTestEnable();
-    static SNLScalarTerm* getClockGateOutput();
     /// \brief Plain transparent-high D latch.
     /// Pins: E (enable), D (data), Q (output).
     static SNLDesign* getDLatch();

@@ -23,7 +23,6 @@ SET(snl_tests
   SNLRTLInfosTest.cpp
   SNLMergeAssignsTest.cpp
   NLClockTest.cpp
-  SNLClockGatingTest.cpp
   SNLEquipotentialGraphTest.cpp
   SNLUtilsTest.cpp
 )

@@ -62,7 +62,6 @@ void configureFormalProperty(SNLInstance* instance, int mode = 0) {
 
 std::vector<PrimitiveCase> primitiveCases(bool wide = true) {
   std::vector<PrimitiveCase> cases{{"assign", NLDB0::getAssign}, {"fa", NLDB0::getFA},
-    {"clock_gate", NLDB0::getOrCreateClockGate},
     {"formal_property", [] { return NLDB0::getOrCreateFormalProperty(5); }}};
   const std::vector<std::pair<std::string, SNLDesign*(*)(size_t)>> sized{
     {"mux", NLDB0::getOrCreateMux2}, {"latch", NLDB0::getOrCreateDLatch},

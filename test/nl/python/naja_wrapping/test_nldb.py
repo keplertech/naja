@@ -477,7 +477,10 @@ endmodule
             self.assertIsNotNone(wrapper)
             self.assertEqual(wrapper, top.getInstance("control").getModel())
             self.assertFalse(wrapper.isPrimitive())
-            self.assertEqual(1, sum(i.getModel().isClockGate() for i in wrapper.getInstances()))
+            models = [i.getModel().getName() for i in wrapper.getInstances()]
+            self.assertIn("naja_dlatch", models)
+            self.assertNotIn("naja_clock_gate", models)
+            self.assertFalse(hasattr(wrapper, "isClockGate"))
 
   def test_frontend_options_validation(self):
     db = naja.NLDB.create(naja.NLUniverse.get())

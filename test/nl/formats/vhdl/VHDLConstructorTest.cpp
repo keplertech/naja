@@ -5,6 +5,7 @@
 
 #include "NLDB.h"
 #include "NLDB0.h"
+#include "SNLDesignModeling.h"
 #include "NLException.h"
 #include "NLLibrary.h"
 #include "NLUniverse.h"
@@ -8061,7 +8062,7 @@ TEST_F(VHDLConstructorTest, ScheduledOverwritePreservesStorageAndOrigins) {
   }
 }
 
-TEST_F(VHDLConstructorTest, ClockGateInferencePreservesDataUseAndIntent) {
+TEST_F(VHDLConstructorTest, ClockGateUnitPrimitivesPreserveDataUseAndIntent) {
   VHDLConstructor::ConstructOptions options;
   options.keepASTLink = true;
   auto* top = VHDLConstructor(library_, options).construct(R"(
@@ -8093,11 +8094,16 @@ end;
   ASSERT_NE(nullptr, data);
   EXPECT_FALSE(clock->getModel()->isPrimitive());
   EXPECT_FALSE(data->getModel()->isPrimitive());
-  EXPECT_NE(clock->getModel(), data->getModel());
-  EXPECT_TRUE(std::any_of(clock->getModel()->getInstances().begin(), clock->getModel()->getInstances().end(),
-    [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
-  EXPECT_FALSE(std::any_of(data->getModel()->getInstances().begin(), data->getModel()->getInstances().end(),
-    [](auto* instance) { return NLDB0::isClockGate(instance->getModel()); }));
+  EXPECT_EQ(clock->getModel(), data->getModel());
+  size_t latches = 0, ands = 0, ors = 0;
+  for (auto* instance : clock->getModel()->getInstances()) {
+    latches += NLDB0::isDLatch(instance->getModel());
+    ands += SNLDesignModeling::isAnd(instance->getModel());
+    ors += SNLDesignModeling::isOr(instance->getModel());
+  }
+  EXPECT_EQ(1u, latches);
+  EXPECT_EQ(1u, ands);
+  EXPECT_EQ(1u, ors);
   EXPECT_NE(nullptr, clock->getModel()->getScalarNet(NLName("held"))->getProperty("VHDLIntentRecord"));
   EXPECT_NE(nullptr, clock->getRTLInfos());
   EXPECT_NE(nullptr, clock->getProperty("VHDLIntentRecord"));
