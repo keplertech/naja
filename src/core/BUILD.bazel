@@ -47,6 +47,7 @@ cc_library(
         "NajaRelationProperty.h",
         "NajaDumpableProperty.h",
         "NajaException.h",
+        "NajaProgress.h",
         "NajaPerf.h",
         "NajaLog.h",
         "NajaUtils.h",

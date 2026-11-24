@@ -874,8 +874,10 @@ class SNLSVConstructorImpl {
   public:
     explicit SNLSVConstructorImpl(
       NLLibrary* library,
-      const SNLSVConstructor::ConstructOptions& options):
+      const SNLSVConstructor::ConstructOptions& options,
+      NajaProgressReporter* progress = nullptr):
       library_(library),
+      progress_(progress),
       options_(options),
       liveASTLink_(options.keepASTLink ? std::make_unique<SNLSVLiveASTLink>() : nullptr)
     {}
@@ -1484,6 +1486,7 @@ class SNLSVConstructorImpl {
             "parse");
           const SVPerfScopedTimer timer(svPerfReport_, svPerfReport_.parseDuration);
 #endif
+          if (progress_) progress_->begin("parse");
           constructWithSlangDriver(paths);
         }
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
@@ -1514,6 +1517,7 @@ class SNLSVConstructorImpl {
         }
 
         const auto& root = compilation_->getRoot();
+        if (progress_) { progress_->finish(); progress_->begin("construct"); }
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
         svPerfReport_.topInstanceCount = root.topInstances.size();
 #endif
@@ -3085,6 +3089,7 @@ endmodule
       }
       // Preserve driver-resolved compilation options from command files
       // (for example: --top, -G parameter overrides, library maps).
+      if (progress_) { progress_->finish(); progress_->begin("elaborate"); }
       compilation_ = driver.createCompilation();
     }
 
@@ -3562,6 +3567,7 @@ endmodule
 #endif
       const auto& definition = body.getDefinition();
       std::string defName(definition.name);
+      if (progress_) progress_->advance(defName);
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
       const SVPerfBuildDesignStackGuard buildDesignStackGuard(svPerfReport_, defName);
       const auto makePerfScopeName = [&](const char* phase) {
@@ -4421,6 +4427,7 @@ endmodule
       const std::string& moduleName,
       LoweringCoverageScope coverageScope) {
       for (const auto& sym : scope.members()) {
+        if (progress_) progress_->checkpoint(sym.name);
         if (isIgnorableLoweringCoverageMember(sym)) {
           continue;
         }
@@ -4532,6 +4539,7 @@ endmodule
       const slang::ast::Scope& scope,
       Visitor& visitor) const {
       for (const auto& sym : scope.members()) {
+        if (progress_) progress_->checkpoint(sym.name);
         if (sym.kind == SymbolKind::GenerateBlock) {
           const auto& generateBlock = sym.as<slang::ast::GenerateBlockSymbol>();
           if (!generateBlock.isUninstantiated) {
@@ -10002,6 +10010,7 @@ endmodule
       std::function<void(const slang::ast::Scope&)> visitScope;
       visitScope = [&](const slang::ast::Scope& scope) {
         for (const auto& sym : scope.members()) {
+          if (progress_) progress_->checkpoint(sym.name);
           if (sym.kind == SymbolKind::GenerateBlock) {
             const auto& generateBlock = sym.as<slang::ast::GenerateBlockSymbol>();
             if (!generateBlock.isUninstantiated) {
@@ -36224,6 +36233,7 @@ endmodule
       std::function<void(const slang::ast::Scope&)> visitScope;
       visitScope = [&](const slang::ast::Scope& scope) {
         for (const auto& sym : scope.members()) {
+          if (progress_) progress_->checkpoint(sym.name);
           if (sym.kind == SymbolKind::GenerateBlock) {
             const auto& generateBlock = sym.as<slang::ast::GenerateBlockSymbol>();
             if (!generateBlock.isUninstantiated) {
@@ -37073,6 +37083,7 @@ endmodule
       std::function<void(const slang::ast::Scope&)> visitScope;
       visitScope = [&](const slang::ast::Scope& scope) {
         for (const auto& sym : scope.members()) {
+          if (progress_) progress_->checkpoint(sym.name);
           if (sym.kind == SymbolKind::GenerateBlock) {
             const auto& generateBlock = sym.as<slang::ast::GenerateBlockSymbol>();
             if (!generateBlock.isUninstantiated) {
@@ -37647,6 +37658,7 @@ endmodule
 
   private:
     NLLibrary* library_ {nullptr};
+    NajaProgressReporter* progress_ = nullptr;
     SNLSVConstructor::ConstructOptions options_ {};
     std::unordered_map<SNLDesign*, SNLScalarNet*> const0Nets_ {};
     std::unordered_map<SNLDesign*, SNLScalarNet*> const1Nets_ {};
@@ -38101,8 +38113,10 @@ void SNLSVConstructor::construct(const std::filesystem::path& path) {
 
 void SNLSVConstructor::construct(const Paths& paths, const ConstructOptions& options) {
   NajaPerf::Scope scope("SNLSVConstructor::construct");
-  SNLSVConstructorImpl impl(library_, options);
+  SNLSVConstructorImpl impl(library_, options, progress_ ? &progress_ : nullptr);
   impl.construct(paths);
+  progress_.finish();
+  progress_.begin("done");
 }
 
 void SNLSVConstructor::construct(const std::filesystem::path& path, const ConstructOptions& options) {

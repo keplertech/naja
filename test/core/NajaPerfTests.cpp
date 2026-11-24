@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "NajaPerf.h"
+#include "NajaProgress.h"
 using namespace naja;
 
 #ifndef NAJA_CORE_TESTS_PATH
@@ -110,4 +111,28 @@ TEST(NajaPerfTests, test0) {
     EXPECT_EQ(2, perf->getStack().size());
   }
   EXPECT_EQ(1, perf->getStack().size());
+}
+
+
+TEST(NajaProgressTests, throttlesAndChecksCancellationOnLoadingThread) {
+  NajaProgressReporter reporter;
+  unsigned calls = 0;
+  const auto thread = std::this_thread::get_id();
+  reporter.setCallback([&](const NajaProgress& event) {
+    EXPECT_EQ(thread, std::this_thread::get_id());
+    EXPECT_EQ("construct", event.stage);
+    EXPECT_LE(event.current, event.total);
+    ++calls;
+    return calls < 3;
+  });
+  reporter.begin("construct", "synthetic", 100);
+  EXPECT_EQ(1, calls);
+  std::this_thread::sleep_for(std::chrono::milliseconds(55));
+  for (unsigned i = 0; i < 63; ++i) reporter.advance();
+  EXPECT_EQ(1, calls);
+  reporter.advance();
+  EXPECT_EQ(2, calls);
+  EXPECT_THROW(reporter.finish(), NajaCancelled);
+  reporter.setCallback({});
+  EXPECT_NO_THROW(reporter.begin("parse"));
 }

@@ -1334,3 +1334,92 @@ process variables, indexed targets, ``bit`` defaults and explicit latch
 initializers remain unsupported. The guard and all read signals must obey the
 normal sensitivity checks. This preserves the existing hardware value subset;
 it does not introduce a nine-state VHDL simulation model.
+
+
+Progress reporting and cancellation
+-----------------------------------
+
+``load_gate_level_verilog``, ``load_system_verilog``, ``load_vhdl``,
+``load_liberty`` and ``load_naja_if`` accept an optional ``progress=`` callable.
+The raw ``NLDB.loadGateLevelVerilog``, ``loadSystemVerilog``, ``loadVHDL``,
+``loadLibertyPrimitives`` and ``loadNajaIF`` entry points accept the same keyword.
+Existing calls without a callback retain their behavior and netlist content.
+
+.. code-block:: python
+
+   from queue import SimpleQueue
+   from threading import Event
+   from najaeda import naja, netlist
+
+   updates = SimpleQueue()
+   cancel = Event()
+
+   def progress(*, stage, detail, current, total):
+       updates.put((stage, detail, current, total))
+       return not cancel.is_set()
+
+   # Run this load on the application's worker thread; drain updates on its UI thread.
+   try:
+       top = netlist.load_system_verilog("design.sv", progress=progress)
+   except naja.NajaCancelled:
+       pass
+
+Callbacks run synchronously on the thread that called the loader. Naja never
+invokes UI code or dispatches to a UI thread. Keep callbacks short and use a queue
+or an application-specific dispatcher to update a UI. Python callbacks execute
+with the GIL acquired; these entry points retain their existing GIL policy for
+loading itself. Progress reporting does not make concurrent access to the Naja
+database safe. Do not modify the database or re-enter a loader from a callback.
+
+The callable receives four keyword arguments:
+
+* ``stage``: a stable string from the table below.
+* ``detail``: informational text such as a file, module or design name; may be empty.
+* ``current`` and ``total``: work counts local to the stage. ``total == 0`` means
+  indeterminate, even when ``current`` is nonzero. When ``total > 0``,
+  ``current <= total``. Counts are not a percentage of the whole load.
+
+.. list-table:: Stages in execution order
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Loader
+     - Stages and units
+   * - Gate-level Verilog
+     - ``parse`` (setup), ``first_pass`` and ``second_pass`` (module visits,
+       indeterminate total), ``done``. Parsing and object creation occur together
+       within each pass.
+   * - SystemVerilog
+     - ``parse`` (slang source parsing), ``elaborate`` (slang compilation),
+       ``construct`` (design visits, indeterminate total), ``done``.
+   * - VHDL
+     - ``parse`` (input files, or one in-memory source), ``construct`` (designs,
+       indeterminate total), ``done``. Recursive child construction belongs to
+       the outer construction stage.
+   * - Liberty
+     - ``parse`` (one file), ``liberty`` (cells in that file), repeated for each
+       input file, then ``done``.
+   * - NajaIF
+     - ``parse`` (manifest), ``construct`` (interfaces, then connectivity;
+       design counts with indeterminate total), ``done``.
+
+Stage starts and completions are reported even for small loads. Intermediate
+reports require both 64 work checks and approximately 50 ms since the previous
+report. A large design can emit repeated counts while its contents are built.
+Opaque parser and elaborator calls may remain indeterminate until they return;
+there is no maximum cancellation latency. ``done`` is emitted only after success.
+
+Returning the singleton ``False`` requests cancellation at that report and raises
+``naja.NajaCancelled`` (a ``RuntimeError`` subclass). Other return values continue
+loading. An exception raised by the Python callback propagates unchanged.
+Cancellation is not transactional: some libraries, designs and connectivity may
+already exist. The database and universe remain safe to destroy; discard them
+before retrying a cancelled load. No ``done`` follows cancellation or failure.
+
+C++ applications include ``NajaProgress.h`` and call
+``setProgressCallback(naja::NajaProgressCallback)`` on any HDL or Liberty
+constructor. For snapshots, set ``SNLCapnP::LoadingConfiguration::progress``.
+The callback receives ``const naja::NajaProgress&`` and returns ``bool``;
+cancellation throws ``naja::NajaCancelled``. The ``stage`` and ``detail`` string
+views are valid only during the callback: copy them before queuing an update.
+An empty callback disables reporting without clock reads or progress allocations.

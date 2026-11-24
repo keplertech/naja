@@ -91,6 +91,10 @@ void SNLCapnP::dump(const NLDB* db, const std::filesystem::path& path) {
 NLDB* SNLCapnP::load(
   const std::filesystem::path& path,
   LoadingConfiguration loadingConfiguration) {
+  NajaProgressReporter progress;
+  progress.setCallback(loadingConfiguration.progress);
+  progress.begin("parse");
+  loadingConfiguration.nested_ = true;
   const auto manifest = SNLDumpManifest::load(path);
   checkManifestCompatibility(manifest);
   checkManifestProducer(manifest);
@@ -109,6 +113,7 @@ NLDB* SNLCapnP::load(
   }
   loadInterface(path/InterfaceName, loadingConfiguration);
   NLDB* db = loadImplementation(path/ImplementationName, loadingConfiguration);
+  progress.begin("done");
   return db;
 }
 

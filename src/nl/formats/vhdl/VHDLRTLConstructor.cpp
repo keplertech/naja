@@ -228,6 +228,7 @@ class LibraryContext {
   const VHDLSourceMap& sourceMap;
   std::string_view source;
   VHDLIntent::SessionPtr intentSession;
+  NajaProgressReporter* progress = nullptr;
   NLLibrary* owner(size_t offset) const {
     for (const auto& source : sources)
       if (offset >= source.offset && offset < source.offset + source.size) return source.library;
@@ -1776,6 +1777,7 @@ class RTLConstructor {
   }
 
   void lowerInstance(const vhdl::EntityInstantiation& instance, const std::string& prefix = "") {
+    if (libraryContext_.progress) libraryContext_.progress->checkpoint(entity_.name.spelling);
     DiagnosticScope location(instance.span);
     if (instance.architecture)
       fail("unsupported RTL entity binding");
@@ -5306,6 +5308,7 @@ class RTLConstructor {
     else origin(SNLRTLPrimitives::createAssign(design_, source, target));
   }
   void concurrent(const vhdl::Assignment& assignment, const State& state) {
+    if (libraryContext_.progress) libraryContext_.progress->checkpoint(entity_.name.spelling);
     DiagnosticScope location(assignment.span);
     auto target = selection(assignment);
     const auto& object = objects_.at(target.name);
@@ -5325,6 +5328,7 @@ class RTLConstructor {
   }
 
   void assign(const vhdl::Assignment& assignment, State& state) {
+    if (libraryContext_.progress) libraryContext_.progress->checkpoint(entity_.name.spelling);
     DiagnosticScope location(assignment.span);
     if (memories_.contains(key(assignment.target))) {
       const auto name = key(assignment.target);
@@ -6455,8 +6459,9 @@ bool requiresVHDLRTL(const vhdl::DesignFile& syntax) {
 SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
                           std::string_view top, std::string_view source,
                           const std::vector<VHDLLibrarySource>& libraries,
-                          const VHDLSourceMap& sourceMap, const VHDLIntent::SessionPtr& intentSession) {
-  const LibraryContext context{library, libraries, syntax, sourceMap, source, intentSession};
+                          const VHDLSourceMap& sourceMap, const VHDLIntent::SessionPtr& intentSession,
+                          NajaProgressReporter* progress) {
+  const LibraryContext context{library, libraries, syntax, sourceMap, source, intentSession, progress};
   std::set<std::pair<NLLibrary*, std::string>> packages, bodies;
   for (const auto& package : syntax.packages) {
     DiagnosticScope location(package.name.span);
@@ -6611,6 +6616,7 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
     sourceMap.annotate(design, architecture->span);
     RTLConstructor constructor(design, *entity, *architecture, syntax, context, overrides, build);
     constructor.run();
+    if (progress) progress->advance(name);
     SNLUtils::mergeRepeatedMuxSelections(design);
     RTLSourceProperty::attach(design, signature, constructor.getInitializationFiles());
     active.erase({owner, name});

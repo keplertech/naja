@@ -12,6 +12,9 @@
 #include <Python.h>
 
 #include "NLException.h"
+#include "NajaProgress.h"
+#include "NajaPythonExport.h"
+namespace PYNAJA { NAJA_PY_EXPORT extern PyObject* PyNajaCancelled; }
 #include "PyNetlistState.h"
 #include "NLID.h"
 #include "NajaPythonProperty.h"
@@ -162,6 +165,9 @@ inline Py_hash_t finishPyHash(Py_uhash_t hash) {
 #define TRY try {
 
 #define NLCATCH \
+  } catch (const naja::NajaCancelled& e) { \
+    if (!PyErr_Occurred()) PyErr_SetString(PYNAJA::PyNajaCancelled, e.what()); \
+    return nullptr; \
   } catch (const naja::NL::NLException& e) { \
     std::ostringstream error; \
     error << "Naja NL error: " << e.getReason(); \

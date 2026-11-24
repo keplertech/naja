@@ -804,6 +804,8 @@ semantic source of truth.
 
    * - Object
      - Main public methods and values
+   * - ``NajaCancelled``
+     - ``RuntimeError`` subclass raised when a loader progress callback returns ``False``; see :doc:`loading`.
    * - :class:`najaeda.naja.SNLParameter`
      - :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`, :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`, :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`, :meth:`createString <najaeda.naja.SNLParameter.createString>` (optional default value), :meth:`hasDefaultValue <najaeda.naja.SNLParameter.hasDefaultValue>`, :meth:`getValue <najaeda.naja.SNLParameter.getValue>`, :meth:`getName <najaeda.naja.SNLParameter.getName>`, :meth:`getDesign <najaeda.naja.SNLParameter.getDesign>`, :meth:`destroy <najaeda.naja.SNLParameter.destroy>`
    * - :class:`najaeda.naja.NLClock`
@@ -2318,3 +2320,18 @@ when needed); data instances retain the original model. Model source metadata,
 clock/reset declarations and retained frontend source links are preserved in
 the specialization. Shared models with additional timing-model decorations are
 left intact when those decorations cannot be cloned faithfully.
+
+
+Loader progress and cancellation
+--------------------------------
+
+``NLDB.loadGateLevelVerilog``, ``NLDB.loadSystemVerilog``, ``NLDB.loadVHDL``,
+``NLDB.loadLibertyPrimitives`` and static ``NLDB.loadNajaIF`` accept
+``progress=None`` or a callable receiving ``stage``, ``detail``, ``current`` and
+``total`` as keyword arguments. The callback runs on the loading thread with
+the GIL acquired. Returning ``False`` raises ``naja.NajaCancelled``, a public
+``RuntimeError`` subclass. Callback exceptions propagate unchanged. Partially
+loaded databases are safe to destroy, but cancellation does not roll back work.
+See :doc:`loading` for stage order, units, throttling and threading restrictions.
+The corresponding high-level ``netlist.load_*`` wrappers support this contract;
+experts need the raw API only when managing a particular database directly.

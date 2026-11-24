@@ -131,6 +131,7 @@ SNLDesign* VHDLConstructor::construct(std::string_view source) const {
 SNLDesign* VHDLConstructor::constructFile(
     const std::filesystem::path& path, std::string_view top) const {
   VHDLIntent::invalidate(library_ ? library_->getDB() : nullptr);
+  if (progress_) progress_.begin("parse", path.string(), 1);
   std::ifstream input(path, std::ios::binary);
   if (!input) {
     unsupported("cannot open VHDL file '" + path.string() + "'");
@@ -138,7 +139,12 @@ SNLDesign* VHDLConstructor::constructFile(
   const std::string source(
       (std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   try {
-    return constructSource(source, top, path.string());
+    auto* design = constructSource(source, top, path.string());
+    progress_.finish();
+    progress_.begin("done");
+    return design;
+  } catch (const NajaCancelled&) {
+    throw;
   } catch (const LocatedVHDLException&) {
     throw;
   } catch (const std::exception& exception) {
@@ -157,18 +163,26 @@ SNLDesign* VHDLConstructor::constructFiles(
   std::sort(ordered.begin(), ordered.end());
   ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
   std::vector<std::pair<std::string, std::string>> inputs;
+  progress_.begin("parse", {}, ordered.size());
   for (const auto& path : ordered) {
+    if (progress_) progress_.checkpoint(path.string());
     std::ifstream input(path, std::ios::binary);
     if (!input) unsupported("cannot open VHDL file '" + path.string() + "'");
     inputs.emplace_back(path.string(), std::string(
         std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()));
   }
-  return constructInputs(inputs, top, true);
+  auto* design = constructInputs(inputs, top, true);
+  progress_.finish();
+  progress_.begin("done");
+  return design;
 }
 
 SNLDesign* VHDLConstructor::construct(
     std::string_view source, std::string_view top) const {
-  return constructSource(source, top, {});
+  auto* design = constructSource(source, top, {});
+  progress_.finish();
+  progress_.begin("done");
+  return design;
 }
 
 SNLDesign* VHDLConstructor::constructSource(
@@ -224,7 +238,13 @@ SNLDesign* VHDLConstructor::constructInputs(
     if (!report) unsupported("cannot create diagnostics report file: " + destination.string());
     report << "=== Naja VHDL Diagnostics ===\n";
   }
+  if (progress_ && !mappedSource) progress_.begin("parse", path, inputs.size());
   const auto parsed = vhdl::Parser::parse(source, true);
+  if (progress_ && !mappedSource) {
+    for (const auto& input : inputs) progress_.advance(input.first);
+    progress_.finish();
+    progress_.begin("construct");
+  }
   std::unordered_set<std::string> loggedCodes;
   if (!parsed.warnings.empty()) {
     if (options_.diagnosticsReportPath) {
@@ -326,7 +346,7 @@ SNLDesign* VHDLConstructor::constructInputs(
     SNLDesign* design = nullptr;
     try {
       const VHDLSourceMap compilationMap(compilation, origins);
-      design = constructVHDLRTL(library_, all.syntax, selected, compilation, libraries, compilationMap, intentSession);
+      design = constructVHDLRTL(library_, all.syntax, selected, compilation, libraries, compilationMap, intentSession, progress_ ? &progress_ : nullptr);
     } catch (const VHDLRTLException& exception) {
       const auto offset = exception.span.start.offset;
       size_t start = 0;
@@ -533,6 +553,7 @@ SNLDesign* VHDLConstructor::constructInputs(
         model->setName(NLName(specialization));
         models.emplace(specialization, model);
       }
+      progress_.advance(topEntity->name.spelling);
       auto* design = SNLDesign::create(library_, NLName(topEntity->name.spelling));
       topDesign = design;
       SNLHDLSpecialization::annotate(design, std::string(nameKey(topEntity->name)), {});
@@ -988,6 +1009,7 @@ SNLDesign* VHDLConstructor::constructInputs(
     };
     lowerExpression(*assignment.value, output.net);
   }
+  progress_.advance(entity.name.spelling);
   return designGuard.release();
 }
 

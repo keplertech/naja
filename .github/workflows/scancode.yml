@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+# SPDX-License-Identifier: Apache-2.0
+
+name: ScanCode
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Prepare scan inputs
+        shell: bash
+        run: |
+          mkdir -p scancode-inputs/naja
+          # Preserve hidden source files beneath naja/: the action copies inputs/*.
+          # Exclude Git metadata from both the checkout and its submodules.
+          tar -C source --exclude=.git -cf - . | tar -C scancode-inputs/naja -xf -
+
+      - name: Scan sources and generate reports
+        uses: aboutcode-org/scancode-action@712cc5c615a59848e516b4e62ea1a391beab829d
+        with:
+          pipelines: scan_codebase
+          inputs-path: scancode-inputs
+          output-formats: "json xlsx spdx cyclonedx"
+          project-name: naja
+          outputs-archive-name: scancode-outputs
+          # Report findings for review without enforcing a license policy yet.
+          check-compliance: "false"

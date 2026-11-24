@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "NajaProgress.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +57,7 @@ class SNLSVLiveASTLink {
     std::vector<std::shared_ptr<slang::syntax::SyntaxTree>> syntaxTrees_ {};
 
   private:
+    NajaProgressReporter progress_;
     std::unordered_map<const NLObject*, const slang::ast::Symbol*> symbolByObject_ {};
     std::unordered_map<const slang::ast::Symbol*, Objects> objectsBySymbol_ {};
 };
@@ -88,6 +90,7 @@ class SNLSVLiveASTLinkProperty: public naja::NajaPrivateProperty {
     void preDestroy() override;
 
   private:
+    NajaProgressReporter progress_;
     std::unique_ptr<SNLSVLiveASTLink> link_;
 };
 
@@ -138,6 +141,8 @@ class SNLSVConstructor {
       std::map<std::string, std::vector<std::string>> frontendOptions {};
     };
 
+    void setProgressCallback(NajaProgressCallback callback) { progress_.setCallback(std::move(callback)); }
+
     SNLSVConstructor() = delete;
     SNLSVConstructor(const SNLSVConstructor&) = delete;
     SNLSVConstructor(NLLibrary* library);
@@ -148,6 +153,7 @@ class SNLSVConstructor {
     void construct(const std::filesystem::path& path, const ConstructOptions& options);
 
   private:
+    NajaProgressReporter progress_;
     NLLibrary* library_ {nullptr};
 };
 

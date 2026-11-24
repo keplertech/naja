@@ -7,6 +7,7 @@
 #include <filesystem>
 //#include <boost/asio.hpp>
 #include "NLID.h"
+#include "NajaProgress.h"
 
 namespace naja::NL {
 
@@ -19,8 +20,13 @@ class SNLCapnP {
         PreferExisting,
         ForbidConflicts
       };
+      /// Synchronous callback on the loading thread; false throws NajaCancelled.
+      NajaProgressCallback progress;
       PrimitiveConflictPolicy primitiveConflictPolicy_;
       LoadingConfiguration(): primitiveConflictPolicy_(PrimitiveConflictPolicy::PreferExisting) {}
+     private:
+      friend class SNLCapnP;
+      bool nested_ = false;
     };
 
     //static boost::asio::ip::tcp::socket getSocket(uint16_t port=0); 

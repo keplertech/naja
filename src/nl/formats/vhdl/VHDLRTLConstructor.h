@@ -6,6 +6,7 @@
 #include "vhdl/Parser.h"
 #include "VHDLIntent.h"
 #include "NLException.h"
+#include "NajaProgress.h"
 #include <cstddef>
 #include <vector>
 
@@ -36,5 +37,6 @@ SNLDesign* constructVHDLRTL(NLLibrary* library, const vhdl::DesignFile& syntax,
                           std::string_view top, std::string_view source,
                           const std::vector<VHDLLibrarySource>& libraries,
                           const VHDLSourceMap& sourceMap,
-                          const VHDLIntent::SessionPtr& intentSession = {});
+                          const VHDLIntent::SessionPtr& intentSession = {},
+                          NajaProgressReporter* progress = nullptr);
 }
