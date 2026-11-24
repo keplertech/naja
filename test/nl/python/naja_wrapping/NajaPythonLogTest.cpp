@@ -4,6 +4,8 @@
 
 #include <Python.h>
 #include <atomic>
+#include <cstdlib>
+#include <filesystem>
 #include <thread>
 #include <vector>
 
@@ -14,7 +16,18 @@ extern "C" PyObject* PyInit_naja();
 
 TEST(NajaPythonLogTest, callbacksFromNativeThreadsWithoutGIL) {
   ASSERT_EQ(0, PyImport_AppendInittab("naja", &PyInit_naja));
-  Py_Initialize();
+  PyConfig config;
+  PyConfig_InitPythonConfig(&config);
+  if (const char* executable = std::getenv("NAJA_TEST_PYTHON_EXECUTABLE")) {
+    // Bazel supplies the hermetic interpreter in runfiles. Its location lets
+    // CPython discover the matching standard library instead of its build prefix.
+    auto path = std::filesystem::absolute(executable).string();
+    auto status = PyConfig_SetBytesString(&config, &config.program_name, path.c_str());
+    ASSERT_FALSE(PyStatus_Exception(status)) << status.err_msg;
+  }
+  auto status = Py_InitializeFromConfig(&config);
+  PyConfig_Clear(&config);
+  ASSERT_FALSE(PyStatus_Exception(status)) << status.err_msg;
   ASSERT_EQ(0, PyRun_SimpleString(R"PY(
 import naja, threading
 naja.set_console_logging(False)

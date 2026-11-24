@@ -23,6 +23,10 @@ cc_test(
         "NajaPythonLogTest.cpp",
         "//src/nl/python/naja_wrapping:PyNaja.cpp",
     ],
+    # Embedding needs the interpreter's standard library as well as libpython.
+    data = ["@rules_python//python:current_py_toolchain"],
+    env = {"NAJA_TEST_PYTHON_EXECUTABLE": "$(PYTHON3_ROOTPATH)"},
+    toolchains = ["@rules_python//python:current_py_toolchain"],
     deps = [
         "//src/core:naja_core",
         "//src/nl/python/naja_wrapping:naja_python",
