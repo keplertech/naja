@@ -12484,6 +12484,7 @@ TEST_F(SNLSVConstructorTestSimple, parseUnsupportedModuleBodyCoverageScopeLabelR
   ASSERT_TRUE(svFile.good());
   svFile << "module top(input logic clk);\n"
          << "  clocking cb @(posedge clk);\n"
+         << "    input clk;\n"
          << "  endclocking\n"
          << "endmodule\n";
   svFile.close();
@@ -12509,6 +12510,7 @@ TEST_F(SNLSVConstructorTestSimple, parseUnsupportedGenerateBodyCoverageScopeLabe
   svFile << "module top(input logic clk);\n"
          << "  if (1) begin : g\n"
          << "    clocking cb @(posedge clk);\n"
+         << "      input clk;\n"
          << "    endclocking\n"
          << "  end\n"
          << "endmodule\n";
@@ -12534,6 +12536,7 @@ TEST_F(SNLSVConstructorTestSimple, parseUnsupportedModuleBodyCoverageScopeLabelU
   ASSERT_TRUE(svFile.good());
   svFile << "module top(input logic clk);\n"
          << "  default clocking @(posedge clk);\n"
+         << "    input clk;\n"
          << "  endclocking\n"
          << "endmodule\n";
   svFile.close();
