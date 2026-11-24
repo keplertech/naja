@@ -57,6 +57,39 @@ class NajaedaLoggingTest(unittest.TestCase):
         self.assertIn("[warning] python warning through native logger", contents)
         self.assertIn("[error] python error through native logger", contents)
 
+    def test_forward_native_logging_without_echo(self):
+        from najaeda import forward_native_logging
+        logger = logging.getLogger("najaeda.native")
+        record = logging.LogRecord("najaeda.native", logging.WARNING, "", 0, "native", (), None)
+        with (
+            mock.patch.object(logger, "handle", wraps=logger.handle) as receive,
+            mock.patch.object(naja, "log", wraps=naja.log) as send,
+        ):
+            handle = forward_native_logging("warning")
+            try:
+                # Exercise the helper using a real native loader message.
+                import pathlib
+                import tempfile
+                db = naja.NLDB.create(naja.NLUniverse.create())
+                try:
+                    with tempfile.TemporaryDirectory() as directory:
+                        source = pathlib.Path(directory) / "sample.sv"
+                        source.write_text("module sample(output [2:0] q); assign q = 5'b10101; endmodule")
+                        db.loadSystemVerilog([str(source)], diagnostics_report_path=None)
+                finally:
+                    naja.NLUniverse.get().destroy()
+                send.assert_not_called()
+                self.assertTrue(receive.call_count)
+                records = [call.args[0] for call in receive.call_args_list]
+                self.assertTrue(all(r.levelno == logging.WARNING for r in records))
+                self.assertTrue(all(r._naja_native_record for r in records))
+            finally:
+                naja.remove_log_callback(handle)
+        record._naja_native_record = True
+        with mock.patch.object(naja, "log") as send:
+            _logging.NativeLogHandler().emit(record)
+            send.assert_not_called()
+
     def test_native_level_extremes(self):
         self.assertEqual("critical", _logging._native_level(logging.CRITICAL))
         self.assertEqual("debug", _logging._native_level(logging.DEBUG))

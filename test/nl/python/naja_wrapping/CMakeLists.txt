@@ -18,6 +18,8 @@ set_tests_properties(naja-python-tests
 
 SET(naja_python_property_tests
   NajaPythonPropertyTest.cpp
+  NajaPythonLogTest.cpp
+  ${PROJECT_SOURCE_DIR}/src/nl/python/naja_wrapping/PyNaja.cpp
 )
 
 ADD_EXECUTABLE(najaPythonPropertyTests ${naja_python_property_tests})

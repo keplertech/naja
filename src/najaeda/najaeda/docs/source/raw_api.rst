@@ -858,6 +858,8 @@ semantic source of truth.
        :func:`najaeda.naja.getContentHashPropertyNames`,
        :func:`najaeda.naja.setLogLevel`, :func:`najaeda.naja.addLogFile`,
        :func:`najaeda.naja.clearLogSinks`,
+       :func:`najaeda.naja.add_log_callback`, :func:`najaeda.naja.remove_log_callback`,
+       :func:`najaeda.naja.set_console_logging`,
        :func:`najaeda.naja.installLoggingHandler`, :func:`najaeda.naja.log`,
        :func:`najaeda.naja.logInfo`, :func:`najaeda.naja.logWarn`,
        :func:`najaeda.naja.logCritical`, :func:`najaeda.naja.intentDescribe` plus the source intent helpers
@@ -2064,6 +2066,9 @@ Module functions
    setLogLevel
    addLogFile
    clearLogSinks
+   add_log_callback
+   remove_log_callback
+   set_console_logging
    installLoggingHandler
    log
    logInfo
@@ -2109,6 +2114,37 @@ layout version is independent of the wire schema version owned by ``naja-if``.
 .. autofunction:: najaeda.naja.snapshotManifest
 .. autofunction:: najaeda.naja.setLogLevel
 .. autofunction:: najaeda.naja.addLogFile
+
+**Native logging callbacks**
+
+``add_log_callback(fn, level="info")`` registers a callable and returns an integer
+handle. The callable receives ``fn(level, message)`` synchronously on the native
+logging thread, with the GIL acquired. ``message`` is the formatted payload,
+without timestamps, logger names or other pattern fields. Level names are
+``trace``, ``debug``, ``info``, ``warning``, ``error`` and ``critical``; the minimum
+level also accepts ``warn`` and ``off``, as with ``log()``. The global
+``setLogLevel()`` filter still applies before individual sink thresholds.
+
+``remove_log_callback(handle)`` stops delivery and releases the callable.
+Unknown handles are ignored. A call already executing may finish; a callback
+may remove itself. ``clearLogSinks()`` also unregisters callbacks and restores
+the default console sink. Keep callbacks short and dispatch UI work to the UI
+thread yourself. Exceptions are reported through ``sys.unraisablehook`` using
+``PyErr_WriteUnraisable`` and do not interrupt native loading. Callback delivery
+is suppressed for nested logs and for messages sent by Python through ``log()``,
+``logInfo()``, ``logWarn()`` or ``logCritical()``, preventing feedback loops.
+
+``set_console_logging(False)`` disables native console sinks while preserving
+callbacks and file sinks. ``True`` restores one console sink at its default
+``info`` threshold. Console logging is enabled by default.
+
+Experts can use callbacks directly to integrate with an application UI. For
+standard Python logging, use :func:`najaeda.forward_native_logging` instead.
+
+.. autofunction:: najaeda.naja.add_log_callback
+.. autofunction:: najaeda.naja.remove_log_callback
+.. autofunction:: najaeda.naja.set_console_logging
+
 .. autofunction:: najaeda.naja.clearLogSinks
 .. autofunction:: najaeda.naja.installLoggingHandler
 .. autofunction:: najaeda.naja.log

@@ -20,6 +20,12 @@ load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 # since a single cc_library can't conditionally pick either at build
 # time the way CMake's option toggle does.
 
+# The embedded callback regression initializes the same module entry point.
+exports_files(
+    ["PyNaja.cpp"],
+    visibility = ["//test/nl/python/naja_wrapping:__pkg__"],
+)
+
 cc_library(
     name = "naja_python",
     srcs = [
