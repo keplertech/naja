@@ -4,6 +4,7 @@
 
 import unittest
 import tempfile
+import os
 from pathlib import Path
 import naja
 
@@ -19,6 +20,35 @@ class SNLDesignTruthTablesTest(unittest.TestCase):
     del self.primitives
     if naja.NLUniverse.get():
       naja.NLUniverse.get().destroy()
+
+  def testGatePolarity(self):
+    formats = Path(os.environ.get("FORMATS_PATH", Path(__file__).resolve().parents[2] / "formats"))
+    db = self.primitives.getDB()
+    db.loadLibertyPrimitives([str(formats / "liberty/benchmarks/tests/gate_polarity.lib")])
+    library = db.getLibrary("gate_polarity")
+    for name, kind, pin in (("cell0", "nand", "P"), ("cell1", "and", "P"),
+                            ("cell2", "nor", "R"), ("cell3", "or", "P")):
+      with self.subTest(cell=name):
+        cell = library.getSNLDesign(name)
+        self.assertEqual((kind, [cell.getScalarTerm(pin)]), cell.getGatePolarity())
+        for predicate in ("isAnd", "isNand", "isOr", "isNor", "isXor", "isXnor"):
+          self.assertFalse(getattr(cell, predicate)())
+    prim = naja.SNLDesign.createPrimitive(self.primitives, "gate")
+    first = naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Input, "P")
+    naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Output, "Y")
+    naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Input, "Q")
+    self.assertIsNone(prim.getGatePolarity())
+    prim.setTruthTable(0b1011)  # !(!P*Q): row bit 0 is P.
+    self.assertEqual(("nand", [first]), prim.getGatePolarity())
+
+  def testGatePolarityFromParameter(self):
+    prim = naja.SNLDesign.createPrimitive(self.primitives, "parameter_gate")
+    inputs = [naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Input, name)
+              for name in ("P", "Q")]
+    output = naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Output, "Y")
+    init = naja.SNLParameter.createBinary(prim, "INIT", 4, 8)
+    prim.setTruthTableFromParameter(output, inputs, init)
+    self.assertIsNone(prim.getGatePolarity())
 
   def testStandardGates(self):
     prim = naja.SNLDesign.createPrimitive(self.primitives, "LOGIC0")
@@ -37,12 +67,14 @@ class SNLDesignTruthTablesTest(unittest.TestCase):
     naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Output, "Y")
     prim.setTruthTable(0b10)
     self.assertTrue(prim.isBuf())
+    self.assertIsNone(prim.getGatePolarity())
 
     prim = naja.SNLDesign.createPrimitive(self.primitives, "INV")
     naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Input, "X")
     naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Output, "Y")
     prim.setTruthTable(0b01)
     self.assertTrue(prim.isInv())
+    self.assertIsNone(prim.getGatePolarity())
 
     prim = naja.SNLDesign.createPrimitive(self.primitives, "MUX2")
     naja.SNLScalarTerm.create(prim, naja.SNLTerm.Direction.Input, "A")
@@ -101,6 +133,7 @@ class SNLDesignTruthTablesTest(unittest.TestCase):
       for name in ("isConst0", "isConst1", "isConst", "isInv", "isBuf",
                    "isAnd", "isNand", "isOr", "isNor", "isXor", "isXnor", "isMux"):
         self.assertFalse(getattr(model, name)())
+      self.assertIsNone(model.getGatePolarity())
       with self.assertRaisesRegex(RuntimeError, "FA has two outputs"):
         model.getTruthTable()
       self.assertFalse(model.isConst0())
@@ -119,6 +152,7 @@ class SNLDesignTruthTablesTest(unittest.TestCase):
                  "isAnd", "isNand", "isOr", "isNor", "isXor", "isXnor", "isMux"):
       with self.subTest(predicate=name):
         self.assertFalse(getattr(prim, name)())
+    self.assertIsNone(prim.getGatePolarity())
     self.assertEqual([1, 2], prim.getTruthTableByOutputID(o0.getID()))
 
   def testPrimitiveTruthTableErrors(self):

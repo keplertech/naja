@@ -1,0 +1,28 @@
+/* SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+ * SPDX-License-Identifier: Apache-2.0
+ */
+library (gate_polarity) {
+  cell (cell0) {
+    pin (P) { direction : input; }
+    pin (Y) { direction : output; function : "!(!P*Q)"; }
+    pin (Q) { direction : input; }
+  }
+  cell (cell1) {
+    pin (Q) { direction : input; }
+    pin (Y) { direction : output; function : "Q*R*!P"; }
+    pin (R) { direction : input; }
+    pin (P) { direction : input; }
+  }
+  cell (cell2) {
+    pin (Q) { direction : input; }
+    pin (Y) { direction : output; function : "!(Q+!R+P)"; }
+    pin (R) { direction : input; }
+    pin (P) { direction : input; }
+  }
+  cell (cell3) {
+    pin (Q) { direction : input; }
+    pin (Y) { direction : output; function : "!(!Q*!R*P)"; }
+    pin (R) { direction : input; }
+    pin (P) { direction : input; }
+  }
+}

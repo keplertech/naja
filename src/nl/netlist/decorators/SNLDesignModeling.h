@@ -278,6 +278,13 @@ class SNLDesignModeling {
     static bool isConst(const SNLDesign* design);
     static bool isInv(const SNLDesign* design);
     static bool isBuf(const SNLDesign* design);
+    struct GatePolarity {
+      SNLTruthTable::GenericType type;
+      std::vector<SNLBitTerm*> invertedInputs;
+    };
+    /// Recognize a basic gate, minimizing input inversions and preferring
+    /// NAND/NOR on ties. Inverted inputs follow design input-term order.
+    static std::optional<GatePolarity> getGatePolarity(const SNLDesign* design);
     static bool isAnd(const SNLDesign* design);
     static bool isNand(const SNLDesign* design);
     static bool isOr(const SNLDesign* design);
