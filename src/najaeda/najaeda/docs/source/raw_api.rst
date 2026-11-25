@@ -2819,6 +2819,7 @@ primitive modeling; no high-level wrapper is required to read this metadata.
 Liberty loading recognizes scan roles from ``nextstate_type`` and from
 ``test_cell`` pin ``signal_type`` attributes. Test groups supply metadata only;
 they never replace functional terms, sequential models or timing arcs.
+A ``test_scan_in_inverted`` test-cell pin is reported with a warning and contributes no scan role.
 Disagreeing scan roles are cleared with a warning. For metadata-identified scan
 muxes, the functional next-state model determines the scan-enable active level,
 including muxes that invert both data branches. Uncheckable muxes retain their

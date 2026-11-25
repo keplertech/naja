@@ -1193,3 +1193,45 @@ TEST_F(SNLLibertyConstructorTest1, testScanMetadata) {
   EXPECT_TRUE(warned("cell nonmux pin c"));
   EXPECT_TRUE(warned("cell contradiction pin c"));
 }
+
+TEST_F(SNLLibertyConstructorTest1, testScanInputInverted) {
+  using Modeling = SNLDesignModeling;
+  using Role = Modeling::SNLTermRole;
+  using Level = Modeling::SNLActiveLevel;
+  using Operator = Modeling::BooleanExpression::Operator;
+  std::vector<std::string> warnings;
+  auto sink = naja::log::addCallbackSink([&](auto, std::string_view message) {
+    warnings.emplace_back(message);
+  }, spdlog::level::warn);
+  SNLLibertyConstructor constructor(library_);
+  EXPECT_NO_THROW(constructor.construct(std::filesystem::path(SNL_LIBERTY_BENCHMARKS) /
+      "benchmarks" / "tests" / "scan_input_inverted.lib"));
+  naja::log::removeSink(sink);
+  ASSERT_EQ(2u, library_->getSNLDesigns().size());
+  auto* scan = library_->getSNLDesign(NLName("scan_ff"));
+  ASSERT_NE(nullptr, scan);
+  EXPECT_EQ(Role::ScanInput, Modeling::getTermRole(scan->getScalarTerm(NLName("si"))));
+  EXPECT_EQ(Role::ScanEnable, Modeling::getTermRole(scan->getScalarTerm(NLName("se"))));
+  EXPECT_EQ(Level::NA, Modeling::getActiveLevel(scan->getScalarTerm(NLName("se"))));
+  EXPECT_EQ(Role::DataInput, Modeling::getTermRole(scan->getScalarTerm(NLName("d"))));
+  const std::string invertedWarning = "Liberty cell scan_ff test_cell pin si inverted scan input is not represented; "
+      "the pin gets no scan role from the test cell.";
+  EXPECT_EQ(1, std::count(warnings.begin(), warnings.end(), invertedWarning));
+  EXPECT_THAT(warnings, ElementsAre(invertedWarning,
+      "Liberty cell scan_ff pin se next_state is not a checkable scan mux; active level is NA."));
+
+  auto* inverter = library_->getSNLDesign(NLName("inv1"));
+  ASSERT_NE(nullptr, inverter);
+  auto table = Modeling::getTruthTable(inverter);
+  ASSERT_TRUE(table.isInitialized());
+  EXPECT_EQ(1u, table.size());
+  EXPECT_TRUE(NLBitVecDynamic(0b01, 2) == table.bits());
+  auto function = Modeling::getFunction(inverter->getScalarTerm(NLName("y")));
+  ASSERT_TRUE(function);
+  const auto& root = function->nodes[function->root];
+  EXPECT_EQ(Operator::Not, root.operation);
+  ASSERT_EQ(1u, root.operands.size());
+  const auto& input = function->nodes[root.operands[0]];
+  EXPECT_EQ(Operator::Term, input.operation);
+  EXPECT_EQ(inverter->getScalarTerm(NLName("a")), input.term);
+}
