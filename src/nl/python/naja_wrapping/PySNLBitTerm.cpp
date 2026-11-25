@@ -9,6 +9,7 @@
 #include "SNLDesignModeling.h"
 
 #include "PyInterface.h"
+#include "PySNLSequentialModel.h"
 #include "PySNLScalarTerm.h"
 #include "PySNLBusTermBit.h"
 
@@ -21,6 +22,25 @@ using namespace naja::NL;
 #define  ACCESS_OBJECT            parent_.parent_.parent_.object_
 #define  ACCESS_CLASS(_pyObject)  &(_pyObject->parent_)
 #define  METHOD_HEAD(function)    GENERIC_METHOD_HEAD(SNLBitTerm, function)
+
+static PyObject* PySNLBitTerm_getFunction(PySNLBitTerm* self) {
+  METHOD_HEAD("SNLBitTerm.getFunction()")
+  TRY
+  auto function = SNLDesignModeling::getFunction(selfObject);
+  if (!function) Py_RETURN_NONE;
+  return booleanExpressionToPython(*function);
+  NLCATCH
+}
+
+static PyObject* PySNLBitTerm_setFunction(PySNLBitTerm* self, PyObject* object) {
+  METHOD_HEAD("SNLBitTerm.setFunction()")
+  TRY
+  SNLDesignModeling::BooleanExpression expression;
+  if (!booleanExpressionFromPython(object, selfObject->getDesign(), expression)) return nullptr;
+  SNLDesignModeling::setFunction(selfObject, std::move(expression));
+  NLCATCH
+  Py_RETURN_NONE;
+}
 
 static PyObject* PySNLBitTerm_getRole(PySNLBitTerm* self) {
   METHOD_HEAD("SNLBitTerm.getRole()")
@@ -153,6 +173,8 @@ DEPRECATED_ROLE_ALIAS(is_data_output, isDataOutput)
 #undef DEPRECATED_ROLE_ALIAS
 
 PyMethodDef PySNLBitTerm_Methods[] = {
+  {"getFunction", (PyCFunction)PySNLBitTerm_getFunction, METH_NOARGS, "get the written combinational Boolean expression, or None."},
+  {"setFunction", (PyCFunction)PySNLBitTerm_setFunction, METH_O, "set an expression matching the existing output truth table."},
   {"getRole", (PyCFunction)PySNLBitTerm_getRole, METH_NOARGS, "get the primitive term role."},
   {"setRole", (PyCFunction)PySNLBitTerm_setRole, METH_VARARGS,
     "set the primitive term role and optional active level."},

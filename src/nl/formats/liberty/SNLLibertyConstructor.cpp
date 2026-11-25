@@ -1412,6 +1412,7 @@ void parseTerms(
       std::reverse(terms.begin(), terms.end());
       auto truthTable = tree->getTruthTable(terms);
       naja::NL::SNLDesignModeling::setTruthTable(primitive, truthTable);
+      SNLDesignModeling::setFunction(outputTerm, tree->getBooleanExpression());
     } catch (const SNLLibertyConstructorException& e) {
       auto reason = buildFunctionParseErrorReason(
         pinName, termFunctionLines[outputTerm], function, e.getReason());
@@ -1420,6 +1421,7 @@ void parseTerms(
   } else if (functionParsingType == FunctionParsingType::Combinational &&
              termFunctions.size() > 0) {
     std::vector<SNLTruthTable> truthTables;
+    std::vector<std::pair<SNLBitTerm*, SNLDesignModeling::BooleanExpression>> functions;
     for (auto term: primitive->getBitTerms()) {
       if (term->getDirection() == SNLTerm::Direction::Input) {
         continue;
@@ -1440,6 +1442,7 @@ void parseTerms(
         std::reverse(terms.begin(), terms.end());
         auto truthTable = tree->getTruthTable(terms);
         truthTables.push_back(truthTable);
+        functions.emplace_back(term, tree->getBooleanExpression());
       } catch (const SNLLibertyConstructorException& e) {
         auto reason = buildFunctionParseErrorReason(
           pinName, termFunctionLines.at(scalarTerm), function, e.getReason());
@@ -1447,6 +1450,7 @@ void parseTerms(
       }
     }
     naja::NL::SNLDesignModeling::setTruthTables(primitive, truthTables);
+    for (const auto& [term, function] : functions) SNLDesignModeling::setFunction(term, function);
   }
   if (functionParsingType == FunctionParsingType::Sequential) {
     populateSequentialModel(

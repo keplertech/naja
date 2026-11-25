@@ -663,3 +663,50 @@ TEST_F(SNLLibertyConstructorTest2, GatePolarityInputOrder) {
     EXPECT_FALSE(SNLDesignModeling::isXnor(cell));
   }
 }
+
+namespace {
+std::string writtenExpression(const SNLDesignModeling::BooleanExpression& expression, size_t id) {
+  using Op = SNLDesignModeling::BooleanExpression::Operator;
+  const auto& node = expression.nodes.at(id);
+  if (node.operation == Op::Term) return node.term->getName().getString();
+  if (node.operation == Op::Constant) return node.constant ? "1" : "0";
+  std::string result = node.operation == Op::Not ? "not(" : node.operation == Op::And ? "and(" : node.operation == Op::Or ? "or(" : "xor(";
+  for (size_t i = 0; i < node.operands.size(); ++i) {
+    if (i) result += ",";
+    result += writtenExpression(expression, node.operands[i]);
+  }
+  return result + ")";
+}
+}
+
+TEST_F(SNLLibertyConstructorTest2, WrittenCombinationalFunctions) {
+  SNLLibertyConstructor constructor(library_);
+  constructor.construct(std::filesystem::path(SNL_LIBERTY_BENCHMARKS) / "benchmarks/tests/written_functions.lib");
+  struct Expected { const char* cell; const char* output; const char* expression; uint64_t mask; };
+  const Expected expected[] = {
+    {"bubble", "Y", "not(and(not(P),Q))", 0xb},
+    {"product", "Y", "and(P,not(Q))", 0x2},
+    {"nor", "Y", "not(or(P,not(Q)))", 0x4},
+    {"aoi", "Y", "not(or(and(P,Q),R))", 0x7},
+    {"oai", "Y", "not(and(or(P,Q),or(R,S)))", 0x111f},
+    {"parity", "Y", "xor(P,Q,R)", 0x96},
+    {"buffer", "Y", "P", 0x2},
+    {"inverter", "Y", "not(P)", 0x1},
+    {"postfix", "Y", "or(and(P,not(Q)),R)", 0xf2},
+    {"double", "Y", "not(not(P))", 0x2},
+    {"constant", "Y", "and(P,1)", 0x2},
+    {"pair", "Y", "and(P,Q)", 0x8},
+    {"pair", "Z", "not(or(P,Q))", 0x1},
+  };
+  for (const auto& item : expected) {
+    auto* design = library_->getSNLDesign(NLName(item.cell));
+    ASSERT_NE(nullptr, design);
+    auto* output = design->getScalarTerm(NLName(item.output));
+    auto function = SNLDesignModeling::getFunction(output);
+    ASSERT_TRUE(function) << item.cell;
+    EXPECT_EQ(item.expression, writtenExpression(*function, function->root)) << item.cell;
+    EXPECT_EQ(item.mask, static_cast<uint64_t>(SNLDesignModeling::getTruthTable(design, output->getOrderID()).bits())) << item.cell;
+    EXPECT_EQ(SNLDesignModeling::getTruthTable(design, output->getOrderID()).size(),
+        SNLDesignModeling::getCombinatorialInputs(output).size()) << item.cell;
+  }
+}

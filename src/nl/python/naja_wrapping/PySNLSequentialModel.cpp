@@ -421,6 +421,51 @@ PyObject* modelToPython(const SNLDesignModeling::SequentialModel& model) {
 
 }  // namespace
 
+PyObject* booleanExpressionToPython(const SNLDesignModeling::BooleanExpression& expression) {
+  return expressionToPython(expression, expression.root);
+}
+
+bool booleanExpressionFromPython(PyObject* object, const SNLDesign* design,
+    SNLDesignModeling::BooleanExpression& expression) {
+  using Op = SNLDesignModeling::BooleanExpression::Operator;
+  if (PyUnicode_Check(object)) {
+    expression = parseExpression(design, PyUnicode_AsUTF8(object), {});
+    return true;
+  }
+  auto parse = [&](auto&& self, PyObject* item) -> bool {
+    if (PyBool_Check(item)) { expression.root = expression.addConstant(item == Py_True); return true; }
+    if (!PyTuple_Check(item) || PyTuple_Size(item) < 2 || !PyUnicode_Check(PyTuple_GetItem(item, 0))) return false;
+    const std::string name(PyUnicode_AsUTF8(PyTuple_GetItem(item, 0)));
+    const auto count = PyTuple_Size(item);
+    auto* value = PyTuple_GetItem(item, 1);
+    if (name == "term" && count == 2 && IsPySNLBitTerm(value)) {
+      auto* term = PYSNLBitTerm_O(value);
+      if (!term) return false;
+      expression.root = expression.addTerm(term);
+      return true;
+    }
+    if (name == "state" && count == 2 && PyLong_Check(value)) {
+      auto state = PyLong_AsSize_t(value);
+      if (PyErr_Occurred()) return false;
+      expression.root = expression.addState(state);
+      return true;
+    }
+    const auto operation = name == "not" ? Op::Not : name == "and" ? Op::And : name == "or" ? Op::Or : Op::Xor;
+    if ((name != "not" && name != "and" && name != "or" && name != "xor") ||
+        (operation == Op::Not ? count != 2 : count < 3)) return false;
+    std::vector<size_t> operands;
+    for (Py_ssize_t i = 1; i < count; ++i) {
+      if (!self(self, PyTuple_GetItem(item, i))) return false;
+      operands.push_back(expression.root);
+    }
+    expression.root = expression.addOperation(operation, std::move(operands));
+    return true;
+  };
+  if (parse(parse, object)) return true;
+  setError("Expected a Boolean expression tuple (term, not, and, or, xor), bool, or expression string");
+  return false;
+}
+
 PyObject* PySNLDesign_getSequentialModel(PySNLDesign* self) {
   GENERIC_METHOD_HEAD(SNLDesign, "SNLDesign.getSequentialModel()")
   TRY

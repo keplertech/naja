@@ -526,6 +526,7 @@ SNLDesignModeling::BooleanExpression SNLBooleanTree::getBooleanExpression() cons
     throw SNLLibertyConstructorException("Boolean tree not parsed");
   }
   SNLDesignModeling::BooleanExpression expression;
+  expression.nodes.reserve(inputs_.size() + stateInputs_.size() + 1);
   expression.root = appendBooleanExpressionNode(root_, expression);
   return expression;
 }
