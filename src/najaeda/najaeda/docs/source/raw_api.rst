@@ -1020,6 +1020,8 @@ The C++ SNL API remains the semantic source of truth.
 
     * :meth:`getOutputTerms <najaeda.naja.SNLDesign.getOutputTerms>`,
       :meth:`setTruthTable <najaeda.naja.SNLDesign.setTruthTable>`,
+      :meth:`SNLBitTerm.getFunction <najaeda.naja.SNLBitTerm.getFunction>`,
+      :meth:`SNLBitTerm.setFunction <najaeda.naja.SNLBitTerm.setFunction>`,
       :meth:`setSequentialModel <najaeda.naja.SNLDesign.setSequentialModel>`,
       :meth:`setSequentialModelFromParameters <najaeda.naja.SNLDesign.setSequentialModelFromParameters>`,
       :meth:`setRolesFromParameters <najaeda.naja.SNLDesign.setRolesFromParameters>`.
@@ -2821,3 +2823,32 @@ Disagreeing scan roles are cleared with a warning. For metadata-identified scan
 muxes, the functional next-state model determines the scan-enable active level,
 including muxes that invert both data branches. Uncheckable muxes retain their
 roles with level ``NA`` and a warning. Pin names never infer scan roles.
+
+Written combinational functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:meth:`SNLBitTerm.getFunction() <najaeda.naja.SNLBitTerm.getFunction>` returns
+``None`` or the library's written Boolean expression. Boolean constants are
+Python ``bool`` values; other nodes are ``("term", input_term)``,
+``("not", expression)``, or ``("and"|"or"|"xor", operand, operand, ...)``.
+Associative operators are flattened in operand order. Negations (including
+double negations), constants, and mixed operators retain their written structure.
+Sequential outputs return ``None``; use
+:meth:`SNLDesign.getSequentialModel() <najaeda.naja.SNLDesign.getSequentialModel>`
+for their output expressions.
+
+:meth:`SNLBitTerm.setFunction(expr) <najaeda.naja.SNLBitTerm.setFunction>` accepts
+that tuple representation, or a string using the sequential setters' Boolean
+parser. It requires an output of a leaf, non-sequential design and an existing
+truth table for that output. Every term must be an input of the same design;
+state nodes and parameter-driven tables are rejected. Evaluation must agree
+with every truth-table row, including inputs omitted from a reduced table.
+The expression describes the table and never replaces it. Invalid expressions
+raise ``RuntimeError``. For example, experts building a primitive directly can
+call ``cell.setTruthTable(8)`` followed by
+``output.setFunction(("and", ("term", p), ("term", q)))`` for two input pins.
+High-level users loading Liberty obtain these expressions automatically; a
+high-level setter is unnecessary for this primitive-modeling operation.
+
+NajaIF snapshots preserve these functions alongside Liberty truth tables,
+including term references and written expression structure.

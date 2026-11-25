@@ -1,0 +1,66 @@
+// SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+// SPDX-License-Identifier: Apache-2.0
+library(written_functions) {
+  cell(bubble) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(Y) { direction : output; function : "!(!P*Q)"; }
+  }
+  cell(product) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(Y) { direction : output; function : "P*!Q"; }
+  }
+  cell(nor) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(Y) { direction : output; function : "!(P+!Q)"; }
+  }
+  cell(aoi) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(R) { direction : input; }
+    pin(Y) { direction : output; function : "!((P*Q)+R)"; }
+  }
+  cell(oai) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(R) { direction : input; }
+    pin(S) { direction : input; }
+    pin(Y) { direction : output; function : "!((P+Q)*(R+S))"; }
+  }
+  cell(parity) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(R) { direction : input; }
+    pin(Y) { direction : output; function : "P^Q^R"; }
+  }
+  cell(buffer) {
+    pin(P) { direction : input; }
+    pin(Y) { direction : output; function : "P"; }
+  }
+  cell(inverter) {
+    pin(P) { direction : input; }
+    pin(Y) { direction : output; function : "!P"; }
+  }
+  cell(postfix) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(R) { direction : input; }
+    pin(Y) { direction : output; function : "(P & Q') | R"; }
+  }
+  cell(double) {
+    pin(P) { direction : input; }
+    pin(Y) { direction : output; function : "!!P"; }
+  }
+  cell(constant) {
+    pin(P) { direction : input; }
+    pin(Y) { direction : output; function : "P*1"; }
+  }
+  cell(pair) {
+    pin(P) { direction : input; }
+    pin(Q) { direction : input; }
+    pin(Y) { direction : output; function : "P*Q"; }
+    pin(Z) { direction : output; function : "!(P+Q)"; }
+  }
+}

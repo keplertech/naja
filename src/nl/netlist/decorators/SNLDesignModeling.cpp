@@ -2527,6 +2527,120 @@ void SNLDesignModeling::setTruthTableFromParameter(
   }
 }
 
+SNLDesignModeling::BooleanExpression
+SNLDesignModeling::mergeAssociativeOperators(const BooleanExpression& expression) {
+  using Op = BooleanExpression::Operator;
+  BooleanExpression result;
+  // Require topological order, as in SequentialModel, before traversing.
+  if (!expression.isValid()) throw NLException("Boolean expression has no root");
+  for (size_t i = 0; i < expression.nodes.size(); ++i) {
+    const auto& node = expression.nodes[i];
+    const bool leaf = node.operation == Op::Constant || node.operation == Op::Term || node.operation == Op::State;
+    if (node.operation < Op::Constant || node.operation > Op::Xor ||
+        (leaf && !node.operands.empty()) ||
+        (node.operation == Op::Not && node.operands.size() != 1) ||
+        (!leaf && node.operation != Op::Not && node.operands.size() < 2)) {
+      throw NLException("Malformed Boolean expression node");
+    }
+    for (auto operand : node.operands)
+      if (operand >= i) throw NLException("Boolean expression requires earlier operands");
+  }
+  auto append = [&](auto&& self, BooleanExpression::NodeID id) -> BooleanExpression::NodeID {
+    auto node = expression.nodes[id];
+    const bool associative = node.operation == Op::And || node.operation == Op::Or || node.operation == Op::Xor;
+    std::vector<BooleanExpression::NodeID> operands;
+    auto collect = [&](auto&& collectSelf, BooleanExpression::NodeID child) -> void {
+      if (associative && expression.nodes[child].operation == node.operation) {
+        for (auto operand : expression.nodes[child].operands) collectSelf(collectSelf, operand);
+      } else {
+        operands.push_back(self(self, child));
+      }
+    };
+    for (auto operand : node.operands) collect(collect, operand);
+    node.operands = std::move(operands);
+    result.nodes.push_back(std::move(node));
+    return result.nodes.size() - 1;
+  };
+  result.root = append(append, expression.root);
+  return result;
+}
+
+void SNLDesignModeling::setFunction(SNLBitTerm* output, const BooleanExpression& function) {
+  auto fail = [](const char* reason) { throw NLException(std::string("SNLDesignModeling::setFunction: ") + reason); };
+  if (!output || output->getDirection() != SNLTerm::Direction::Output || !output->getDesign()->isLeaf())
+    fail("expected an output of a leaf design");
+  auto* design = output->getDesign();
+  if (isSequential(design)) fail("sequential designs use SequentialModel");
+  if (hasTruthTableFromParameter(design, output->getOrderID())) fail("parameter-derived truth table");
+  const auto table = getTruthTable(design, output->getOrderID());
+  if (!table.isInitialized()) fail("output requires an existing truth table");
+  using Op = BooleanExpression::Operator;
+  for (const auto& node : function.nodes) {
+    if (node.operation == Op::State) fail("State nodes are not combinational");
+    if (node.operation == Op::Term && (!node.term || node.term->getDesign() != design ||
+        node.term->getDirection() != SNLTerm::Direction::Input)) fail("Term nodes must be inputs of the same design");
+  }
+  auto merged = mergeAssociativeOperators(function);
+  const auto dependencies = NLBitDependencies::decodeBits(table.getDependencies());
+  std::vector<SNLBitTerm*> inputs;
+  for (auto* term : design->getBitTerms()) {
+    if (term->getDirection() != SNLTerm::Direction::Input) continue;
+    const bool referenced = std::any_of(merged.nodes.begin(), merged.nodes.end(),
+        [term](const auto& node) { return node.operation == Op::Term && node.term == term; });
+    if (referenced || std::find(dependencies.begin(), dependencies.end(), term->getOrderID()) != dependencies.end())
+      inputs.push_back(term);
+  }
+  // Pins absent from both expressions are irrelevant. Enumerating the union
+  // still proves equality over every full input row, including reduced tables.
+  std::vector<bool> row(inputs.size(), false), values(merged.nodes.size());
+  bool more = true;
+  while (more) {
+    for (size_t i = 0; i < merged.nodes.size(); ++i) {
+      const auto& node = merged.nodes[i];
+      bool value = node.operation == Op::And;
+      switch (node.operation) {
+        case Op::Constant: value = node.constant; break;
+        case Op::Term: value = row[std::find(inputs.begin(), inputs.end(), node.term) - inputs.begin()]; break;
+        case Op::Not: value = !values[node.operands.front()]; break;
+        default:
+          for (auto operand : node.operands) {
+            if (node.operation == Op::And) value &= values[operand];
+            else if (node.operation == Op::Or) value |= values[operand];
+            else value ^= values[operand];
+          }
+      }
+      values[i] = value;
+    }
+    size_t tableRow = 0;
+    SNLTruthTable::ConstantInputs constants;
+    for (size_t i = 0; i < dependencies.size(); ++i) {
+      auto it = std::find_if(inputs.begin(), inputs.end(), [&](auto* term) { return term->getOrderID() == dependencies[i]; });
+      if (it == inputs.end()) fail("truth table dependency is not an input");
+      bool value = row[it - inputs.begin()];
+      if (value && !table.isGeneric()) tableRow |= size_t{1} << i;
+      constants.emplace_back(i, value);
+    }
+    const bool expected = table.isGeneric() ? table.getReducedWithConstants(constants).bits().bit(0) : table.bits().bit(tableRow);
+    if (values[merged.root] != expected) fail("expression contradicts truth table");
+    more = false;
+    for (size_t i = 0; i < row.size(); ++i) {
+      row[i] = !row[i];
+      if (row[i]) { more = true; break; }
+    }
+  }
+  getOrCreateProperty(design, NO_PARAMETER)->getModeling()->functions_[output->getOrderID()] = std::move(merged);
+}
+
+std::optional<SNLDesignModeling::BooleanExpression>
+SNLDesignModeling::getFunction(const SNLBitTerm* output) {
+  if (!output || output->getDirection() != SNLTerm::Direction::Output || isSequential(output->getDesign())) return std::nullopt;
+  auto* property = getProperty(output->getDesign());
+  if (!property) return std::nullopt;
+  const auto& functions = property->getModeling()->functions_;
+  auto it = functions.find(output->getOrderID());
+  return it == functions.end() ? std::nullopt : std::optional<BooleanExpression>(it->second);
+}
+
 void SNLDesignModeling::setTruthTable(SNLDesign* design,
                                       const SNLTruthTable& truthTable) {
   if (!design->isPrimitive()) {

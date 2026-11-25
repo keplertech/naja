@@ -1694,3 +1694,102 @@ TEST_F(SNLDesignModelingTest0, GatePolarityBusAndMultichunkOrder) {
   EXPECT_EQ(Gate::AND, widePolarity->type);
   EXPECT_EQ(std::vector<SNLBitTerm*>{wideBus->getBit(5)}, widePolarity->invertedInputs);
 }
+
+TEST_F(SNLDesignModelingTest0, MergeAssociativeOperators) {
+  using Model = SNLDesignModeling;
+  using Expression = Model::BooleanExpression;
+  using Op = Expression::Operator;
+  for (auto operation : {Op::And, Op::Or, Op::Xor}) {
+    Expression expression;
+    auto a = expression.addConstant(false);
+    auto b = expression.addConstant(true);
+    auto c = expression.addConstant(false);
+    auto d = expression.addConstant(true);
+    auto left = expression.addOperation(operation, {a,b});
+    auto right = expression.addOperation(operation, {c,d});
+    expression.root = expression.addOperation(operation, {left,right});
+    auto merged = Model::mergeAssociativeOperators(expression);
+    const auto& root = merged.nodes[merged.root];
+    EXPECT_EQ(operation, root.operation);
+    ASSERT_EQ(4, root.operands.size());
+    for (size_t i = 0; i < 4; ++i) EXPECT_EQ(i % 2 == 1, merged.nodes[root.operands[i]].constant);
+    expression.root = expression.addOperation(operation, {left,c});
+    merged = Model::mergeAssociativeOperators(expression);
+    EXPECT_EQ(3, merged.nodes[merged.root].operands.size());
+    auto negation = expression.addOperation(Op::Not, {left});
+    expression.root = expression.addOperation(operation, {negation,c});
+    merged = Model::mergeAssociativeOperators(expression);
+    ASSERT_EQ(2, merged.nodes[merged.root].operands.size());
+    EXPECT_EQ(Op::Not, merged.nodes[merged.nodes[merged.root].operands[0]].operation);
+    auto mixed = expression.addOperation(operation == Op::And ? Op::Or : Op::And, {left,c});
+    expression.root = mixed;
+    merged = Model::mergeAssociativeOperators(expression);
+    ASSERT_EQ(2, merged.nodes[merged.root].operands.size());
+    EXPECT_EQ(operation, merged.nodes[merged.nodes[merged.root].operands[0]].operation);
+  }
+}
+
+TEST_F(SNLDesignModelingTest0, CombinationalFunctionValidation) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* library = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto make = [&](const char* name) { return SNLDesign::create(library, SNLDesign::Type::Primitive, NLName(name)); };
+  auto* design = make("logic");
+  auto* a = SNLScalarTerm::create(design, SNLTerm::Direction::Input, NLName("A"));
+  auto* b = SNLScalarTerm::create(design, SNLTerm::Direction::Input, NLName("B"));
+  auto* y = SNLScalarTerm::create(design, SNLTerm::Direction::Output, NLName("Y"));
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  Expression expression;
+  expression.root = expression.addOperation(Op::And, {expression.addTerm(a), expression.addTerm(b)});
+  EXPECT_FALSE(SNLDesignModeling::getFunction(y));
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, expression), NLException);
+  SNLDesignModeling::setTruthTable(design, SNLTruthTable(2, 8, {3}));
+  EXPECT_NO_THROW(SNLDesignModeling::setFunction(y, expression));
+  EXPECT_TRUE(SNLDesignModeling::getFunction(y));
+  EXPECT_THROW(SNLDesignModeling::setFunction(a, expression), NLException);
+  EXPECT_THROW(SNLDesignModeling::setFunction(nullptr, expression), NLException);
+  auto invalid = expression;
+  invalid.root = invalid.addOperation(Op::Not, {invalid.root});
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, invalid), NLException);
+  invalid = expression;
+  invalid.addState(0);
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, invalid), NLException);
+  auto* foreign = SNLScalarTerm::create(make("other"), SNLTerm::Direction::Input, NLName("X"));
+  invalid = expression;
+  invalid.nodes[0].term = foreign;
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, invalid), NLException);
+  invalid.nodes[0].term = y;
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, invalid), NLException);
+  invalid = expression;
+  invalid.nodes[invalid.root].operands[0] = invalid.root;
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, invalid), NLException);
+  SNLDesignModeling::addInputsToClockArcs({a}, b);
+  EXPECT_THROW(SNLDesignModeling::setFunction(y, expression), NLException);
+  EXPECT_FALSE(SNLDesignModeling::getFunction(y));
+  auto* parameterDesign = make("parameter");
+  auto* input = SNLScalarTerm::create(parameterDesign, SNLTerm::Direction::Input, NLName("I"));
+  auto* output = SNLScalarTerm::create(parameterDesign, SNLTerm::Direction::Output, NLName("O"));
+  auto* parameter = SNLParameter::create(parameterDesign, NLName("INIT"), SNLParameter::Type::Binary, "10");
+  SNLDesignModeling::setTruthTableFromParameter(parameterDesign, output, {input}, parameter);
+  Expression identity;
+  identity.root = identity.addTerm(input);
+  EXPECT_THROW(SNLDesignModeling::setFunction(output, identity), NLException);
+}
+
+TEST_F(SNLDesignModelingTest0, FunctionWithReducedDependencies) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* library = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive, NLName("reduced"));
+  auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output, NLName("Y"));
+  auto* input = SNLScalarTerm::create(design, SNLTerm::Direction::Input, NLName("P"));
+  auto* unused = SNLScalarTerm::create(design, SNLTerm::Direction::Input, NLName("Q"));
+  SNLDesignModeling::setTruthTable(design, SNLTruthTable(1, 2, {2}));
+  SNLDesignModeling::BooleanExpression expression;
+  expression.root = expression.addTerm(input);
+  EXPECT_NO_THROW(SNLDesignModeling::setFunction(output, expression));
+  auto extra = expression.addTerm(unused);
+  expression.root = expression.addOperation(SNLDesignModeling::BooleanExpression::Operator::And, {expression.root, extra});
+  EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
+}

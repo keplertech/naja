@@ -258,6 +258,13 @@ class SNLDesignModeling {
     }
     static void invalidateSequentialModelCache(const SNLInstance* instance);
 
+    /// Flatten only nested And/Or/Xor nodes, preserving order and negations.
+    static BooleanExpression mergeAssociativeOperators(const BooleanExpression& expression);
+    /// The expression must exactly describe an existing, non-parameter table.
+    static void setFunction(SNLBitTerm* output, const BooleanExpression& function);
+    /// Sequential output expressions are available only through SequentialModel.
+    static std::optional<BooleanExpression> getFunction(const SNLBitTerm* output);
+
     static void setTruthTable(SNLDesign* design, const SNLTruthTable& truthTable);
     static void setTruthTables(SNLDesign* design, const std::vector<SNLTruthTable>& truthTable);
     static void setTruthTableFromParameter(
@@ -356,6 +363,7 @@ class SNLDesignModeling {
     SNLTruthTable getTruthTable_(
         const SNLInstance* instance, size_t flatTermID) const;
     void invalidateTruthTableCache_(const SNLInstance* instance) const;
+    std::map<size_t, BooleanExpression> functions_ {};
     Type          type_       { NO_PARAMETER };
     Parameter     parameter_  {};
     TimingModel   model_      {};

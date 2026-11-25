@@ -6,8 +6,14 @@
 
 #include "PySNLDesign.h"
 #include "PySNLInstance.h"
+#include "SNLDesignModeling.h"
 
 namespace PYNAJA {
+
+// Shared expression conversion for primitive modeling bindings.
+PyObject* booleanExpressionToPython(const naja::NL::SNLDesignModeling::BooleanExpression& expression);
+bool booleanExpressionFromPython(PyObject* object, const naja::NL::SNLDesign* design,
+    naja::NL::SNLDesignModeling::BooleanExpression& expression);
 
 PyObject* PySNLDesign_setSequentialModel(
     PySNLDesign* self, PyObject* args, PyObject* kwargs);
