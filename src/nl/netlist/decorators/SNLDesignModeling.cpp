@@ -2167,7 +2167,7 @@ SNLDesignModeling::TermRole SNLDesignModeling::getTermRole_(const SNLInstTerm* t
   }
   auto role = selected->second.find(term->getBitTerm());
   if (role != selected->second.end()) return role->second;
-  return {getTermRole(term->getBitTerm()), getResetActiveLevel(term->getBitTerm())};
+  return {getTermRole(term->getBitTerm()), getActiveLevel(term->getBitTerm())};
 }
 
 void SNLDesignModeling::setTermRole(
@@ -2233,6 +2233,27 @@ SNLDesignModeling::SNLTermRole SNLDesignModeling::getTermRole(
     return getProperty(term->getBitTerm()->getDesign())->getModeling()->getTermRole_(term).role;
   }
   return getTermRole(term->getBitTerm());
+}
+
+SNLDesignModeling::SNLActiveLevel SNLDesignModeling::getActiveLevel(
+    const SNLBitTerm* term) {
+  if (!term) return SNLActiveLevel::NA;
+  if (hasMemoryInterface(term->getDesign()) && isReset(term)) {
+    return getResetActiveLevel(term);
+  }
+  if (auto property = getProperty(term->getDesign())) {
+    return property->getModeling()->getTermRole_(term).activeLevel;
+  }
+  return SNLActiveLevel::NA;
+}
+
+SNLDesignModeling::SNLActiveLevel SNLDesignModeling::getActiveLevel(
+    const SNLInstTerm* term) {
+  if (!term) return SNLActiveLevel::NA;
+  if (hasRolesFromParameters(term->getBitTerm()->getDesign())) {
+    return getProperty(term->getBitTerm()->getDesign())->getModeling()->getTermRole_(term).activeLevel;
+  }
+  return getActiveLevel(term->getBitTerm());
 }
 
 SNLDesignModeling::SNLActiveLevel SNLDesignModeling::getResetActiveLevel(

@@ -200,6 +200,9 @@ class SNLDesignModeling {
     static bool hasRolesFromParameters(const SNLDesign* design);
     static SNLTermRole getTermRole(const SNLBitTerm* term);
     static SNLTermRole getTermRole(const SNLInstTerm* term);
+    /// Return the active level for any role (including parameter-selected instance roles).
+    static SNLActiveLevel getActiveLevel(const SNLBitTerm* term);
+    static SNLActiveLevel getActiveLevel(const SNLInstTerm* term);
     static SNLActiveLevel getResetActiveLevel(const SNLBitTerm* term);
     static SNLActiveLevel getResetActiveLevel(const SNLInstTerm* term);
     static bool isClock(const SNLBitTerm* term);

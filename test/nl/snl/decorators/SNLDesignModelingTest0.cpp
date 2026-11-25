@@ -1520,7 +1520,7 @@ TEST_F(SNLDesignModelingTest0, testParameterizedTermRoles) {
   auto* mode = SNLParameter::create(model, NLName("mode"), SNLParameter::Type::Decimal, "0");
   Modeling::setTermRole(reset, Role::AsyncReset, Level::Low);
   Modeling::setTermRole(load, Role::Enable);
-  Modeling::setTermRole(clock, Role::Clock);
+  Modeling::setTermRole(clock, Role::Clock, Level::Low);
   Modeling::TermRoleTable table {
     {{0}, {{reset, {}}, {load, {}}}},
     {{1}, {{reset, {Role::AsyncReset, Level::High}}, {load, {Role::Enable, Level::NA}}}},
@@ -1541,6 +1541,9 @@ TEST_F(SNLDesignModelingTest0, testParameterizedTermRoles) {
     override->setValue(std::to_string(key[0]));
     EXPECT_EQ(roles.at(reset).role, Modeling::getTermRole(r));
     EXPECT_EQ(roles.at(reset).activeLevel, Modeling::getResetActiveLevel(r));
+    EXPECT_EQ(roles.at(reset).activeLevel, Modeling::getActiveLevel(r));
+    EXPECT_EQ(Level::Low, Modeling::getActiveLevel(instance->getInstTerm(clock)));
+    EXPECT_EQ(Level::NA, Modeling::getResetActiveLevel(instance->getInstTerm(clock)));
     EXPECT_TRUE(Modeling::isClock(instance->getInstTerm(clock)));
   }
   override->setValue("5");
