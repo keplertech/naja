@@ -1809,3 +1809,46 @@ TEST_F(SNLDesignModelingTest0, FunctionRejectsIncompleteTableDependencies) {
   expression.root = expression.addTerm(input);
   EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
 }
+
+TEST_F(SNLDesignModelingTest0, WrittenFunctionsPreserveDependencyQueries) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* primitives = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* design = SNLDesign::create(primitives, SNLDesign::Type::Primitive);
+  auto* p = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  auto* q = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  auto* r = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  auto* y = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  auto* z = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  SNLDesignModeling::setTruthTables(design, {SNLTruthTable(2, 8, {3}), SNLTruthTable(1, 1, {4})});
+  auto* top = SNLDesign::create(NLLibrary::create(db));
+  auto* instance = SNLInstance::create(top, design);
+  auto terms = [](const auto& collection) { return std::vector(collection.begin(), collection.end()); };
+  auto check = [&]() {
+    EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialInputs(y)), ElementsAre(p,q));
+    EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialInputs(z)), ElementsAre(r));
+    for (auto* input : {p,q,r}) {
+      auto* output = input == r ? z : y;
+      EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialOutputs(input)), ElementsAre(output));
+      EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialOutputs(instance->getInstTerm(input))),
+          ElementsAre(instance->getInstTerm(output)));
+    }
+    EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialInputs(instance->getInstTerm(y))),
+        ElementsAre(instance->getInstTerm(p),instance->getInstTerm(q)));
+    EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialInputs(instance->getInstTerm(z))),
+        ElementsAre(instance->getInstTerm(r)));
+  };
+  check();
+  using Expression = SNLDesignModeling::BooleanExpression;
+  Expression product, inverter;
+  product.root = product.addOperation(Expression::Operator::And, {product.addTerm(p), product.addTerm(q)});
+  inverter.root = inverter.addOperation(Expression::Operator::Not, {inverter.addTerm(r)});
+  SNLDesignModeling::setFunction(y, product);
+  check();
+  SNLDesignModeling::setFunction(z, inverter);
+  check();
+  // Explicit timing modeling continues to take precedence over table dependencies.
+  SNLDesignModeling::addCombinatorialArcs({r}, {y});
+  SNLDesignModeling::setFunction(y, product);
+  EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialInputs(y)), ElementsAre(r));
+}

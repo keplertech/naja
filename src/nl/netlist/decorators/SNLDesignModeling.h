@@ -363,7 +363,6 @@ class SNLDesignModeling {
     SNLTruthTable getTruthTable_(
         const SNLInstance* instance, size_t flatTermID) const;
     void invalidateTruthTableCache_(const SNLInstance* instance) const;
-    std::map<size_t, BooleanExpression> functions_ {};
     Type          type_       { NO_PARAMETER };
     Parameter     parameter_  {};
     TimingModel   model_      {};

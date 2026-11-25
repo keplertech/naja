@@ -2843,7 +2843,8 @@ parser. It requires an output of a leaf, non-sequential design and an existing
 truth table for that output. Every term must be an input of the same design;
 state nodes and parameter-driven tables are rejected. Evaluation must agree
 with every truth-table row, including inputs omitted from a reduced table.
-The expression describes the table and never replaces it. Invalid expressions
+The expression describes the table and never replaces it. Setting a function
+does not alter combinational dependency queries or explicit timing arcs. Invalid expressions
 raise ``RuntimeError``. For example, experts building a primitive directly can
 call ``cell.setTruthTable(8)`` followed by
 ``output.setFunction(("and", ("term", p), ("term", q)))`` for two input pins.

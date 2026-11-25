@@ -706,5 +706,7 @@ TEST_F(SNLLibertyConstructorTest2, WrittenCombinationalFunctions) {
     ASSERT_TRUE(function) << item.cell;
     EXPECT_EQ(item.expression, writtenExpression(*function, function->root)) << item.cell;
     EXPECT_EQ(item.mask, static_cast<uint64_t>(SNLDesignModeling::getTruthTable(design, output->getOrderID()).bits())) << item.cell;
+    EXPECT_EQ(SNLDesignModeling::getTruthTable(design, output->getOrderID()).size(),
+        SNLDesignModeling::getCombinatorialInputs(output).size()) << item.cell;
   }
 }

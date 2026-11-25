@@ -64,6 +64,26 @@ class BooleanFunctionTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             other_output.setFunction(("term", foreign))
 
+    def test_function_preserves_dependency_queries(self):
+        design, p, q, y = self.primitive()
+        design.setTruthTable(8)
+        top = naja.SNLDesign.create(naja.NLLibrary.create(self.db), "top")
+        instance = naja.SNLInstance.create(top, design, "u")
+        def check():
+            self.assertEqual([p, q], list(design.getCombinatorialInputs(y)))
+            for pin in (p, q):
+                self.assertEqual([y], list(design.getCombinatorialOutputs(pin)))
+                self.assertEqual([instance.getInstTerm(y)],
+                                 list(instance.getCombinatorialOutputs(instance.getInstTerm(pin))))
+            self.assertEqual([instance.getInstTerm(p), instance.getInstTerm(q)],
+                             list(instance.getCombinatorialInputs(instance.getInstTerm(y))))
+        check()
+        y.setFunction(("and", ("term", p), ("term", q)))
+        check()
+        design.addCombinatorialArcs([q], [y])
+        y.setFunction(("and", ("term", p), ("term", q)))
+        self.assertEqual([q], list(design.getCombinatorialInputs(y)))
+
     def test_python_primitive_and_grouping(self):
         design, p, q, y = self.primitive()
         design.setTruthTable(8)
@@ -98,6 +118,7 @@ class BooleanFunctionTest(unittest.TestCase):
                 cell = library.getSNLDesign(name)
                 self.assertEqual(tree, named(cell.getScalarTerm("Y").getFunction()))
                 self.assertEqual(mask, cell.getTruthTable()[1])
+                self.assertEqual(cell.getTruthTable()[0], len(list(cell.getCombinatorialInputs(cell.getScalarTerm("Y")))))
         pair = library.getSNLDesign("pair")
         self.assertEqual(("and", p, q), named(pair.getScalarTerm("Y").getFunction()))
         self.assertEqual(("not", ("or", p, q)), named(pair.getScalarTerm("Z").getFunction()))

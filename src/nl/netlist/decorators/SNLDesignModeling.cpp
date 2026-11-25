@@ -768,6 +768,27 @@ class SNLDesignModelingProperty : public naja::NajaPrivateProperty {
   naja::NL::SNLDesignModeling* modeling_{nullptr};
 };
 
+// Written functions do not declare timing arcs. Keep their storage separate so
+// adding an expression cannot shadow truth-table-derived dependency queries.
+class SNLDesignFunctionsProperty : public naja::NajaPrivateProperty {
+ public:
+  static const inline std::string Name = "SNLDesignFunctionsProperty";
+  using Functions = std::map<size_t, naja::NL::SNLDesignModeling::BooleanExpression>;
+  static SNLDesignFunctionsProperty* create(naja::NL::SNLDesign* design) {
+    preCreate(design, Name);
+    auto* property = new SNLDesignFunctionsProperty();
+    property->postCreate(design);
+    return property;
+  }
+  std::string getName() const override { return Name; }
+  std::string getString() const override { return Name; }
+  Functions& getFunctions() { return functions_; }
+  const Functions& getFunctions() const { return functions_; }
+
+ private:
+  Functions functions_ {};
+};
+
 SNLDesignModelingProperty* getProperty(const naja::NL::SNLDesign* design) {
   auto property = static_cast<SNLDesignModelingProperty*>(
       design->getProperty(SNLDesignModelingProperty::Name));
@@ -2629,15 +2650,18 @@ void SNLDesignModeling::setFunction(SNLBitTerm* output, const BooleanExpression&
       if (row[i]) { more = true; break; }
     }
   }
-  getOrCreateProperty(design, NO_PARAMETER)->getModeling()->functions_[output->getOrderID()] = std::move(merged);
+  auto* property = static_cast<SNLDesignFunctionsProperty*>(design->getProperty(SNLDesignFunctionsProperty::Name));
+  if (!property) property = SNLDesignFunctionsProperty::create(design);
+  property->getFunctions()[output->getOrderID()] = std::move(merged);
 }
 
 std::optional<SNLDesignModeling::BooleanExpression>
 SNLDesignModeling::getFunction(const SNLBitTerm* output) {
   if (!output || output->getDirection() != SNLTerm::Direction::Output || isSequential(output->getDesign())) return std::nullopt;
-  auto* property = getProperty(output->getDesign());
+  auto* property = static_cast<SNLDesignFunctionsProperty*>(
+      output->getDesign()->getProperty(SNLDesignFunctionsProperty::Name));
   if (!property) return std::nullopt;
-  const auto& functions = property->getModeling()->functions_;
+  const auto& functions = property->getFunctions();
   auto it = functions.find(output->getOrderID());
   return it == functions.end() ? std::nullopt : std::optional<BooleanExpression>(it->second);
 }
