@@ -34,6 +34,13 @@ static PyObject* PySNLInstTerm_getRole(PySNLInstTerm* self) {
   NLCATCH
 }
 
+static PyObject* PySNLInstTerm_getActiveLevel(PySNLInstTerm* self) {
+  METHOD_HEAD("SNLInstTerm.getActiveLevel()")
+  TRY
+  return PyLong_FromLong(static_cast<long>(SNLDesignModeling::getActiveLevel(selfObject)));
+  NLCATCH
+}
+
 static PyObject* PySNLInstTerm_getResetActiveLevel(PySNLInstTerm* self) {
   METHOD_HEAD("SNLInstTerm.getResetActiveLevel()")
   TRY
@@ -98,6 +105,7 @@ PyMethodDef PySNLInstTerm_Methods[] = {
   { "getInstance", (PyCFunction)PySNLInstTerm_getInstance, METH_NOARGS,
     "get the SNLInstance containing this SNLInstTerm."},
   {"getRole", (PyCFunction)PySNLInstTerm_getRole, METH_NOARGS, "get the primitive term role."},
+  {"getActiveLevel", (PyCFunction)PySNLInstTerm_getActiveLevel, METH_NOARGS, "get active level for any role."},
   {"getResetActiveLevel", (PyCFunction)PySNLInstTerm_getResetActiveLevel, METH_NOARGS, "get reset/set active level."},
   {"isClock", (PyCFunction)PySNLInstTerm_isClock, METH_NOARGS, "whether this term is a clock."},
   {"isAsyncReset", (PyCFunction)PySNLInstTerm_isAsyncReset, METH_NOARGS, "whether this term is an asynchronous reset."},

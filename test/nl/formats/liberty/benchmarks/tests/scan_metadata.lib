@@ -1,0 +1,184 @@
+// SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+// SPDX-License-Identifier: Apache-2.0
+
+library (scan_metadata) {
+  cell (scan_high) {
+    ff (s, sn) { next_state : "(a*!c)+(b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (scan_low) {
+    ff (s, sn) { next_state : "(a*c)+(b*!c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable_inverted; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (agree) {
+    ff (s, sn) { next_state : "(a*!c)+(b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; nextstate_type : data; }
+    pin (b) { direction : input; nextstate_type : scan_in; }
+    pin (c) { direction : input; nextstate_type : scan_enable; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (conflict) {
+    ff (s, sn) { next_state : "(a*!c)+(b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; nextstate_type : data; }
+    pin (b) { direction : input; nextstate_type : scan_enable; }
+    pin (c) { direction : input; nextstate_type : scan_in; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (missing) {
+    ff (s, sn) { next_state : "(a*!c)+(b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+      pin (absent) { direction : input; signal_type : test_scan_in; }
+    }
+  }
+  cell (nonmux) {
+    ff (s, sn) { next_state : "a^b^c"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (inverted) {
+    ff (s, sn) { next_state : "(!a*!c)+(!b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (plain) {
+    ff (s, sn) { next_state : "a"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+  }
+  cell (contradiction) {
+    ff (s, sn) { next_state : "(a*c)+(b*!c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (mixed_polarity) {
+    ff (s, sn) { next_state : "(a*!c)+(!b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+    test_cell () {
+      ff (s, sn) { next_state : "a"; clocked_on : "!k"; }
+      pin (a) { direction : input; }
+      pin (b) { direction : input; signal_type : test_scan_in; }
+      pin (c) { direction : input; signal_type : test_scan_enable; }
+      pin (k) { direction : input; signal_type : test_scan_clock; }
+      pin (z) { direction : output; function : "!s"; signal_type : test_scan_out; timing () { related_pin : "b"; timing_type : combinational; } }
+    }
+  }
+  cell (metadata_only) {
+    ff (s, sn) { next_state : "(a*!c)+(b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; nextstate_type : data; }
+    pin (b) { direction : input; nextstate_type : scan_in; }
+    pin (c) { direction : input; nextstate_type : scan_enable; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+  }
+  cell (unmarked_mux) {
+    ff (s, sn) { next_state : "(a*!c)+(b*c)"; clocked_on : "k"; }
+    pin (a) { direction : input; }
+    pin (b) { direction : input; }
+    pin (c) { direction : input; }
+    pin (k) { direction : input; }
+    pin (z) { direction : output; function : "s"; timing () { related_pin : "k"; timing_type : rising_edge; } }
+  }
+  cell (test_only) {
+    pin (a) { direction : input; nextstate_type : data; }
+    pin (z) { direction : output; function : "a"; }
+    test_cell {
+      ff (s, sn) { next_state : "!a"; clocked_on : "a"; }
+      pin (a) { direction : input; signal_type : test_clock; }
+      pin (z) { direction : output; function : "s"; state_function : "s"; signal_type : test_scan_out; }
+      pin (absent) { direction : input; }
+    }
+  }
+}
