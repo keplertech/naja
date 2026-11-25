@@ -6,6 +6,7 @@
 #include "SNLDesignModeling.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <limits>
 #include <sstream>
@@ -3132,6 +3133,87 @@ bool SNLDesignModeling::isBuf(const SNLDesign* design) {
            truthTable.size() == 1 && truthTable.bits().size() == 2 &&
            static_cast<uint64_t>(truthTable.bits()) == 0b10;
   });
+}
+
+std::optional<SNLDesignModeling::GatePolarity>
+SNLDesignModeling::getGatePolarity(const SNLDesign* design) {
+  using Gate = SNLTruthTable::GenericType;
+  if (isSequential(design)) {
+    return std::nullopt;
+  }
+  std::vector<SNLBitTerm*> inputs;
+  for (auto* term : design->getBitTerms()) {
+    if (term->getDirection() == SNLTerm::Direction::Input) {
+      inputs.push_back(term);
+    } else if (hasTruthTableFromParameter(design, term->getOrderID())) {
+      return std::nullopt;
+    }
+  }
+  if (inputs.size() < 2) {
+    return std::nullopt;
+  }
+  SNLTruthTable table;
+  try {
+    if (getTruthTableCount(design) != 1) {
+      return std::nullopt;
+    }
+    table = getTruthTable(design);
+  } catch (const NLException&) {
+    return std::nullopt;
+  }
+  // A gate symbol uses every input pin, so reduced tables with unused pins
+  // cannot describe that symbol faithfully.
+  if (!table.isInitialized() || table.size() != inputs.size() ||
+      NLBitDependencies::countBitsForVector(table.getDependencies()) != inputs.size()) {
+    return std::nullopt;
+  }
+  if (table.isGeneric()) {
+    switch (table.getGenericType()) {
+      case Gate::AND: case Gate::NAND: case Gate::OR:
+      case Gate::NOR: case Gate::XOR: case Gate::XNOR:
+        return GatePolarity{table.getGenericType(), {}};
+      default:
+        return std::nullopt;
+    }
+  }
+  size_t ones = 0, zeros = 0, oneRow = 0, zeroRow = 0;
+  bool xorMatch = true, xnorMatch = true;
+  for (size_t row = 0; row < table.bits().size(); ++row) {
+    const bool value = table.bits().bit(row);
+    if (value) {
+      ++ones;
+      oneRow = row;
+    } else {
+      ++zeros;
+      zeroRow = row;
+    }
+    const bool parity = std::popcount(row) % 2;
+    xorMatch &= value == parity;
+    xnorMatch &= value != parity;
+  }
+  if (xorMatch || xnorMatch) {
+    return GatePolarity{xorMatch ? Gate::XOR : Gate::XNOR, {}};
+  }
+  if (ones != 1 && zeros != 1) {
+    return std::nullopt;
+  }
+  const size_t row = ones == 1 ? oneRow : zeroRow;
+  const size_t setBits = std::popcount(row);
+  const size_t clearBits = inputs.size() - setBits;
+  // A single one gives AND(clear bits) or NOR(set bits); a single zero
+  // gives NAND(clear bits) or OR(set bits). Prefer inverted outputs on ties.
+  const bool useClearBits = ones == 1 ? clearBits < setBits : clearBits <= setBits;
+  GatePolarity result{
+      ones == 1 ? (useClearBits ? Gate::AND : Gate::NOR)
+                : (useClearBits ? Gate::NAND : Gate::OR), {}};
+  for (size_t index = 0; index < inputs.size(); ++index) {
+    // Liberty reverses design inputs, then assigns them MSB first in
+    // SNLBooleanTree::getTruthTable: row bit 0 is the first design input.
+    if (((row >> index) & 1) != useClearBits) {
+      result.invertedInputs.push_back(inputs[index]);
+    }
+  }
+  return result;
 }
 
 bool SNLDesignModeling::isAnd(const SNLDesign* design) {

@@ -1566,3 +1566,128 @@ TEST_F(SNLDesignModelingTest0, testParameterizedTermRoles) {
   EXPECT_EQ(Role::Other, Modeling::getTermRole(r));
   EXPECT_FALSE(Modeling::hasRolesFromParameters(nullptr));
 }
+
+TEST_F(SNLDesignModelingTest0, GatePolarityFunctions) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* prims = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  using Gate = SNLTruthTable::GenericType;
+  struct Expected { Gate type; std::vector<size_t> inverted; };
+  const std::vector<Expected> twoInput = {
+    {Gate::NONE, {}}, {Gate::NOR, {}}, {Gate::NOR, {0}}, {Gate::NONE, {}},
+    {Gate::NOR, {1}}, {Gate::NONE, {}}, {Gate::XOR, {}}, {Gate::NAND, {}},
+    {Gate::AND, {}}, {Gate::XNOR, {}}, {Gate::NONE, {}}, {Gate::NAND, {0}},
+    {Gate::NONE, {}}, {Gate::NAND, {1}}, {Gate::OR, {}}, {Gate::NONE, {}}
+  };
+  const std::map<uint64_t, Expected> threeInput = {
+    {0x01, {Gate::NOR, {}}}, {0x02, {Gate::NOR, {0}}},
+    {0x04, {Gate::NOR, {1}}}, {0x08, {Gate::AND, {2}}},
+    {0x10, {Gate::NOR, {2}}}, {0x20, {Gate::AND, {1}}},
+    {0x40, {Gate::AND, {0}}}, {0x80, {Gate::AND, {}}},
+    {0xfe, {Gate::OR, {}}}, {0xfd, {Gate::OR, {0}}},
+    {0xfb, {Gate::OR, {1}}}, {0xf7, {Gate::NAND, {2}}},
+    {0xef, {Gate::OR, {2}}}, {0xdf, {Gate::NAND, {1}}},
+    {0xbf, {Gate::NAND, {0}}}, {0x7f, {Gate::NAND, {}}},
+    {0x96, {Gate::XOR, {}}}, {0x69, {Gate::XNOR, {}}}
+  };
+  // Exhaust all two- and three-input functions, including constants,
+  // single-variable functions, MUX and majority.
+  for (size_t width : {2, 3}) {
+    for (uint64_t mask = 0; mask < (1ULL << (1ULL << width)); ++mask) {
+      SCOPED_TRACE(std::to_string(width) + ":" + std::to_string(mask));
+      auto* cell = SNLDesign::create(prims, SNLDesign::Type::Primitive);
+      std::vector<SNLBitTerm*> inputs;
+      for (size_t i = 0; i < width; ++i) {
+        inputs.push_back(SNLScalarTerm::create(cell, SNLTerm::Direction::Input));
+      }
+      SNLScalarTerm::create(cell, SNLTerm::Direction::Output);
+      SNLDesignModeling::setTruthTable(cell,
+          SNLTruthTable(width, mask, SNLTruthTable::fullDependencies(width)));
+      const Expected expected = width == 2 ? twoInput[mask] :
+          (threeInput.count(mask) ? threeInput.at(mask) : Expected{Gate::NONE, {}});
+      auto polarity = SNLDesignModeling::getGatePolarity(cell);
+      ASSERT_EQ(expected.type != Gate::NONE, polarity.has_value());
+      if (polarity) {
+        EXPECT_EQ(expected.type, polarity->type);
+        std::vector<SNLBitTerm*> inverted;
+        for (auto index : expected.inverted) inverted.push_back(inputs[index]);
+        EXPECT_EQ(inverted, polarity->invertedInputs);
+      }
+    }
+  }
+}
+
+TEST_F(SNLDesignModelingTest0, GatePolarityGenericAndExclusions) {
+  NLUniverse::create();
+  using Gate = SNLTruthTable::GenericType;
+  using Kind = NLDB0::GateType;
+  for (const auto& [kind, type] : std::vector<std::pair<Kind, Gate>>{
+      {Kind::And, Gate::AND}, {Kind::Nand, Gate::NAND},
+      {Kind::Or, Gate::OR}, {Kind::Nor, Gate::NOR},
+      {Kind::Xor, Gate::XOR}, {Kind::Xnor, Gate::XNOR}}) {
+    auto* cell = NLDB0::getOrCreateNInputGate(kind, 10);
+    ASSERT_TRUE(SNLDesignModeling::getTruthTable(cell).isGeneric());
+    auto polarity = SNLDesignModeling::getGatePolarity(cell);
+    ASSERT_TRUE(polarity);
+    EXPECT_EQ(type, polarity->type);
+    EXPECT_TRUE(polarity->invertedInputs.empty());
+  }
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* prims = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* cell = SNLDesign::create(prims, SNLDesign::Type::Primitive);
+  auto* a = SNLScalarTerm::create(cell, SNLTerm::Direction::Input);
+  auto* b = SNLScalarTerm::create(cell, SNLTerm::Direction::Input);
+  auto* y = SNLScalarTerm::create(cell, SNLTerm::Direction::Output);
+  EXPECT_FALSE(SNLDesignModeling::getGatePolarity(cell));
+  auto* init = SNLParameter::create(cell, NLName("INIT"), SNLParameter::Type::Binary, "4'b1000");
+  SNLDesignModeling::setTruthTableFromParameter(cell, y, {a, b}, init);
+  EXPECT_FALSE(SNLDesignModeling::getGatePolarity(cell));
+  auto* sequential = SNLDesign::create(prims, SNLDesign::Type::Primitive);
+  auto* d = SNLScalarTerm::create(sequential, SNLTerm::Direction::Input);
+  auto* clock = SNLScalarTerm::create(sequential, SNLTerm::Direction::Input);
+  SNLScalarTerm::create(sequential, SNLTerm::Direction::Output);
+  SNLDesignModeling::setTruthTable(sequential, SNLTruthTable(2, 8, {3}));
+  SNLDesignModeling::addInputsToClockArcs({d}, clock);
+  EXPECT_TRUE(SNLDesignModeling::isSequential(sequential));
+  EXPECT_FALSE(SNLDesignModeling::getGatePolarity(sequential));
+  for (auto kind : {Kind::Buf, Kind::Not}) {
+    EXPECT_FALSE(SNLDesignModeling::getGatePolarity(NLDB0::getOrCreateNOutputGate(kind, 1)));
+  }
+  auto* multi = SNLDesign::create(prims, SNLDesign::Type::Primitive);
+  SNLScalarTerm::create(multi, SNLTerm::Direction::Input);
+  SNLScalarTerm::create(multi, SNLTerm::Direction::Input);
+  SNLScalarTerm::create(multi, SNLTerm::Direction::Output);
+  SNLScalarTerm::create(multi, SNLTerm::Direction::Output);
+  SNLDesignModeling::setTruthTables(multi, {SNLTruthTable(2, 8, {3}), SNLTruthTable(2, 7, {3})});
+  EXPECT_FALSE(SNLDesignModeling::getGatePolarity(multi));
+  EXPECT_FALSE(SNLDesignModeling::getGatePolarity(NLDB0::getFA()));
+}
+
+TEST_F(SNLDesignModelingTest0, GatePolarityBusAndMultichunkOrder) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* prims = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  using Gate = SNLTruthTable::GenericType;
+  // Interleave an output, use a descending bus, and invert multiple inputs.
+  auto* cell = SNLDesign::create(prims, SNLDesign::Type::Primitive);
+  auto* first = SNLScalarTerm::create(cell, SNLTerm::Direction::Input);
+  SNLScalarTerm::create(cell, SNLTerm::Direction::Output);
+  auto* bus = SNLBusTerm::create(cell, SNLTerm::Direction::Input, 2, 0);
+  SNLDesignModeling::setTruthTable(cell, SNLTruthTable(4, 0xffbf, {29}));
+  auto polarity = SNLDesignModeling::getGatePolarity(cell);
+  ASSERT_TRUE(polarity);
+  EXPECT_EQ(Gate::NAND, polarity->type);
+  EXPECT_EQ((std::vector<SNLBitTerm*>{first, bus->getBit(0)}),
+      polarity->invertedInputs);
+
+  auto* wide = SNLDesign::create(prims, SNLDesign::Type::Primitive);
+  auto* wideBus = SNLBusTerm::create(wide, SNLTerm::Direction::Input, 6, 0);
+  SNLScalarTerm::create(wide, SNLTerm::Direction::Output);
+  std::vector<bool> bits(128, false);
+  bits[125] = true;  // All inputs high except input index 1.
+  SNLDesignModeling::setTruthTable(wide, SNLTruthTable(7, bits, {127}));
+  auto widePolarity = SNLDesignModeling::getGatePolarity(wide);
+  ASSERT_TRUE(widePolarity);
+  EXPECT_EQ(Gate::AND, widePolarity->type);
+  EXPECT_EQ(std::vector<SNLBitTerm*>{wideBus->getBit(5)}, widePolarity->invertedInputs);
+}

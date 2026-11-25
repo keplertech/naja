@@ -737,6 +737,36 @@ GetBoolAttributeWithFunction(SNLDesign, isConst1, SNLDesignModeling::isConst1)
 GetBoolAttributeWithFunction(SNLDesign, isConst, SNLDesignModeling::isConst)
 GetBoolAttributeWithFunction(SNLDesign, isBuf, SNLDesignModeling::isBuf)
 GetBoolAttributeWithFunction(SNLDesign, isInv, SNLDesignModeling::isInv)
+static PyObject* PySNLDesign_getGatePolarity(PySNLDesign* self) {
+  METHOD_HEAD("SNLDesign.getGatePolarity()")
+  auto polarity = SNLDesignModeling::getGatePolarity(selfObject);
+  if (!polarity) {
+    Py_RETURN_NONE;
+  }
+  const char* name = nullptr;
+  using Gate = SNLTruthTable::GenericType;
+  switch (polarity->type) {
+    case Gate::AND: name = "and"; break;
+    case Gate::NAND: name = "nand"; break;
+    case Gate::OR: name = "or"; break;
+    case Gate::NOR: name = "nor"; break;
+    case Gate::XOR: name = "xor"; break;
+    case Gate::XNOR: name = "xnor"; break;
+    default: Py_RETURN_NONE;
+  }
+  PyObject* inputs = PyList_New(polarity->invertedInputs.size());
+  if (!inputs) return nullptr;
+  for (size_t i = 0; i < polarity->invertedInputs.size(); ++i) {
+    PyObject* term = PySNLBitTerm_Link(polarity->invertedInputs[i]);
+    if (!term) {
+      Py_DECREF(inputs);
+      return nullptr;
+    }
+    PyList_SET_ITEM(inputs, i, term);
+  }
+  return Py_BuildValue("sN", name, inputs);
+}
+
 GetBoolAttributeWithFunction(SNLDesign, isAnd, SNLDesignModeling::isAnd)
 GetBoolAttributeWithFunction(SNLDesign, isNand, SNLDesignModeling::isNand)
 GetBoolAttributeWithFunction(SNLDesign, isOr, SNLDesignModeling::isOr)
@@ -999,6 +1029,8 @@ PyMethodDef PySNLDesign_Methods[] = {
     "Returns True if this design is a buffer primitive"},
   { "isInv", (PyCFunction)PySNLDesign_isInv, METH_NOARGS,
     "Returns True if this design is an inverter primitive"},
+  { "getGatePolarity", (PyCFunction)PySNLDesign_getGatePolarity, METH_NOARGS,
+    "Return None or (gate type name, inverted input terms in design order)."},
   { "isAnd", (PyCFunction)PySNLDesign_isAnd, METH_NOARGS,
     "Returns True if this design is an AND primitive"},
   { "isNand", (PyCFunction)PySNLDesign_isNand, METH_NOARGS,

@@ -635,3 +635,31 @@ TEST_F(SNLLibertyConstructorTest2, testLibertyMemoryRequiresWriteBusAddress) {
   SNLLibertyConstructor constructor(library_);
   EXPECT_THROW(constructor.construct(tempPath), SNLLibertyConstructorException);
 }
+
+TEST_F(SNLLibertyConstructorTest2, GatePolarityInputOrder) {
+  SNLLibertyConstructor constructor(library_);
+  constructor.construct(std::filesystem::path(SNL_LIBERTY_BENCHMARKS) /
+      "benchmarks/tests/gate_polarity.lib");
+  using Gate = SNLTruthTable::GenericType;
+  struct Expected { const char* cell; Gate type; const char* inverted; };
+  for (const auto& expected : {
+      Expected{"cell0", Gate::NAND, "P"},
+      Expected{"cell1", Gate::AND, "P"},
+      Expected{"cell2", Gate::NOR, "R"},
+      Expected{"cell3", Gate::OR, "P"}}) {
+    SCOPED_TRACE(expected.cell);
+    auto* cell = library_->getSNLDesign(NLName(expected.cell));
+    ASSERT_NE(nullptr, cell);
+    auto polarity = SNLDesignModeling::getGatePolarity(cell);
+    ASSERT_TRUE(polarity);
+    EXPECT_EQ(expected.type, polarity->type);
+    EXPECT_EQ(std::vector<SNLBitTerm*>{cell->getScalarTerm(NLName(expected.inverted))},
+        polarity->invertedInputs);
+    EXPECT_FALSE(SNLDesignModeling::isAnd(cell));
+    EXPECT_FALSE(SNLDesignModeling::isNand(cell));
+    EXPECT_FALSE(SNLDesignModeling::isOr(cell));
+    EXPECT_FALSE(SNLDesignModeling::isNor(cell));
+    EXPECT_FALSE(SNLDesignModeling::isXor(cell));
+    EXPECT_FALSE(SNLDesignModeling::isXnor(cell));
+  }
+}
