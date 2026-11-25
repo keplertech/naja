@@ -259,9 +259,11 @@ class SNLDesignModeling {
     static void invalidateSequentialModelCache(const SNLInstance* instance);
 
     /// Flatten only nested And/Or/Xor nodes, preserving order and negations.
-    static BooleanExpression mergeAssociativeOperators(const BooleanExpression& expression);
+    static BooleanExpression mergeAssociativeOperators(BooleanExpression expression);
     /// The expression must exactly describe an existing, non-parameter table.
     static void setFunction(SNLBitTerm* output, const BooleanExpression& function);
+    /// Reuse a temporary expression's storage after the same validation.
+    static void setFunction(SNLBitTerm* output, BooleanExpression&& function);
     /// Sequential output expressions are available only through SequentialModel.
     static std::optional<BooleanExpression> getFunction(const SNLBitTerm* output);
 

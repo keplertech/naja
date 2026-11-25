@@ -37,7 +37,7 @@ static PyObject* PySNLBitTerm_setFunction(PySNLBitTerm* self, PyObject* object) 
   TRY
   SNLDesignModeling::BooleanExpression expression;
   if (!booleanExpressionFromPython(object, selfObject->getDesign(), expression)) return nullptr;
-  SNLDesignModeling::setFunction(selfObject, expression);
+  SNLDesignModeling::setFunction(selfObject, std::move(expression));
   NLCATCH
   Py_RETURN_NONE;
 }

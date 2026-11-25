@@ -1852,3 +1852,65 @@ TEST_F(SNLDesignModelingTest0, WrittenFunctionsPreserveDependencyQueries) {
   SNLDesignModeling::setFunction(y, product);
   EXPECT_THAT(terms(SNLDesignModeling::getCombinatorialInputs(y)), ElementsAre(r));
 }
+
+TEST_F(SNLDesignModelingTest0, FunctionValidationRowBoundaries) {
+  NLUniverse::create();
+  auto* library = NLLibrary::create(NLDB::create(NLUniverse::get()), NLLibrary::Type::Primitives);
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  for (size_t count : {0, 1, 5, 6, 7}) {
+    auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive);
+    auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+    std::vector<size_t> dependencies;
+    std::vector<Expression::NodeID> terms;
+    Expression expression;
+    for (size_t i = 0; i < count; ++i) {
+      auto* input = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+      dependencies.push_back(input->getOrderID());
+      auto term = expression.addTerm(input);
+      terms.push_back(term);
+      expression.root = i == 0 ? term : expression.addOperation(Op::Xor, {expression.root, term});
+    }
+    if (count == 0) expression.root = expression.addConstant(false);
+    std::vector<bool> rows(size_t{1} << count);
+    uint64_t mask = 0;
+    for (size_t row = 0; row < rows.size(); ++row) {
+      bool parity = false;
+      for (size_t bit = 0; bit < count; ++bit) parity ^= (row >> bit) & 1;
+      rows[row] = parity;
+      if (parity && row < 64) mask |= uint64_t{1} << row;
+    }
+    auto deps = NLBitDependencies::encodeBits(dependencies);
+    SNLDesignModeling::setTruthTable(design, count <= 6 ? SNLTruthTable(count, mask, deps) : SNLTruthTable(count, rows, deps));
+    ASSERT_NO_THROW(SNLDesignModeling::setFunction(output, expression)) << count;
+    // For six inputs this differs only in bit 63; for seven, only in bit 127.
+    auto mismatch = expression;
+    if (count >= 2) {
+      auto all = mismatch.addOperation(Op::And, terms);
+      mismatch.root = mismatch.addOperation(Op::Xor, {mismatch.root, all});
+    } else {
+      mismatch.root = mismatch.addOperation(Op::Not, {mismatch.root});
+    }
+    EXPECT_THROW(SNLDesignModeling::setFunction(output, mismatch), NLException) << count;
+  }
+}
+
+TEST_F(SNLDesignModelingTest0, FunctionValidationExpandsReducedTable) {
+  NLUniverse::create();
+  auto* library = NLLibrary::create(NLDB::create(NLUniverse::get()), NLLibrary::Type::Primitives);
+  auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive);
+  auto* p = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  auto* q = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  // Only the low two bits belong to this one-input table.
+  SNLDesignModeling::setTruthTable(design, SNLTruthTable(1, ~uint64_t{1}, {1}));
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  Expression expression;
+  auto first = expression.addTerm(p);
+  auto extra = expression.addTerm(q);
+  expression.root = expression.addOperation(Op::Xor, {first,extra,extra});
+  EXPECT_NO_THROW(SNLDesignModeling::setFunction(output, expression));
+  expression.root = expression.addOperation(Op::Xor, {first,extra});
+  EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
+}
