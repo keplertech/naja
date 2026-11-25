@@ -872,11 +872,10 @@ WARN_LOGFILE           =
 # spaces. See also FILE_PATTERNS and EXTENSION_MAPPING
 # Note: If this tag is empty the current directory is searched.
 
-INPUT                  = @CMAKE_SOURCE_DIR@/docs/naja.md
-INPUT                  += @CMAKE_SOURCE_DIR@/src/core
-INPUT                  += @CMAKE_SOURCE_DIR@/src/nl/snl
-INPUT                  += @CMAKE_SOURCE_DIR@/src/nl/snl
-INPUT                  += @CMAKE_SOURCE_DIR@/src/nl/pnl
+INPUT                  = @CMAKE_SOURCE_DIR@/src/core
+INPUT                  += @CMAKE_SOURCE_DIR@/src/nl/netlist/core
+INPUT                  += @CMAKE_SOURCE_DIR@/src/nl/netlist/snl
+INPUT                  += @CMAKE_SOURCE_DIR@/src/nl/netlist/pnl
 INPUT                  += @CMAKE_SOURCE_DIR@/src/dnl
 INPUT                  += @CMAKE_SOURCE_DIR@/src/bne
 
@@ -1076,7 +1075,7 @@ FILTER_SOURCE_PATTERNS =
 # (index.html). This can be useful if you have a project on for instance GitHub
 # and want to reuse the introduction page also for the doxygen output.
 
-USE_MDFILE_AS_MAINPAGE = @CMAKE_SOURCE_DIR@/docs/naja.md
+USE_MDFILE_AS_MAINPAGE =
 
 #---------------------------------------------------------------------------
 # Configuration options related to source browsing

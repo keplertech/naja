@@ -1,8 +1,10 @@
 Expert Raw API
 ==============
 
-Design parameters returned by ``SNLDesign.getParameters()`` and overrides returned
-by ``SNLInstance.getInstParameters()`` iterate in lexical parameter-name order.
+Design parameters returned by
+:meth:`SNLDesign.getParameters() <najaeda.naja.SNLDesign.getParameters>` and overrides returned
+by :meth:`SNLInstance.getInstParameters() <najaeda.naja.SNLInstance.getInstParameters>`
+iterate in lexical parameter-name order.
 This order is independent of name interning and is preserved across fresh-process
 NajaIF reloads.
 
@@ -10,15 +12,19 @@ Elaborated RTL specializations
 ------------------------------
 
 SystemVerilog and VHDL elaborated designs expose every resolved non-local
-parameter/generic through ``SNLDesign.getParameters()``. The selected top retains
+parameter/generic through
+:meth:`SNLDesign.getParameters() <najaeda.naja.SNLDesign.getParameters>`.
+The selected top retains
 its source name even with non-default parameters. A child model retains the
 source name if it is the only distinct specialization in its owning library;
 multiple instances sharing that model do not require a suffix. When additional
 specializations are loaded, existing model names may change while object and
-instance references remain valid. All models expose the resolved values. ``getValue()`` returns
+instance references remain valid. All models expose the resolved values.
+:meth:`getValue() <najaeda.naja.SNLParameter.getValue>` returns
 source-language literal text (including quotes on string literals), rather than
 an instance override. These parameters describe fixed elaborated circuitry;
-changing an instance parameter does not re-elaborate it. ``getInstParameters()``
+changing an instance parameter does not re-elaborate it.
+:meth:`getInstParameters() <najaeda.naja.SNLInstance.getInstParameters>`
 therefore remains empty for these RTL instances. Use the raw API directly when
 inspecting specialization metadata; high-level instance traversal still returns
 the same specialized model.
@@ -36,7 +42,8 @@ identifier. It is available without retaining source intent or a live AST:
 The ``naja.elaboration_signature`` attribute is a versioned internal identity
 record; callers should treat it as opaque. ``naja.elaboration_name`` is an
 internal naming hint used to restore qualified names when a later load adds
-another specialization. Consumers should use ``getName()`` for the current name.
+another specialization. Consumers should use
+:meth:`getName() <najaeda.naja.SNLDesign.getName>` for the current name.
 These attributes and resolved values
 survive NajaIF save/load, cloning and fresh-process reloads. Gate-level Verilog
 uses the specialized design names directly and omits these informational
@@ -69,7 +76,8 @@ The source-intent helpers follow the same convention:
 :func:`intentPackageMember() <najaeda.naja.intentPackageMember>`.
 Callers of the former snake_case spellings must switch to these names; those spellings are no longer exported. High-level
 :mod:`najaeda.netlist` methods continue to use snake_case, such as
-``Term.is_clock()``. Dictionary keys returned by raw functions retain their
+:meth:`Term.is_clock() <najaeda.netlist.Term.is_clock>`.
+Dictionary keys returned by raw functions retain their
 existing spellings.
 
 When to use the raw API
@@ -114,18 +122,23 @@ process.
 Content hashes
 --------------
 
-``getContentHash()`` is available on ``NLUniverse``, ``NLDB``, ``NLLibrary``,
-``SNLDesign``, ``SNLInstance``, ``SNLTerm``, ``SNLNet`` and their scalar/bus/bit
+:meth:`getContentHash() <najaeda.naja.SNLDesign.getContentHash>` is available on
+:class:`~najaeda.naja.NLUniverse`, :class:`~najaeda.naja.NLDB`,
+:class:`~najaeda.naja.NLLibrary`, :class:`~najaeda.naja.SNLDesign`,
+:class:`~najaeda.naja.SNLInstance`, :class:`~najaeda.naja.SNLTerm`,
+:class:`~najaeda.naja.SNLNet` and their scalar/bus/bit
 subclasses. It returns a 64-character lowercase SHA-256 string. Every call
 computes from live objects, with per-call design memoization and no persistent
 cache. Cyclic model hierarchies raise ``RuntimeError``. Physical PNL designs in
 included libraries are unsupported and rejected.
 
-``naja.getContentHashVersion()`` returns 1.
-``naja.getContentHashAttributeNames()`` returns a fresh list containing
+:func:`naja.getContentHashVersion() <najaeda.naja.getContentHashVersion>` returns 1.
+:func:`naja.getContentHashAttributeNames() <najaeda.naja.getContentHashAttributeNames>`
+returns a fresh list containing
 ``dont_touch``, ``keep``, ``keep_hierarchy``. Matching is exact and case-sensitive;
 attribute insertion order does not matter, duplicates do.
-``naja.getContentHashPropertyNames()`` returns an empty list in version 1.
+:func:`naja.getContentHashPropertyNames() <najaeda.naja.getContentHashPropertyNames>`
+returns an empty list in version 1.
 Source/RTL metadata, unregistered attributes/properties and private caches are
 excluded. The manifest and producer identity are never read.
 
@@ -144,16 +157,19 @@ includes its ID, bit, direction/type and registered attributes. Scalar public
 hashes include the scalar name. Hashes preserve the loaded ID namespace and
 are not an equivalence test for differently named or numbered designs.
 
-Use raw ``SNLInstance.getContentHash()`` to identify a placement and its wiring
-in its parent. High-level ``netlist.Instance.get_content_hash()`` deliberately
-returns its model design hash instead. ``netlist.get_content_hash()`` is the
+Use raw :meth:`SNLInstance.getContentHash() <najaeda.naja.SNLInstance.getContentHash>`
+to identify a placement and its wiring in its parent. High-level
+:meth:`netlist.Instance.get_content_hash() <najaeda.netlist.Instance.get_content_hash>`
+deliberately returns its model design hash instead.
+:func:`netlist.get_content_hash() <najaeda.netlist.get_content_hash>` is the
 high-level universe wrapper. The frozen byte specification and golden fixture
-are in ``docs/content_hash.md`` in the source repository.
+are in `docs/content_hash.md <https://github.com/najaeda/naja/blob/main/docs/content_hash.md>`_
+in the source repository.
 
 Verilog dumps and primitive models
 ----------------------------------
 
-``SNLDesign.dumpGateLevelVerilog`` and ``NLDB.dumpGateLevelVerilog`` emit ``naja_primitives.v``
+:meth:`SNLDesign.dumpGateLevelVerilog <najaeda.naja.SNLDesign.dumpGateLevelVerilog>` and :meth:`NLDB.dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>` emit ``naja_primitives.v``
 beside the structural output when Naja primitive models are needed. Include
 that generated file when linting or simulating the dump. Use the models from
 the same dump rather than a separately maintained primitive library.
@@ -168,11 +184,11 @@ omitted even when the specialized model has a different default. Ordinary
 modules retain their own declared defaults.
 
 Read-only memories use the canonical NLDB0 memory family with ``WR_PORTS=0``.
-Their models expose only ``RADDR`` and ``RDATA``; ``isSequential()`` returns
+Their models expose only ``RADDR`` and ``RDATA``; :meth:`isSequential() <najaeda.naja.SNLDesign.isSequential>` returns
 false because clocked read registers remain separate. Instance ``INIT_ENABLE=1``
 and sized ``INIT`` literals hold the contents, with address zero occupying the
 least-significant word. Binary images use hexadecimal; X/Z images use binary.
-The existing ``getInstParameter`` API exposes these values. The model is shared
+The existing :meth:`getInstParameter <najaeda.naja.SNLInstance.getInstParameter>` API exposes these values. The model is shared
 by equal memory dimensions, while contents belong to each instance. NajaIF
 snapshots and Verilog dumps preserve the initialization. Unknown or out-of-range
 ROM read addresses produce X in the generated model. C++ ``MemoryInterface``
@@ -191,13 +207,13 @@ Some raw names were renamed to camelCase to match the rest of the API.  The old
 names still work, but they emit a ``DeprecationWarning`` saying they will be
 removed in the next release, and forward to the new name:
 
-* ``naja.SNLParameter.create_string``, ``create_decimal``, ``create_binary``,
-  ``create_boolean`` ->
+* :meth:`naja.SNLParameter.create_string <najaeda.naja.SNLParameter.create_string>`, :meth:`create_decimal <najaeda.naja.SNLParameter.create_decimal>`, :meth:`create_binary <najaeda.naja.SNLParameter.create_binary>`,
+  :meth:`create_boolean <najaeda.naja.SNLParameter.create_boolean>` ->
   :meth:`createString <najaeda.naja.SNLParameter.createString>`,
   :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`,
   :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`,
   :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`
-* ``naja.NLID.from_string`` -> :meth:`fromString <najaeda.naja.NLID.fromString>`
+* :meth:`naja.NLID.from_string <najaeda.naja.NLID.from_string>` -> :meth:`fromString <najaeda.naja.NLID.fromString>`
 * ``naja.snapshot_manifest`` -> :func:`snapshotManifest <najaeda.naja.snapshotManifest>`
 * ``naja.live_compilation`` -> :func:`liveCompilation <najaeda.naja.liveCompilation>`
 * ``naja.ast_symbol_of`` -> :func:`astSymbolOf <najaeda.naja.astSymbolOf>`
@@ -211,21 +227,21 @@ Memory interface inspection
 ---------------------------
 
 Experts can inspect existing memory models through the raw API only:
-``design.hasMemoryInterface()`` returns a boolean, and
-``design.getMemoryInterface()`` and ``instance.getMemoryInterface()`` return
+:meth:`design.hasMemoryInterface() <najaeda.naja.SNLDesign.hasMemoryInterface>` returns a boolean, and
+:meth:`design.getMemoryInterface() <najaeda.naja.SNLDesign.getMemoryInterface>` and :meth:`instance.getMemoryInterface() <najaeda.naja.SNLInstance.getMemoryInterface>` return
 fresh dictionaries. These delegate to ``SNLDesignModeling``; they do not infer
 memory behavior from terminal or design names. Use them for primitive modeling
 and downstream tools that need the native memory interface. There is no
-high-level ``najaeda.netlist`` wrapper.
+high-level :mod:`najaeda.netlist <najaeda.netlist>` wrapper.
 
 The dictionary has the following fields (keys follow the C++ member names):
 
 * ``width``, ``depth``, ``abits``: Python integers.
 * ``resetMode``: one of ``"none"``, ``"async_low"``, ``"async_high"``,
   ``"sync_low"``, or ``"sync_high"``.
-* ``clock``, ``reset``: raw ``SNLBitTerm`` objects, or ``None`` when absent.
+* ``clock``, ``reset``: raw :class:`SNLBitTerm <najaeda.naja.SNLBitTerm>` objects, or ``None`` when absent.
 * ``readPorts``: an ordered list of dictionaries with ``address``, ``data``,
-  and ``enables``, each an ordered list of raw ``SNLBitTerm`` objects.
+  and ``enables``, each an ordered list of raw :class:`SNLBitTerm <najaeda.naja.SNLBitTerm>` objects.
 * ``writePorts``: an ordered list of dictionaries with ``address``, ``data``,
   ``mask``, and ``enables`` (ordered bit-term lists), ``extraWriteInputs``
   (an ordered list of ordered bit-term lists), and ``clock`` (a raw bit term
@@ -242,13 +258,13 @@ DB0 memory parameter overrides for dimensions and reset mode, clears an
 unconnected shared clock/reset, and omits ports whose required terminals are
 not connected. Consequently its interface may differ from the model's.
 The returned terminals still belong to the **model design**, including for the
-instance getter; they are not ``SNLInstTerm`` objects or parent-design nets.
+instance getter; they are not :class:`SNLInstTerm <najaeda.naja.SNLInstTerm>` objects or parent-design nets.
 Parameter overrides do not resize or replace these model terminals. To obtain
-an instance connection, use ``instance.getInstTerm(term)``. Wrappers retain the
+an instance connection, use :meth:`instance.getInstTerm(term) <najaeda.naja.SNLInstance.getInstTerm>`. Wrappers retain the
 usual raw-object lifetime rules; dictionaries do not take ownership of designs
 or terminals. Editing the returned lists/dictionaries does not alter C++ metadata.
 
-For a non-memory design ``hasMemoryInterface()`` returns ``False``. Both getters
+For a non-memory design :meth:`hasMemoryInterface() <najaeda.naja.SNLDesign.hasMemoryInterface>` returns ``False``. Both getters
 raise ``RuntimeError`` if the design/model has no memory interface; they do not
 return ``None`` or an empty interface. Native modeling errors (including invalid
 instance parameters) are translated to Python exceptions using the standard raw
@@ -269,10 +285,10 @@ the same Python wrapper object.  Do not use ``id(obj)`` to identify nets,
 terms, instances, paths, occurrences, or other wrapped SNL objects across
 calls.  Use ``==`` for equality and use the wrapped object itself as a
 ``dict`` key or ``set`` element when the object is hashable.  Objects with a
-native ``NLID`` hash from that ``NLID``.  ``SNLPath`` and ``SNLOccurrence``
-are hashable by composing the ``NLID`` values of their referenced objects.
-``SNLAttribute`` is hashable from its name and typed value.  Other raw value
-wrappers without an ``NLID`` are intentionally unhashable.
+native :class:`NLID <najaeda.naja.NLID>` hash from that :class:`NLID <najaeda.naja.NLID>`.  :class:`SNLPath <najaeda.naja.SNLPath>` and :class:`SNLOccurrence <najaeda.naja.SNLOccurrence>`
+are hashable by composing the :class:`NLID <najaeda.naja.NLID>` values of their referenced objects.
+:class:`SNLAttribute <najaeda.naja.SNLAttribute>` is hashable from its name and typed value.  Other raw value
+wrappers without an :class:`NLID <najaeda.naja.NLID>` are intentionally unhashable.
 
 Relationship to high-level wrappers
 -----------------------------------
@@ -327,19 +343,19 @@ pattern shows the intended ownership flow:
    a.setNet(n)
    y.setNet(n)
 
-For Verilator verification, ``SNLDesign.dumpGateLevelVerilog(path, top_file_name,
-verilatorSplitPackedSignals=True)`` annotates internal bus nets and packed
+For Verilator verification, :meth:`SNLDesign.dumpGateLevelVerilog(path, top_file_name,
+verilatorSplitPackedSignals=True) <najaeda.naja.SNLDesign.dumpGateLevelVerilog>` annotates internal bus nets and packed
 child-module ports with ``/* verilator split_var */``. Public top-module ports
 are excluded. The keyword defaults to ``False``; comments affect Verilator's
 dependency tracking and do not change the netlist logic or suppress warnings.
 The high-level API exposes the same option through
-``najaeda.netlist.GateLevelVerilogDumpConfig``. Library-only dumps annotate internal nets
+:class:`najaeda.netlist.GateLevelVerilogDumpConfig <najaeda.netlist.GateLevelVerilogDumpConfig>`. Library-only dumps annotate internal nets
 but leave module ports unannotated because no single public top is specified.
 
 Object lifetime and safety
 --------------------------
 
-Raw objects are views of native C++ objects.  After calling ``destroy()`` or
+Raw objects are views of native C++ objects.  After calling :meth:`destroy() <najaeda.naja.SNLDesign.destroy>` or
 after resetting/destroying the owning universe, database, library, or design,
 do not keep using Python objects that referenced the destroyed native object.
 
@@ -395,8 +411,8 @@ source-intent retention option without introducing a second public option.
 Capture reads the RTL elaborator's resolved shapes, declaration bindings and
 values; Python does not parse or search source text to reconstruct semantics.
 
-``intentDescribe(object)`` accepts an ``SNLDesign``, an ``SNLDesignObject`` or
-an ``NLLibrary``. It returns an explicit ``status`` envelope. A retained design
+:func:`intentDescribe(object) <najaeda.naja.intentDescribe>` accepts an :class:`SNLDesign <najaeda.naja.SNLDesign>`, an ``SNLDesignObject`` or
+an :class:`NLLibrary <najaeda.naja.NLLibrary>`. It returns an explicit ``status`` envelope. A retained design
 has ``language="vhdl"``, ``entity``, ``architecture``, a specialization
 ``context`` and an ordered ``declarations`` list. An explicit instance also
 has ``instance``, ``model_context`` and ``generic_actuals``; its context is
@@ -421,7 +437,7 @@ retain the frontend's case-insensitive canonical spelling; extended identifiers
 retain case. Library ownership and ``work`` resolution use the same root-library
 bindings as elaboration, including package imports.
 
-For VHDL, ``intentTypeOf(signal_or_port)`` returns the resolved shape, for example
+For VHDL, :func:`intentTypeOf(signal_or_port) <najaeda.naja.intentTypeOf>` returns the resolved shape, for example
 (the declaration and source dictionaries are omitted here):
 
 .. code-block:: python
@@ -441,7 +457,7 @@ recursive ``element_type``. Widths come from resolved shapes, not from guessing
 nominal types from SNL bus widths. The declared type preserves subtype aliases;
 ``subtype_constraint`` contains resolved subtype bounds when retained.
 
-``intentParametersOf(design_or_instance)`` returns
+:func:`intentParametersOf(design_or_instance) <najaeda.naja.intentParametersOf>` returns
 ``{"status": "available", "language": "vhdl", "params": [...]}`` with generic
 and constant declaration records. It does not use SV-specific ``localparam``
 fields. For example, a generic overridden from 3 to 5 has:
@@ -492,10 +508,10 @@ Lifecycle and limits
   even though source references survive. Re-elaborate the original VHDL sources
   in a fresh database with retention enabled to recover intent. Snapshot payloads,
   manifests, SNL ordering, IDs and connectivity are unaffected by retention.
-* ``intentAvailable()`` is a global availability hint across retained SV and VHDL
-  data; use ``intentDescribe(object)["status"]`` for VHDL object availability.
-  ``intentTypeOf`` and ``intentParametersOf`` retain their legacy ``None`` result
-  when no applicable live metadata exists. ``intentPackageMember`` remains an SV
+* :func:`intentAvailable() <najaeda.naja.intentAvailable>` is a global availability hint across retained SV and VHDL
+  data; use :func:`intentDescribe(object)["status"] <najaeda.naja.intentDescribe>` for VHDL object availability.
+  :func:`intentTypeOf <najaeda.naja.intentTypeOf>` and :func:`intentParametersOf <najaeda.naja.intentParametersOf>` retain their legacy ``None`` result
+  when no applicable live metadata exists. :func:`intentPackageMember <najaeda.naja.intentPackageMember>` remains an SV
   query; VHDL packages are selected explicitly through library catalogues and
   their ownership fields. Slang compilation/symbol capsule APIs remain SV-only.
 * The supported VHDL language subset is unchanged. Unelaborated package records,
@@ -507,11 +523,11 @@ Integration for external intent tools
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A VHDL ``load_intent`` implementation should retain its own ordered input and
-library load configuration, create a fresh raw database, and call ``loadVHDL``
+library load configuration, create a fresh raw database, and call :meth:`loadVHDL <najaeda.naja.NLDB.loadVHDL>`
 with ``keep_ast_link=True`` for the final hierarchy elaboration. For package-only
 loads it should query the destination library. A VHDL ``get_intent`` implementation
-can resolve its structural target, call ``intentDescribe`` and, when available,
-use ``intentTypeOf`` or ``intentParametersOf``. Keep declaration IDs, occurrence
+can resolve its structural target, call :func:`intentDescribe <najaeda.naja.intentDescribe>` and, when available,
+use :func:`intentTypeOf <najaeda.naja.intentTypeOf>` or :func:`intentParametersOf <najaeda.naja.intentParametersOf>`. Keep declaration IDs, occurrence
 paths, model contexts and source references separate. Propagate unavailable and
 unsupported fields; do not fabricate SV schema fields or infer FSMs. After a
 snapshot reload or cached/non-retained session, offer source re-elaboration in a
@@ -526,7 +542,7 @@ Use the raw API when defining a primitive library in Python.  The high-level
 :mod:`najaeda.netlist` API loads and consumes primitive libraries, while the
 raw objects expose the definition-time timing decorators.
 
-``SNLDesign.addCombinatorialArcs(inputs, outputs)`` declares every input/output
+:meth:`SNLDesign.addCombinatorialArcs(inputs, outputs) <najaeda.naja.SNLDesign.addCombinatorialArcs>` declares every input/output
 pair. Large declarations are stored as compact shared groups, including for
 parameter-selected timing. Queries on designs and instances enumerate the same
 dependencies in stable term-ID order without expanding the whole timing graph.
@@ -535,7 +551,7 @@ reconstruct their timing groups when a NajaIF snapshot is loaded.
 
 Primitive designs are hierarchy leaves.  Their interface, parameters, and
 timing metadata can be defined directly, but they cannot contain instances.
-Accordingly, ``SNLInstance.create(owner, model, name)`` raises
+Accordingly, :meth:`SNLInstance.create(owner, model, name) <najaeda.naja.SNLInstance.create>` raises
 ``RuntimeError`` when ``owner`` is primitive.  Passing a primitive as
 ``model`` remains the normal way to instantiate that primitive in a
 non-primitive design.
@@ -545,8 +561,8 @@ SystemVerilog loading can produce canonical ``naja_add__w...``,
 Addition, subtraction and multiplication retain the low ``WIDTH`` result
 bits after frontend operand sizing. Add/subtract models have width-bit ``A``,
 ``B`` and ``Y`` ports; their operation is fixed by their canonical family. These word-level models expose conservative
-combinational dependencies through ``SNLDesign.getCombinatorialInputs`` and
-``getCombinatorialOutputs``; they do not expose Boolean truth tables. Inspect
+combinational dependencies through :meth:`SNLDesign.getCombinatorialInputs <najaeda.naja.SNLDesign.getCombinatorialInputs>` and
+:meth:`getCombinatorialOutputs <najaeda.naja.SNLDesign.getCombinatorialOutputs>`; they do not expose Boolean truth tables. Inspect
 these models through the raw API when working on primitive-level analysis;
 normal loading and exporting use the high-level API.
 
@@ -575,20 +591,20 @@ each bit term:
        naja.SNLTermRole.AsyncReset, naja.SNLActiveLevel.Low)
    output.setRole(naja.SNLTermRole.DataOutput)
 
-``SNLActiveLevel`` applies to asynchronous and synchronous reset/set roles.
+:class:`SNLActiveLevel <najaeda.naja.SNLActiveLevel>` applies to asynchronous and synchronous reset/set roles.
 The role and active level are inherited by instance terms.  Use
-``getClockTerms()``, the other role-based design iterators, and the
+:meth:`getClockTerms() <najaeda.naja.SNLDesign.getClockTerms>`, the other role-based design iterators, and the
 ``is_*`` term predicates to inspect the resulting model.
 
 Parameter-dependent term roles
 ------------------------------
 
 For vendor primitives whose pin meaning changes with instance parameters,
-use ``SNLDesign.setRolesFromParameters(parameters, roles)``. Each entry has
+use :meth:`SNLDesign.setRolesFromParameters(parameters, roles) <najaeda.naja.SNLDesign.setRolesFromParameters>`. Each entry has
 an ordered unsigned integer ``values`` list and a ``roles`` dictionary
 mapping scalar terms or bus bits to ``(SNLTermRole, SNLActiveLevel)`` or
 ``None``. ``None`` explicitly removes the role, resolving to
-``SNLTermRole.Other`` and ``SNLActiveLevel.NA`` even if the static term has
+:class:`SNLTermRole.Other <najaeda.naja.SNLTermRole>` and :class:`SNLActiveLevel.NA <najaeda.naja.SNLActiveLevel>` even if the static term has
 a control role. Omitted terms retain their static role.
 
 .. code-block:: python
@@ -621,19 +637,19 @@ sequential models. Missing required values, invalid literals, and unmatched
 configurations raise ``RuntimeError`` on instance queries. Duplicate keys,
 foreign terms, invalid enums, and malformed declarations are rejected without
 replacing the existing table. Calling the setter again replaces the table.
-``hasRolesFromParameters()`` reports whether a table is present.
+:meth:`hasRolesFromParameters() <najaeda.naja.SNLDesign.hasRolesFromParameters>` reports whether a table is present.
 
-``SNLInstTerm.getRole()``, ``getResetActiveLevel()``, and all ``is_*`` role
+:meth:`SNLInstTerm.getRole() <najaeda.naja.SNLInstTerm.getRole>`, :meth:`getResetActiveLevel() <najaeda.naja.SNLInstTerm.getResetActiveLevel>`, and all ``is_*`` role
 predicates resolve the current instance parameters on every query.
-``SNLOccurrence.getRole()`` and ``getResetActiveLevel()`` do the same when
+:meth:`SNLOccurrence.getRole() <najaeda.naja.SNLOccurrence.getRole>` and :meth:`getResetActiveLevel() <najaeda.naja.SNLOccurrence.getResetActiveLevel>` do the same when
 the occurrence references an instance term; bit-term occurrences report
 static roles, and non-term occurrences report ``Other`` / ``NA``.
-``SNLBitTerm.getRole()`` and design role iterators still report static roles.
+:meth:`SNLBitTerm.getRole() <najaeda.naja.SNLBitTerm.getRole>` and design role iterators still report static roles.
 Without a table, existing static-role behavior is preserved.
 
 Declare tables through the raw API even when traversing with the high-level
-API: ``najaeda.netlist.Term.get_role()``, ``get_reset_active_level()``, and
-``isClock()``, ``isReset()``, ``isEnable()`` and the other role predicates
+API: :meth:`najaeda.netlist.Term.get_role() <najaeda.netlist.Term.get_role>`, :meth:`get_reset_active_level() <najaeda.netlist.Term.get_reset_active_level>`, and
+:meth:`is_clock() <najaeda.netlist.Term.is_clock>`, :meth:`is_reset() <najaeda.netlist.Term.is_reset>`, :meth:`is_enable() <najaeda.netlist.Term.is_enable>`, and the other role predicates
 use the resolved instance term. There is no high-level declaration wrapper.
 These tables are independent of sequential models; setting a sequential
 model does not infer or replace roles. Like existing primitive modeling
@@ -647,7 +663,7 @@ The native equivalent is
 ``SNLDesignModeling`` instance-term overloads.
 
 Parameterized combinational timing selects one design parameter and records
-an arc set for each value.  Two-argument ``addCombinatorialArcs`` calls record
+an arc set for each value.  Two-argument :meth:`addCombinatorialArcs <najaeda.naja.SNLDesign.addCombinatorialArcs>` calls record
 the default value's arcs; the three-argument form takes the parameter value
 first:
 
@@ -659,19 +675,20 @@ first:
    naja.SNLDesign.addCombinatorialArcs(
        "CROSS", input_a, output_b)
 
-The built-in loaders under :mod:`najaeda.primitives` use the same API, so
+The built-in primitive libraries loaded by :func:`najaeda.netlist.load_primitives`
+use the same API, so
 Python-defined primitives expose the same arc, role, and active-level
 metadata as primitives constructed by the C++ DB0 and Liberty paths.
 
 For primitives such as FPGA lookup tables whose function is held in an
-instance parameter, use ``setTruthTableFromParameter(output, inputs,
-parameter, bit_offset=0)``. The input list must follow design order and may
+instance parameter, use :meth:`setTruthTableFromParameter(output, inputs,
+parameter, bit_offset=0) <najaeda.naja.SNLDesign.setTruthTableFromParameter>`. The input list must follow design order and may
 contain up to six terms. Naja resolves the instance override on first use and
 caches the resulting truth table for that instance.
 
 Liberty loading preserves every distinct sequential dependency declared by
 setup, hold, or edge timing groups.  Consequently,
-``getInputRelatedClocks()`` and ``getOutputRelatedClocks()`` can return more
+:meth:`getInputRelatedClocks() <najaeda.naja.SNLDesign.getInputRelatedClocks>` and :meth:`getOutputRelatedClocks() <najaeda.naja.SNLDesign.getOutputRelatedClocks>` can return more
 than one clock for a term; repeated groups for the same term and clock are
 deduplicated.  The generic timing-arc model does not retain Liberty ``when``
 expressions, so conditionally enabled arcs are exposed conservatively as
@@ -682,12 +699,12 @@ memory are not represented by that interface.
 Parameter-dependent sequential models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use ``SNLDesign.setSequentialModelFromParameters(parameters, models)`` when
+Use :meth:`SNLDesign.setSequentialModelFromParameters(parameters, models) <najaeda.naja.SNLDesign.setSequentialModelFromParameters>` when
 instance parameters select sequential behavior. ``parameters`` is an ordered
 list of numeric parameter names declared on the primitive. ``models`` is a
 list of dictionaries with ``values`` (unsigned integers in the same order),
 ``clocked_on``, ``states``, ``outputs``, and optional ``kind``. The latter four
-fields use the same syntax as ``setSequentialModel``. Duplicate keys, invalid
+fields use the same syntax as :meth:`setSequentialModel <najaeda.naja.SNLDesign.setSequentialModel>`. Duplicate keys, invalid
 expressions, foreign terms, and undeclared/string parameters are rejected.
 A declaration replaces the previous static model or table atomically after
 validation. A partial table is allowed; an unmatched instance is an error.
@@ -697,11 +714,11 @@ clock polarities and optional asynchronous controls without callbacks or a new
 expression language. C++ callers use
 ``SNLDesignModeling::setSequentialModelFromParameters(design, names, table)``;
 ``SequentialModelTable`` maps ``std::vector<uint64_t>`` keys to
-``SequentialModel`` values. ``hasSequentialModel(design)`` includes tables;
-``hasSequentialModelFromParameters(design)`` (Python
-``design.hasSequentialModelFromParameters()``) distinguishes them. Resolve with
+``SequentialModel`` values. :meth:`hasSequentialModel(design) <najaeda.naja.SNLDesign.hasSequentialModel>` includes tables;
+:meth:`hasSequentialModelFromParameters(design) <najaeda.naja.SNLDesign.hasSequentialModelFromParameters>` (Python
+:meth:`design.hasSequentialModelFromParameters() <najaeda.naja.SNLDesign.hasSequentialModelFromParameters>`) distinguishes them. Resolve with
 ``SNLDesignModeling::getSequentialModel(instance)`` or Python
-``instance.getSequentialModel()``. The C++ instance getter returns the exact
+:meth:`instance.getSequentialModel() <najaeda.naja.SNLInstance.getSequentialModel>`. The C++ instance getter returns the exact
 stored static model when no table is present. The design getter raises for a
 table, preventing accidental use of a single model for every instance.
 
@@ -729,10 +746,10 @@ constants, ``("term", SNLBitTerm)``, ``("state", index)``,
 State dictionaries contain ``next_state``, optional ``clear``/``preset``
 (``None`` when absent), and ``clear_preset_value``. Outputs are
 ``(SNLBitTerm, expression)`` tuples. Term leaves refer to the primitive's
-terms; use ``instance.getInstTerm(term)`` for connections. State indices refer
+terms; use :meth:`instance.getInstTerm(term) <najaeda.naja.SNLInstance.getInstTerm>` for connections. State indices refer
 to the returned state list. These getters expose parsed trees rather than the
 original declaration strings. This feature belongs in the raw API for primitive
-library authors; general instance traversal uses ``najaeda.netlist``.
+library authors; general instance traversal uses :mod:`najaeda.netlist <najaeda.netlist>`.
 
 The following generic flip-flop example supports both clock edges, optional
 load enable, and synchronous or asynchronous reset/set. ``FALLING_EDGE=0``
@@ -795,76 +812,476 @@ Raw module reference
 --------------------
 
 The compiled extension exposes the following public objects in the current
-binding.  Read this table as an expert index; the C++ SNL API remains the
-semantic source of truth.
+binding. Use this grouped index to find the detailed reference entries.
+The C++ SNL API remains the semantic source of truth.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 28 72
+:exc:`NajaCancelled <najaeda.naja.NajaCancelled>`
+    ``RuntimeError`` subclass raised when a loader progress callback returns ``False``; see :doc:`loading`.
 
-   * - Object
-     - Main public methods and values
-   * - ``NajaCancelled``
-     - ``RuntimeError`` subclass raised when a loader progress callback returns ``False``; see :doc:`loading`.
-   * - :class:`najaeda.naja.SNLParameter`
-     - :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`, :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`, :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`, :meth:`createString <najaeda.naja.SNLParameter.createString>` (optional default value), :meth:`hasDefaultValue <najaeda.naja.SNLParameter.hasDefaultValue>`, :meth:`getValue <najaeda.naja.SNLParameter.getValue>`, :meth:`getName <najaeda.naja.SNLParameter.getName>`, :meth:`getDesign <najaeda.naja.SNLParameter.getDesign>`, :meth:`destroy <najaeda.naja.SNLParameter.destroy>`
-   * - :class:`najaeda.naja.NLClock`
-     - :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`, :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`, :meth:`getName <najaeda.naja.NLClock.getName>`, :meth:`getKind <najaeda.naja.NLClock.getKind>`, :meth:`getDesign <najaeda.naja.NLClock.getDesign>`, :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`, :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`, :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`, :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`, :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`, :meth:`setWaveform (primary only) <najaeda.naja.NLClock.setWaveform>`, :meth:`getSources <najaeda.naja.NLClock.getSources>`, :meth:`getMaster <najaeda.naja.NLClock.getMaster>`, :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`, :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`, :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`, :meth:`isInverted <najaeda.naja.NLClock.isInverted>`, :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`, :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`, :meth:`destroy <najaeda.naja.NLClock.destroy>`
-   * - ``NLReset``
-     - ``create()``, ``getName()``, ``getDesign()``, ``getSources()``, ``getActiveLevel()``, ``getInactiveValue()``, ``getAssertion()``, ``getDeassertion()``, ``destroy()``
-   * - ``SNLResetDomain``
-     - ``getNLReset()``, ``getSources()``
-   * - ``SNLDesign`` timing analysis
-     - ``analyzeTiming()``, ``getResets()``, ``getResetDomains()``, ``getClockDomains()``, ``getEndpoints()``, ``getTimingCoverageReport()``, ``getTimingCoverageCounts()``, ``getTimingDiagnostics()``
-   * - ``SNLOccurrence`` timing queries
-     - ``getLaunchClocks()``, ``getCaptureClocks()``, ``getClocks()``, ``getResets()``, ``getFaninStartpoints()``, ``getFanoutEndpoints()``
-   * - ``SNLClockDomain``, ``SNLTimingCycleError``
-     - Domain: ``getNLClock()``, ``getSources()``; exception: ``occurrence``, ``description``, ``role``
-   * - :class:`najaeda.naja.NLUniverse`
-     - :meth:`getContentHash <najaeda.naja.NLUniverse.getContentHash>`, :meth:`create <najaeda.naja.NLUniverse.create>`, :meth:`destroy <najaeda.naja.NLUniverse.destroy>`, :meth:`get <najaeda.naja.NLUniverse.get>`, :meth:`getDB <najaeda.naja.NLUniverse.getDB>`, :meth:`getTopDB <najaeda.naja.NLUniverse.getTopDB>`, :meth:`setTopDB <najaeda.naja.NLUniverse.setTopDB>`, :meth:`getTopDesign <najaeda.naja.NLUniverse.getTopDesign>`, :meth:`setTopDesign <najaeda.naja.NLUniverse.setTopDesign>`, :meth:`getUserDBs <najaeda.naja.NLUniverse.getUserDBs>`, :meth:`getSNLDesign <najaeda.naja.NLUniverse.getSNLDesign>`, :meth:`getObject <najaeda.naja.NLUniverse.getObject>`, :meth:`applyDLE <najaeda.naja.NLUniverse.applyDLE>`, :meth:`applyConstantPropagation <najaeda.naja.NLUniverse.applyConstantPropagation>`, :meth:`getMaxFanout <najaeda.naja.NLUniverse.getMaxFanout>`, :meth:`getMaxLogicLevel <najaeda.naja.NLUniverse.getMaxLogicLevel>`
-   * - :class:`najaeda.naja.NLDB`
-     - :meth:`getContentHash <najaeda.naja.NLDB.getContentHash>`, :meth:`create <najaeda.naja.NLDB.create>`, :meth:`destroy <najaeda.naja.NLDB.destroy>`, :meth:`getID <najaeda.naja.NLDB.getID>`, :meth:`getNLID <najaeda.naja.NLDB.getNLID>`, :meth:`isTopDB <najaeda.naja.NLDB.isTopDB>`, :meth:`getLibraries <najaeda.naja.NLDB.getLibraries>`, :meth:`getLibrary <najaeda.naja.NLDB.getLibrary>`, :meth:`getGlobalLibraries <najaeda.naja.NLDB.getGlobalLibraries>`, :meth:`getPrimitiveLibraries <najaeda.naja.NLDB.getPrimitiveLibraries>`, :meth:`getTopDesign <najaeda.naja.NLDB.getTopDesign>`, :meth:`loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>`, :meth:`loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>`, :meth:`loadVHDL <najaeda.naja.NLDB.loadVHDL>`, :meth:`loadLibertyPrimitives <najaeda.naja.NLDB.loadLibertyPrimitives>`, :meth:`loadNajaIF <najaeda.naja.NLDB.loadNajaIF>`, :meth:`dumpNajaIF <najaeda.naja.NLDB.dumpNajaIF>`, :meth:`dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>`, :meth:`getClocks <najaeda.naja.NLDB.getClocks>`, :meth:`getResets <najaeda.naja.NLDB.getResets>`
-   * - :class:`najaeda.naja.NLLibrary`
-     - :meth:`getContentHash <najaeda.naja.NLLibrary.getContentHash>`, :meth:`create <najaeda.naja.NLLibrary.create>`, :meth:`createPrimitives <najaeda.naja.NLLibrary.createPrimitives>`, :meth:`getDB <najaeda.naja.NLLibrary.getDB>`, :meth:`getID <najaeda.naja.NLLibrary.getID>`, :meth:`getNLID <najaeda.naja.NLLibrary.getNLID>`, :meth:`getName <najaeda.naja.NLLibrary.getName>`, :meth:`setName <najaeda.naja.NLLibrary.setName>`, :meth:`isStandard <najaeda.naja.NLLibrary.isStandard>`, :meth:`isPrimitives <najaeda.naja.NLLibrary.isPrimitives>`, :meth:`getSNLDesign <najaeda.naja.NLLibrary.getSNLDesign>`, :meth:`getSNLDesigns <najaeda.naja.NLLibrary.getSNLDesigns>`, :meth:`getLibrary <najaeda.naja.NLLibrary.getLibrary>`, :meth:`getLibraries <najaeda.naja.NLLibrary.getLibraries>`
-   * - :class:`najaeda.naja.SNLDesign`
-     - :meth:`getContentHash <najaeda.naja.SNLDesign.getContentHash>`, :meth:`create <najaeda.naja.SNLDesign.create>`, :meth:`createPrimitive <najaeda.naja.SNLDesign.createPrimitive>`, :meth:`clone <najaeda.naja.SNLDesign.clone>`, :meth:`destroy <najaeda.naja.SNLDesign.destroy>`, :meth:`getName <najaeda.naja.SNLDesign.getName>`, :meth:`setName <najaeda.naja.SNLDesign.setName>`, :meth:`getDB <najaeda.naja.SNLDesign.getDB>`, :meth:`getLibrary <najaeda.naja.SNLDesign.getLibrary>`, :meth:`getID <najaeda.naja.SNLDesign.getID>`, :meth:`getNLID <najaeda.naja.SNLDesign.getNLID>`, :meth:`getRevisionCount <najaeda.naja.SNLDesign.getRevisionCount>`, :meth:`getTerms <najaeda.naja.SNLDesign.getTerms>`, :meth:`getTerm <najaeda.naja.SNLDesign.getTerm>`, :meth:`getTermByID <najaeda.naja.SNLDesign.getTermByID>`, :meth:`getScalarTerms <najaeda.naja.SNLDesign.getScalarTerms>`, :meth:`getBusTerms <najaeda.naja.SNLDesign.getBusTerms>`, :meth:`getBundleTerms <najaeda.naja.SNLDesign.getBundleTerms>`, :meth:`getNets <najaeda.naja.SNLDesign.getNets>`, :meth:`getNet <najaeda.naja.SNLDesign.getNet>`, :meth:`getNetByID <najaeda.naja.SNLDesign.getNetByID>`, :meth:`getScalarNets <najaeda.naja.SNLDesign.getScalarNets>`, :meth:`getBusNets <najaeda.naja.SNLDesign.getBusNets>`, :meth:`getInstances <najaeda.naja.SNLDesign.getInstances>`, :meth:`getInstance <najaeda.naja.SNLDesign.getInstance>`, :meth:`getInstanceByID <najaeda.naja.SNLDesign.getInstanceByID>`, :meth:`getInstanceByIDList <najaeda.naja.SNLDesign.getInstanceByIDList>`, :meth:`getParameters <najaeda.naja.SNLDesign.getParameters>`, :meth:`getParameter <najaeda.naja.SNLDesign.getParameter>`, :meth:`addCombinatorialArcs <najaeda.naja.SNLDesign.addCombinatorialArcs>`, :meth:`addInputsToClockArcs <najaeda.naja.SNLDesign.addInputsToClockArcs>`, :meth:`addClockToOutputsArcs <najaeda.naja.SNLDesign.addClockToOutputsArcs>`, :meth:`setTimingModelParameter <najaeda.naja.SNLDesign.setTimingModelParameter>`, :meth:`getCombinatorialInputs <najaeda.naja.SNLDesign.getCombinatorialInputs>`, :meth:`getCombinatorialOutputs <najaeda.naja.SNLDesign.getCombinatorialOutputs>`, :meth:`getClockRelatedInputs <najaeda.naja.SNLDesign.getClockRelatedInputs>`, :meth:`getClockRelatedOutputs <najaeda.naja.SNLDesign.getClockRelatedOutputs>`, :meth:`getInputRelatedClocks <najaeda.naja.SNLDesign.getInputRelatedClocks>`, :meth:`getOutputRelatedClocks <najaeda.naja.SNLDesign.getOutputRelatedClocks>`, :meth:`getClockTerms <najaeda.naja.SNLDesign.getClockTerms>`, :meth:`getAsyncResetTerms <najaeda.naja.SNLDesign.getAsyncResetTerms>`, :meth:`getAsyncSetTerms <najaeda.naja.SNLDesign.getAsyncSetTerms>`, :meth:`getSyncResetTerms <najaeda.naja.SNLDesign.getSyncResetTerms>`, :meth:`getSyncSetTerms <najaeda.naja.SNLDesign.getSyncSetTerms>`, :meth:`getDataInputTerms <najaeda.naja.SNLDesign.getDataInputTerms>`, :meth:`getOutputTerms <najaeda.naja.SNLDesign.getOutputTerms>`, :meth:`setTruthTable <najaeda.naja.SNLDesign.setTruthTable>`, :meth:`setSequentialModel <najaeda.naja.SNLDesign.setSequentialModel>`, :meth:`setSequentialModelFromParameters <najaeda.naja.SNLDesign.setSequentialModelFromParameters>`, :meth:`setRolesFromParameters <najaeda.naja.SNLDesign.setRolesFromParameters>`, :meth:`hasRolesFromParameters <najaeda.naja.SNLDesign.hasRolesFromParameters>`, :meth:`hasSequentialModel <najaeda.naja.SNLDesign.hasSequentialModel>`, :meth:`hasSequentialModelFromParameters <najaeda.naja.SNLDesign.hasSequentialModelFromParameters>`, :meth:`getSequentialModel <najaeda.naja.SNLDesign.getSequentialModel>`, :meth:`hasMemoryInterface <najaeda.naja.SNLDesign.hasMemoryInterface>`, :meth:`getMemoryInterface <najaeda.naja.SNLDesign.getMemoryInterface>`, :meth:`setTruthTableFromParameter <najaeda.naja.SNLDesign.setTruthTableFromParameter>`, :meth:`setTruthTables <najaeda.naja.SNLDesign.setTruthTables>`, :meth:`getTruthTable <najaeda.naja.SNLDesign.getTruthTable>`, :meth:`getTruthTableByOutputID <najaeda.naja.SNLDesign.getTruthTableByOutputID>`, :meth:`isConst0 <najaeda.naja.SNLDesign.isConst0>`, :meth:`isConst1 <najaeda.naja.SNLDesign.isConst1>`, :meth:`isConst <najaeda.naja.SNLDesign.isConst>`, :meth:`isBuf <najaeda.naja.SNLDesign.isBuf>`, :meth:`isInv <najaeda.naja.SNLDesign.isInv>`, :meth:`getGatePolarity <najaeda.naja.SNLDesign.getGatePolarity>`, :meth:`isAnd <najaeda.naja.SNLDesign.isAnd>`, :meth:`isNand <najaeda.naja.SNLDesign.isNand>`, :meth:`isOr <najaeda.naja.SNLDesign.isOr>`, :meth:`isNor <najaeda.naja.SNLDesign.isNor>`, :meth:`isXor <najaeda.naja.SNLDesign.isXor>`, :meth:`isXnor <najaeda.naja.SNLDesign.isXnor>`, :meth:`isMux <najaeda.naja.SNLDesign.isMux>`, :meth:`isAddSub <najaeda.naja.SNLDesign.isAddSub>`, :meth:`isSubtract <najaeda.naja.SNLDesign.isSubtract>`, :meth:`isMultiply <najaeda.naja.SNLDesign.isMultiply>`, :meth:`isShift <najaeda.naja.SNLDesign.isShift>`, :meth:`isDivMod <najaeda.naja.SNLDesign.isDivMod>`, :meth:`isShiftRight <najaeda.naja.SNLDesign.isShiftRight>`, :meth:`isShiftArithmetic <najaeda.naja.SNLDesign.isShiftArithmetic>`, :meth:`dumpGateLevelVerilog <najaeda.naja.SNLDesign.dumpGateLevelVerilog>`, :meth:`dumpFullDotFile <najaeda.naja.SNLDesign.dumpFullDotFile>`, :meth:`dumpContextDotFile <najaeda.naja.SNLDesign.dumpContextDotFile>`, :meth:`getClocks <najaeda.naja.SNLDesign.getClocks>`
-   * - :class:`najaeda.naja.SNLInstance`
-     - :meth:`getContentHash <najaeda.naja.SNLInstance.getContentHash>`, :meth:`create <najaeda.naja.SNLInstance.create>`, :meth:`destroy <najaeda.naja.SNLInstance.destroy>`, :meth:`getName <najaeda.naja.SNLInstance.getName>`, :meth:`setName <najaeda.naja.SNLInstance.setName>`, :meth:`getID <najaeda.naja.SNLInstance.getID>`, :meth:`getNLID <najaeda.naja.SNLInstance.getNLID>`, :meth:`getDesign <najaeda.naja.SNLInstance.getDesign>`, :meth:`getModel <najaeda.naja.SNLInstance.getModel>`, :meth:`getSequentialModel <najaeda.naja.SNLInstance.getSequentialModel>`, :meth:`getMemoryInterface <najaeda.naja.SNLInstance.getMemoryInterface>`, :meth:`getInstTerm <najaeda.naja.SNLInstance.getInstTerm>`, :meth:`getInstTerms <najaeda.naja.SNLInstance.getInstTerms>`, :meth:`getInstParameter <najaeda.naja.SNLInstance.getInstParameter>`, :meth:`getInstParameters <najaeda.naja.SNLInstance.getInstParameters>`, :meth:`getCombinatorialInputs <najaeda.naja.SNLInstance.getCombinatorialInputs>`, :meth:`getCombinatorialOutputs <najaeda.naja.SNLInstance.getCombinatorialOutputs>`, :meth:`getClockRelatedInputs <najaeda.naja.SNLInstance.getClockRelatedInputs>`, :meth:`getClockRelatedOutputs <najaeda.naja.SNLInstance.getClockRelatedOutputs>`, :meth:`getInputRelatedClocks <najaeda.naja.SNLInstance.getInputRelatedClocks>`, :meth:`getOutputRelatedClocks <najaeda.naja.SNLInstance.getOutputRelatedClocks>`
-   * - :class:`najaeda.naja.SNLTerm` and term subclasses
-     - :class:`Direction <najaeda.naja.SNLTerm.Direction>`, :meth:`getName <najaeda.naja.SNLTerm.getName>`, :meth:`setName <najaeda.naja.SNLTerm.setName>`, :meth:`getDirection <najaeda.naja.SNLTerm.getDirection>`, :meth:`getDesign <najaeda.naja.SNLTerm.getDesign>`, :meth:`getNet <najaeda.naja.SNLTerm.getNet>`, :meth:`setNet <najaeda.naja.SNLTerm.setNet>`, :meth:`getBits <najaeda.naja.SNLTerm.getBits>`, :meth:`getWidth <najaeda.naja.SNLTerm.getWidth>`, :meth:`getNLID <najaeda.naja.SNLTerm.getNLID>`, :meth:`getSourceLoc <najaeda.naja.SNLTerm.getSourceLoc>`, :meth:`hasSourceLoc <najaeda.naja.SNLTerm.hasSourceLoc>`; bit terms also expose :meth:`setRole <najaeda.naja.SNLBitTerm.setRole>`, :meth:`getRole <najaeda.naja.SNLBitTerm.getRole>`, :meth:`getActiveLevel <najaeda.naja.SNLBitTerm.getActiveLevel>`, :meth:`getResetActiveLevel <najaeda.naja.SNLBitTerm.getResetActiveLevel>`, :meth:`isClock <najaeda.naja.SNLBitTerm.isClock>`, :meth:`isAsyncReset <najaeda.naja.SNLBitTerm.isAsyncReset>`, :meth:`isAsyncSet <najaeda.naja.SNLBitTerm.isAsyncSet>`, :meth:`isSyncReset <najaeda.naja.SNLBitTerm.isSyncReset>`, :meth:`isSyncSet <najaeda.naja.SNLBitTerm.isSyncSet>`, :meth:`isReset <najaeda.naja.SNLBitTerm.isReset>`, :meth:`isEnable <najaeda.naja.SNLBitTerm.isEnable>`, :meth:`isData <najaeda.naja.SNLBitTerm.isData>`, :meth:`isDataInput <najaeda.naja.SNLBitTerm.isDataInput>`, :meth:`isDataOutput <najaeda.naja.SNLBitTerm.isDataOutput>`
-   * - :class:`najaeda.naja.SNLNet` and net subclasses
-     - :class:`Type <najaeda.naja.SNLNet.Type>`, :meth:`getID <najaeda.naja.SNLNet.getID>`, :meth:`getName <najaeda.naja.SNLNet.getName>`, :meth:`setName <najaeda.naja.SNLNet.setName>`, :meth:`getDesign <najaeda.naja.SNLNet.getDesign>`, :meth:`getBits <najaeda.naja.SNLNet.getBits>`, :meth:`getWidth <najaeda.naja.SNLNet.getWidth>`, :meth:`getType <najaeda.naja.SNLBitNet.getType>`, :meth:`setType <najaeda.naja.SNLNet.setType>`, :meth:`getTypeAsString <najaeda.naja.SNLBitNet.getTypeAsString>`, :meth:`isConstant <najaeda.naja.SNLNet.isConstant>`, :meth:`isConstant0 <najaeda.naja.SNLNet.isConstant0>`, :meth:`isConstant1 <najaeda.naja.SNLNet.isConstant1>`, :meth:`getComponents <najaeda.naja.SNLBitNet.getComponents>`, :meth:`getInstTerms <najaeda.naja.SNLBitNet.getInstTerms>`, :meth:`getBitTerms <najaeda.naja.SNLBitNet.getBitTerms>`
-   * - :class:`najaeda.naja.SNLInstTerm`
-     - :meth:`getInstance <najaeda.naja.SNLInstTerm.getInstance>`, :meth:`getBitTerm <najaeda.naja.SNLInstTerm.getBitTerm>`, :meth:`getNet <najaeda.naja.SNLInstTerm.getNet>`, :meth:`setNet <najaeda.naja.SNLInstTerm.setNet>`, :meth:`getDirection <najaeda.naja.SNLInstTerm.getDirection>`, :meth:`getRole <najaeda.naja.SNLInstTerm.getRole>`, :meth:`getActiveLevel <najaeda.naja.SNLInstTerm.getActiveLevel>`, :meth:`getResetActiveLevel <najaeda.naja.SNLInstTerm.getResetActiveLevel>`, :meth:`isClock <najaeda.naja.SNLInstTerm.isClock>`, :meth:`isAsyncReset <najaeda.naja.SNLInstTerm.isAsyncReset>`, :meth:`isAsyncSet <najaeda.naja.SNLInstTerm.isAsyncSet>`, :meth:`isSyncReset <najaeda.naja.SNLInstTerm.isSyncReset>`, :meth:`isSyncSet <najaeda.naja.SNLInstTerm.isSyncSet>`, :meth:`isReset <najaeda.naja.SNLInstTerm.isReset>`, :meth:`isEnable <najaeda.naja.SNLInstTerm.isEnable>`, :meth:`isData <najaeda.naja.SNLInstTerm.isData>`, :meth:`isDataInput <najaeda.naja.SNLInstTerm.isDataInput>`, :meth:`isDataOutput <najaeda.naja.SNLInstTerm.isDataOutput>`
-   * - :class:`najaeda.naja.SNLTermRole`
-     - :attr:`Clock <najaeda.naja.SNLTermRole.Clock>`, :attr:`DataInput <najaeda.naja.SNLTermRole.DataInput>`, :attr:`DataOutput <najaeda.naja.SNLTermRole.DataOutput>`, :attr:`AsyncReset <najaeda.naja.SNLTermRole.AsyncReset>`, :attr:`AsyncSet <najaeda.naja.SNLTermRole.AsyncSet>`, :attr:`SyncReset <najaeda.naja.SNLTermRole.SyncReset>`, :attr:`SyncSet <najaeda.naja.SNLTermRole.SyncSet>`, :attr:`Enable <najaeda.naja.SNLTermRole.Enable>`, :attr:`ScanInput <najaeda.naja.SNLTermRole.ScanInput>`, :attr:`ScanEnable <najaeda.naja.SNLTermRole.ScanEnable>`, :attr:`MemoryReadAddress <najaeda.naja.SNLTermRole.MemoryReadAddress>`, :attr:`MemoryReadData <najaeda.naja.SNLTermRole.MemoryReadData>`, :attr:`MemoryWriteAddress <najaeda.naja.SNLTermRole.MemoryWriteAddress>`, :attr:`MemoryWriteData <najaeda.naja.SNLTermRole.MemoryWriteData>`, :attr:`MemoryWriteEnable <najaeda.naja.SNLTermRole.MemoryWriteEnable>`, :attr:`Other <najaeda.naja.SNLTermRole.Other>`
-   * - :class:`najaeda.naja.SNLActiveLevel`
-     - :attr:`High <najaeda.naja.SNLActiveLevel.High>`, :attr:`Low <najaeda.naja.SNLActiveLevel.Low>`, :attr:`NA <najaeda.naja.SNLActiveLevel.NA>`
-   * - :class:`najaeda.naja.SNLPath`
-     - :meth:`empty <najaeda.naja.SNLPath.empty>`, :meth:`size <najaeda.naja.SNLPath.size>`, :meth:`getInstances <najaeda.naja.SNLPath.getInstances>`, :meth:`getInstanceIDs <najaeda.naja.SNLPath.getInstanceIDs>`, :meth:`getHeadInstance <najaeda.naja.SNLPath.getHeadInstance>`, :meth:`getTailInstance <najaeda.naja.SNLPath.getTailInstance>`, :meth:`getHeadPath <najaeda.naja.SNLPath.getHeadPath>`, :meth:`getTailPath <najaeda.naja.SNLPath.getTailPath>`, :meth:`getDesign <najaeda.naja.SNLPath.getDesign>`, :meth:`getModel <najaeda.naja.SNLPath.getModel>`
-   * - :class:`najaeda.naja.SNLOccurrence`
-     - :meth:`getRole <najaeda.naja.SNLOccurrence.getRole>`, :meth:`getResetActiveLevel <najaeda.naja.SNLOccurrence.getResetActiveLevel>`, :meth:`isInstanceOccurrence <najaeda.naja.SNLOccurrence.isInstanceOccurrence>`, :meth:`getPath <najaeda.naja.SNLOccurrence.getPath>`, :meth:`getInstance <najaeda.naja.SNLOccurrence.getInstance>`, :meth:`getInstTerm <najaeda.naja.SNLOccurrence.getInstTerm>`, :meth:`getNetComponent <najaeda.naja.SNLOccurrence.getNetComponent>`, :meth:`getObject <najaeda.naja.SNLOccurrence.getObject>`, :meth:`getDesign <najaeda.naja.SNLOccurrence.getDesign>`
-   * - :class:`najaeda.naja.SNLEquipotential`
-     - :class:`EdgeKind <najaeda.naja.SNLEquipotential.EdgeKind>`, :meth:`getGraph <najaeda.naja.SNLEquipotential.getGraph>`, :class:`Mode <najaeda.naja.SNLEquipotential.Mode>`, :meth:`getTerms <najaeda.naja.SNLEquipotential.getTerms>`, :meth:`getInstTermOccurrences <najaeda.naja.SNLEquipotential.getInstTermOccurrences>`, :meth:`isConst0 <najaeda.naja.SNLEquipotential.isConst0>`, :meth:`isConst1 <najaeda.naja.SNLEquipotential.isConst1>`, :meth:`dumpDotFile <najaeda.naja.SNLEquipotential.dumpDotFile>`
-   * - :class:`najaeda.naja.NLID`
-     - :meth:`fromString <najaeda.naja.NLID.fromString>`, :meth:`toTuple <najaeda.naja.NLID.toTuple>`, :meth:`getType <najaeda.naja.NLID.getType>`, :meth:`getDBID <najaeda.naja.NLID.getDBID>`, :meth:`getLibraryID <najaeda.naja.NLID.getLibraryID>`, :meth:`getDesignID <najaeda.naja.NLID.getDesignID>`, :meth:`getDesignObjectID <najaeda.naja.NLID.getDesignObjectID>`, :meth:`getInstanceID <najaeda.naja.NLID.getInstanceID>`, :meth:`getBit <najaeda.naja.NLID.getBit>`, :meth:`isDesign <najaeda.naja.NLID.isDesign>`, :meth:`isInstance <najaeda.naja.NLID.isInstance>`, :meth:`isNet <najaeda.naja.NLID.isNet>`, :meth:`isTerm <najaeda.naja.NLID.isTerm>`
-   * - :class:`najaeda.naja.LogicCone`
-     - :attr:`FanIn <najaeda.naja.LogicCone.FanIn>`, :attr:`FanOut <najaeda.naja.LogicCone.FanOut>`, :meth:`getDirection <najaeda.naja.LogicCone.getDirection>`, :meth:`getRoot <najaeda.naja.LogicCone.getRoot>`, :meth:`getNodes <najaeda.naja.LogicCone.getNodes>`, :meth:`getLeaves <najaeda.naja.LogicCone.getLeaves>`, :meth:`getNodeCount <najaeda.naja.LogicCone.getNodeCount>`
-   * - Module functions
-     - :func:`najaeda.naja.getVersion`, :func:`najaeda.naja.getGitHash`,
-       :func:`najaeda.naja.snapshotManifest`,
-       :func:`najaeda.naja.getContentHashVersion`,
-       :func:`najaeda.naja.getContentHashAttributeNames`,
-       :func:`najaeda.naja.getContentHashPropertyNames`,
-       :func:`najaeda.naja.setLogLevel`, :func:`najaeda.naja.addLogFile`,
-       :func:`najaeda.naja.clearLogSinks`,
-       :func:`najaeda.naja.add_log_callback`, :func:`najaeda.naja.remove_log_callback`,
-       :func:`najaeda.naja.set_console_logging`,
-       :func:`najaeda.naja.installLoggingHandler`, :func:`najaeda.naja.log`,
-       :func:`najaeda.naja.logInfo`, :func:`najaeda.naja.logWarn`,
-       :func:`najaeda.naja.logCritical`, :func:`najaeda.naja.intentDescribe` plus the source intent helpers
-       listed above
+:class:`~najaeda.naja.SNLParameter`
+    * :meth:`createDecimal <najaeda.naja.SNLParameter.createDecimal>`,
+      :meth:`createBinary <najaeda.naja.SNLParameter.createBinary>`,
+      :meth:`createBoolean <najaeda.naja.SNLParameter.createBoolean>`,
+      :meth:`createString <najaeda.naja.SNLParameter.createString>`,
+      :meth:`hasDefaultValue <najaeda.naja.SNLParameter.hasDefaultValue>`.
 
+    * :meth:`getValue <najaeda.naja.SNLParameter.getValue>`,
+      :meth:`getName <najaeda.naja.SNLParameter.getName>`,
+      :meth:`getDesign <najaeda.naja.SNLParameter.getDesign>`,
+      :meth:`destroy <najaeda.naja.SNLParameter.destroy>`.
+
+    The factory methods accept an optional default value.
+
+:class:`~najaeda.naja.NLClock`
+    * :meth:`createPrimary <najaeda.naja.NLClock.createPrimary>`,
+      :meth:`createGenerated <najaeda.naja.NLClock.createGenerated>`,
+      :meth:`getName <najaeda.naja.NLClock.getName>`,
+      :meth:`getKind <najaeda.naja.NLClock.getKind>`,
+      :meth:`getDesign <najaeda.naja.NLClock.getDesign>`.
+
+    * :meth:`getPeriod <najaeda.naja.NLClock.getPeriod>`,
+      :meth:`getFrequency <najaeda.naja.NLClock.getFrequency>`,
+      :meth:`getTimeUnit <najaeda.naja.NLClock.getTimeUnit>`,
+      :meth:`getRiseAt <najaeda.naja.NLClock.getRiseAt>`,
+      :meth:`getFallAt <najaeda.naja.NLClock.getFallAt>`.
+
+    * :meth:`setWaveform (primary only) <najaeda.naja.NLClock.setWaveform>`,
+      :meth:`getSources <najaeda.naja.NLClock.getSources>`,
+      :meth:`getMaster <najaeda.naja.NLClock.getMaster>`,
+      :meth:`getMasterSource <najaeda.naja.NLClock.getMasterSource>`,
+      :meth:`getDivideBy <najaeda.naja.NLClock.getDivideBy>`.
+
+    * :meth:`getMultiplyBy <najaeda.naja.NLClock.getMultiplyBy>`,
+      :meth:`isInverted <najaeda.naja.NLClock.isInverted>`,
+      :meth:`getRootClock <najaeda.naja.NLClock.getRootClock>`,
+      :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>`,
+      :meth:`destroy <najaeda.naja.NLClock.destroy>`.
+
+:class:`NLReset <najaeda.naja.NLReset>`
+    * :meth:`create() <najaeda.naja.NLReset.create>`,
+      :meth:`getName() <najaeda.naja.NLReset.getName>`,
+      :meth:`getDesign() <najaeda.naja.NLReset.getDesign>`,
+      :meth:`getSources() <najaeda.naja.NLReset.getSources>`,
+      :meth:`getActiveLevel() <najaeda.naja.NLReset.getActiveLevel>`.
+
+    * :meth:`getInactiveValue() <najaeda.naja.NLReset.getInactiveValue>`,
+      :meth:`getAssertion() <najaeda.naja.NLReset.getAssertion>`,
+      :meth:`getDeassertion() <najaeda.naja.NLReset.getDeassertion>`,
+      :meth:`destroy() <najaeda.naja.NLReset.destroy>`.
+
+:class:`SNLResetDomain <najaeda.naja.SNLResetDomain>`
+    * :meth:`getNLReset() <najaeda.naja.SNLResetDomain.getNLReset>`,
+      :meth:`getSources() <najaeda.naja.SNLResetDomain.getSources>`.
+
+:class:`SNLDesign <najaeda.naja.SNLDesign>` timing analysis
+    * :meth:`analyzeTiming() <najaeda.naja.SNLDesign.analyzeTiming>`,
+      :meth:`getResets() <najaeda.naja.SNLDesign.getResets>`,
+      :meth:`getResetDomains() <najaeda.naja.SNLDesign.getResetDomains>`,
+      :meth:`getClockDomains() <najaeda.naja.SNLDesign.getClockDomains>`,
+      :meth:`getEndpoints() <najaeda.naja.SNLDesign.getEndpoints>`.
+
+    * :meth:`getTimingCoverageReport() <najaeda.naja.SNLDesign.getTimingCoverageReport>`,
+      :meth:`getTimingCoverageCounts() <najaeda.naja.SNLDesign.getTimingCoverageCounts>`,
+      :meth:`getTimingDiagnostics() <najaeda.naja.SNLDesign.getTimingDiagnostics>`.
+
+:class:`SNLOccurrence <najaeda.naja.SNLOccurrence>` timing queries
+    * :meth:`getLaunchClocks() <najaeda.naja.SNLOccurrence.getLaunchClocks>`,
+      :meth:`getCaptureClocks() <najaeda.naja.SNLOccurrence.getCaptureClocks>`,
+      :meth:`getClocks() <najaeda.naja.SNLOccurrence.getClocks>`,
+      :meth:`getResets() <najaeda.naja.SNLOccurrence.getResets>`,
+      :meth:`getFaninStartpoints() <najaeda.naja.SNLOccurrence.getFaninStartpoints>`.
+
+    * :meth:`getFanoutEndpoints() <najaeda.naja.SNLOccurrence.getFanoutEndpoints>`.
+
+:class:`SNLClockDomain <najaeda.naja.SNLClockDomain>`, :exc:`SNLTimingCycleError <najaeda.naja.SNLTimingCycleError>`
+    * Domain: :meth:`getNLClock() <najaeda.naja.SNLClockDomain.getNLClock>`,
+      :meth:`getSources() <najaeda.naja.SNLClockDomain.getSources>`.
+
+    Cycle errors expose ``occurrence``, ``description`` and ``role``.
+
+:class:`~najaeda.naja.NLUniverse`
+    * :meth:`getContentHash <najaeda.naja.NLUniverse.getContentHash>`,
+      :meth:`create <najaeda.naja.NLUniverse.create>`,
+      :meth:`destroy <najaeda.naja.NLUniverse.destroy>`,
+      :meth:`get <najaeda.naja.NLUniverse.get>`,
+      :meth:`getDB <najaeda.naja.NLUniverse.getDB>`.
+
+    * :meth:`getTopDB <najaeda.naja.NLUniverse.getTopDB>`,
+      :meth:`setTopDB <najaeda.naja.NLUniverse.setTopDB>`,
+      :meth:`getTopDesign <najaeda.naja.NLUniverse.getTopDesign>`,
+      :meth:`setTopDesign <najaeda.naja.NLUniverse.setTopDesign>`,
+      :meth:`getUserDBs <najaeda.naja.NLUniverse.getUserDBs>`.
+
+    * :meth:`getSNLDesign <najaeda.naja.NLUniverse.getSNLDesign>`,
+      :meth:`getObject <najaeda.naja.NLUniverse.getObject>`,
+      :meth:`applyDLE <najaeda.naja.NLUniverse.applyDLE>`,
+      :meth:`applyConstantPropagation <najaeda.naja.NLUniverse.applyConstantPropagation>`,
+      :meth:`getMaxFanout <najaeda.naja.NLUniverse.getMaxFanout>`.
+
+    * :meth:`getMaxLogicLevel <najaeda.naja.NLUniverse.getMaxLogicLevel>`.
+
+:class:`~najaeda.naja.NLDB`
+    * :meth:`getContentHash <najaeda.naja.NLDB.getContentHash>`,
+      :meth:`create <najaeda.naja.NLDB.create>`,
+      :meth:`destroy <najaeda.naja.NLDB.destroy>`,
+      :meth:`getID <najaeda.naja.NLDB.getID>`,
+      :meth:`getNLID <najaeda.naja.NLDB.getNLID>`.
+
+    * :meth:`isTopDB <najaeda.naja.NLDB.isTopDB>`,
+      :meth:`getLibraries <najaeda.naja.NLDB.getLibraries>`,
+      :meth:`getLibrary <najaeda.naja.NLDB.getLibrary>`,
+      :meth:`getGlobalLibraries <najaeda.naja.NLDB.getGlobalLibraries>`,
+      :meth:`getPrimitiveLibraries <najaeda.naja.NLDB.getPrimitiveLibraries>`.
+
+    * :meth:`getTopDesign <najaeda.naja.NLDB.getTopDesign>`,
+      :meth:`loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>`,
+      :meth:`loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>`,
+      :meth:`loadVHDL <najaeda.naja.NLDB.loadVHDL>`,
+      :meth:`loadLibertyPrimitives <najaeda.naja.NLDB.loadLibertyPrimitives>`.
+
+    * :meth:`loadNajaIF <najaeda.naja.NLDB.loadNajaIF>`,
+      :meth:`dumpNajaIF <najaeda.naja.NLDB.dumpNajaIF>`,
+      :meth:`dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>`,
+      :meth:`getClocks <najaeda.naja.NLDB.getClocks>`,
+      :meth:`getResets <najaeda.naja.NLDB.getResets>`.
+
+:class:`~najaeda.naja.NLLibrary`
+    * :meth:`getContentHash <najaeda.naja.NLLibrary.getContentHash>`,
+      :meth:`create <najaeda.naja.NLLibrary.create>`,
+      :meth:`createPrimitives <najaeda.naja.NLLibrary.createPrimitives>`,
+      :meth:`getDB <najaeda.naja.NLLibrary.getDB>`,
+      :meth:`getID <najaeda.naja.NLLibrary.getID>`.
+
+    * :meth:`getNLID <najaeda.naja.NLLibrary.getNLID>`,
+      :meth:`getName <najaeda.naja.NLLibrary.getName>`,
+      :meth:`setName <najaeda.naja.NLLibrary.setName>`,
+      :meth:`isStandard <najaeda.naja.NLLibrary.isStandard>`,
+      :meth:`isPrimitives <najaeda.naja.NLLibrary.isPrimitives>`.
+
+    * :meth:`getSNLDesign <najaeda.naja.NLLibrary.getSNLDesign>`,
+      :meth:`getSNLDesigns <najaeda.naja.NLLibrary.getSNLDesigns>`,
+      :meth:`getLibrary <najaeda.naja.NLLibrary.getLibrary>`,
+      :meth:`getLibraries <najaeda.naja.NLLibrary.getLibraries>`.
+
+:class:`~najaeda.naja.SNLDesign`
+    * :meth:`getContentHash <najaeda.naja.SNLDesign.getContentHash>`,
+      :meth:`create <najaeda.naja.SNLDesign.create>`,
+      :meth:`createPrimitive <najaeda.naja.SNLDesign.createPrimitive>`,
+      :meth:`clone <najaeda.naja.SNLDesign.clone>`,
+      :meth:`destroy <najaeda.naja.SNLDesign.destroy>`.
+
+    * :meth:`getName <najaeda.naja.SNLDesign.getName>`,
+      :meth:`setName <najaeda.naja.SNLDesign.setName>`,
+      :meth:`getDB <najaeda.naja.SNLDesign.getDB>`,
+      :meth:`getLibrary <najaeda.naja.SNLDesign.getLibrary>`,
+      :meth:`getID <najaeda.naja.SNLDesign.getID>`.
+
+    * :meth:`getNLID <najaeda.naja.SNLDesign.getNLID>`,
+      :meth:`getRevisionCount <najaeda.naja.SNLDesign.getRevisionCount>`,
+      :meth:`getTerms <najaeda.naja.SNLDesign.getTerms>`,
+      :meth:`getTerm <najaeda.naja.SNLDesign.getTerm>`,
+      :meth:`getTermByID <najaeda.naja.SNLDesign.getTermByID>`.
+
+    * :meth:`getScalarTerms <najaeda.naja.SNLDesign.getScalarTerms>`,
+      :meth:`getBusTerms <najaeda.naja.SNLDesign.getBusTerms>`,
+      :meth:`getBundleTerms <najaeda.naja.SNLDesign.getBundleTerms>`,
+      :meth:`getNets <najaeda.naja.SNLDesign.getNets>`,
+      :meth:`getNet <najaeda.naja.SNLDesign.getNet>`.
+
+    * :meth:`getNetByID <najaeda.naja.SNLDesign.getNetByID>`,
+      :meth:`getScalarNets <najaeda.naja.SNLDesign.getScalarNets>`,
+      :meth:`getBusNets <najaeda.naja.SNLDesign.getBusNets>`,
+      :meth:`getInstances <najaeda.naja.SNLDesign.getInstances>`,
+      :meth:`getInstance <najaeda.naja.SNLDesign.getInstance>`.
+
+    * :meth:`getInstanceByID <najaeda.naja.SNLDesign.getInstanceByID>`,
+      :meth:`getInstanceByIDList <najaeda.naja.SNLDesign.getInstanceByIDList>`,
+      :meth:`getParameters <najaeda.naja.SNLDesign.getParameters>`,
+      :meth:`getParameter <najaeda.naja.SNLDesign.getParameter>`,
+      :meth:`addCombinatorialArcs <najaeda.naja.SNLDesign.addCombinatorialArcs>`.
+
+    * :meth:`addInputsToClockArcs <najaeda.naja.SNLDesign.addInputsToClockArcs>`,
+      :meth:`addClockToOutputsArcs <najaeda.naja.SNLDesign.addClockToOutputsArcs>`,
+      :meth:`setTimingModelParameter <najaeda.naja.SNLDesign.setTimingModelParameter>`,
+      :meth:`getCombinatorialInputs <najaeda.naja.SNLDesign.getCombinatorialInputs>`,
+      :meth:`getCombinatorialOutputs <najaeda.naja.SNLDesign.getCombinatorialOutputs>`.
+
+    * :meth:`getClockRelatedInputs <najaeda.naja.SNLDesign.getClockRelatedInputs>`,
+      :meth:`getClockRelatedOutputs <najaeda.naja.SNLDesign.getClockRelatedOutputs>`,
+      :meth:`getInputRelatedClocks <najaeda.naja.SNLDesign.getInputRelatedClocks>`,
+      :meth:`getOutputRelatedClocks <najaeda.naja.SNLDesign.getOutputRelatedClocks>`,
+      :meth:`getClockTerms <najaeda.naja.SNLDesign.getClockTerms>`.
+
+    * :meth:`getAsyncResetTerms <najaeda.naja.SNLDesign.getAsyncResetTerms>`,
+      :meth:`getAsyncSetTerms <najaeda.naja.SNLDesign.getAsyncSetTerms>`,
+      :meth:`getSyncResetTerms <najaeda.naja.SNLDesign.getSyncResetTerms>`,
+      :meth:`getSyncSetTerms <najaeda.naja.SNLDesign.getSyncSetTerms>`,
+      :meth:`getDataInputTerms <najaeda.naja.SNLDesign.getDataInputTerms>`.
+
+    * :meth:`getOutputTerms <najaeda.naja.SNLDesign.getOutputTerms>`,
+      :meth:`setTruthTable <najaeda.naja.SNLDesign.setTruthTable>`,
+      :meth:`setSequentialModel <najaeda.naja.SNLDesign.setSequentialModel>`,
+      :meth:`setSequentialModelFromParameters <najaeda.naja.SNLDesign.setSequentialModelFromParameters>`,
+      :meth:`setRolesFromParameters <najaeda.naja.SNLDesign.setRolesFromParameters>`.
+
+    * :meth:`hasRolesFromParameters <najaeda.naja.SNLDesign.hasRolesFromParameters>`,
+      :meth:`hasSequentialModel <najaeda.naja.SNLDesign.hasSequentialModel>`,
+      :meth:`hasSequentialModelFromParameters <najaeda.naja.SNLDesign.hasSequentialModelFromParameters>`,
+      :meth:`getSequentialModel <najaeda.naja.SNLDesign.getSequentialModel>`,
+      :meth:`hasMemoryInterface <najaeda.naja.SNLDesign.hasMemoryInterface>`.
+
+    * :meth:`getMemoryInterface <najaeda.naja.SNLDesign.getMemoryInterface>`,
+      :meth:`setTruthTableFromParameter <najaeda.naja.SNLDesign.setTruthTableFromParameter>`,
+      :meth:`setTruthTables <najaeda.naja.SNLDesign.setTruthTables>`,
+      :meth:`getTruthTable <najaeda.naja.SNLDesign.getTruthTable>`,
+      :meth:`getTruthTableByOutputID <najaeda.naja.SNLDesign.getTruthTableByOutputID>`.
+
+    * :meth:`isConst0 <najaeda.naja.SNLDesign.isConst0>`,
+      :meth:`isConst1 <najaeda.naja.SNLDesign.isConst1>`,
+      :meth:`isConst <najaeda.naja.SNLDesign.isConst>`,
+      :meth:`isBuf <najaeda.naja.SNLDesign.isBuf>`,
+      :meth:`isInv <najaeda.naja.SNLDesign.isInv>`.
+
+    * :meth:`getGatePolarity <najaeda.naja.SNLDesign.getGatePolarity>`,
+      :meth:`isAnd <najaeda.naja.SNLDesign.isAnd>`,
+      :meth:`isNand <najaeda.naja.SNLDesign.isNand>`,
+      :meth:`isOr <najaeda.naja.SNLDesign.isOr>`,
+      :meth:`isNor <najaeda.naja.SNLDesign.isNor>`.
+
+    * :meth:`isXor <najaeda.naja.SNLDesign.isXor>`,
+      :meth:`isXnor <najaeda.naja.SNLDesign.isXnor>`,
+      :meth:`isMux <najaeda.naja.SNLDesign.isMux>`,
+      :meth:`isAddSub <najaeda.naja.SNLDesign.isAddSub>`,
+      :meth:`isSubtract <najaeda.naja.SNLDesign.isSubtract>`.
+
+    * :meth:`isMultiply <najaeda.naja.SNLDesign.isMultiply>`,
+      :meth:`isShift <najaeda.naja.SNLDesign.isShift>`,
+      :meth:`isDivMod <najaeda.naja.SNLDesign.isDivMod>`,
+      :meth:`isShiftRight <najaeda.naja.SNLDesign.isShiftRight>`,
+      :meth:`isShiftArithmetic <najaeda.naja.SNLDesign.isShiftArithmetic>`.
+
+    * :meth:`dumpGateLevelVerilog <najaeda.naja.SNLDesign.dumpGateLevelVerilog>`,
+      :meth:`dumpFullDotFile <najaeda.naja.SNLDesign.dumpFullDotFile>`,
+      :meth:`dumpContextDotFile <najaeda.naja.SNLDesign.dumpContextDotFile>`,
+      :meth:`getClocks <najaeda.naja.SNLDesign.getClocks>`.
+
+:class:`~najaeda.naja.SNLInstance`
+    * :meth:`getContentHash <najaeda.naja.SNLInstance.getContentHash>`,
+      :meth:`create <najaeda.naja.SNLInstance.create>`,
+      :meth:`destroy <najaeda.naja.SNLInstance.destroy>`,
+      :meth:`getName <najaeda.naja.SNLInstance.getName>`,
+      :meth:`setName <najaeda.naja.SNLInstance.setName>`.
+
+    * :meth:`getID <najaeda.naja.SNLInstance.getID>`,
+      :meth:`getNLID <najaeda.naja.SNLInstance.getNLID>`,
+      :meth:`getDesign <najaeda.naja.SNLInstance.getDesign>`,
+      :meth:`getModel <najaeda.naja.SNLInstance.getModel>`,
+      :meth:`getSequentialModel <najaeda.naja.SNLInstance.getSequentialModel>`.
+
+    * :meth:`getMemoryInterface <najaeda.naja.SNLInstance.getMemoryInterface>`,
+      :meth:`getInstTerm <najaeda.naja.SNLInstance.getInstTerm>`,
+      :meth:`getInstTerms <najaeda.naja.SNLInstance.getInstTerms>`,
+      :meth:`getInstParameter <najaeda.naja.SNLInstance.getInstParameter>`,
+      :meth:`getInstParameters <najaeda.naja.SNLInstance.getInstParameters>`.
+
+    * :meth:`getCombinatorialInputs <najaeda.naja.SNLInstance.getCombinatorialInputs>`,
+      :meth:`getCombinatorialOutputs <najaeda.naja.SNLInstance.getCombinatorialOutputs>`,
+      :meth:`getClockRelatedInputs <najaeda.naja.SNLInstance.getClockRelatedInputs>`,
+      :meth:`getClockRelatedOutputs <najaeda.naja.SNLInstance.getClockRelatedOutputs>`,
+      :meth:`getInputRelatedClocks <najaeda.naja.SNLInstance.getInputRelatedClocks>`.
+
+    * :meth:`getOutputRelatedClocks <najaeda.naja.SNLInstance.getOutputRelatedClocks>`.
+
+:class:`~najaeda.naja.SNLTerm` and term subclasses
+    * :class:`Direction <najaeda.naja.SNLTerm.Direction>`,
+      :meth:`getName <najaeda.naja.SNLTerm.getName>`,
+      :meth:`setName <najaeda.naja.SNLTerm.setName>`,
+      :meth:`getDirection <najaeda.naja.SNLTerm.getDirection>`,
+      :meth:`getDesign <najaeda.naja.SNLTerm.getDesign>`.
+
+    * :meth:`getNet <najaeda.naja.SNLTerm.getNet>`,
+      :meth:`setNet <najaeda.naja.SNLTerm.setNet>`,
+      :meth:`getBits <najaeda.naja.SNLTerm.getBits>`,
+      :meth:`getWidth <najaeda.naja.SNLTerm.getWidth>`,
+      :meth:`getNLID <najaeda.naja.SNLTerm.getNLID>`.
+
+    * :meth:`getSourceLoc <najaeda.naja.SNLTerm.getSourceLoc>`,
+      :meth:`hasSourceLoc <najaeda.naja.SNLTerm.hasSourceLoc>`,
+      :meth:`setRole <najaeda.naja.SNLBitTerm.setRole>`,
+      :meth:`getRole <najaeda.naja.SNLBitTerm.getRole>`,
+      :meth:`getActiveLevel <najaeda.naja.SNLBitTerm.getActiveLevel>`,
+      :meth:`getResetActiveLevel <najaeda.naja.SNLBitTerm.getResetActiveLevel>`.
+
+    * :meth:`isClock <najaeda.naja.SNLBitTerm.isClock>`,
+      :meth:`isAsyncReset <najaeda.naja.SNLBitTerm.isAsyncReset>`,
+      :meth:`isAsyncSet <najaeda.naja.SNLBitTerm.isAsyncSet>`,
+      :meth:`isSyncReset <najaeda.naja.SNLBitTerm.isSyncReset>`,
+      :meth:`isSyncSet <najaeda.naja.SNLBitTerm.isSyncSet>`.
+
+    * :meth:`isReset <najaeda.naja.SNLBitTerm.isReset>`,
+      :meth:`isEnable <najaeda.naja.SNLBitTerm.isEnable>`,
+      :meth:`isData <najaeda.naja.SNLBitTerm.isData>`,
+      :meth:`isDataInput <najaeda.naja.SNLBitTerm.isDataInput>`,
+      :meth:`isDataOutput <najaeda.naja.SNLBitTerm.isDataOutput>`.
+
+    Role setters and predicates apply to bit terms.
+
+:class:`~najaeda.naja.SNLNet` and net subclasses
+    * :class:`Type <najaeda.naja.SNLNet.Type>`,
+      :meth:`getID <najaeda.naja.SNLNet.getID>`,
+      :meth:`getName <najaeda.naja.SNLNet.getName>`,
+      :meth:`setName <najaeda.naja.SNLNet.setName>`,
+      :meth:`getDesign <najaeda.naja.SNLNet.getDesign>`.
+
+    * :meth:`getBits <najaeda.naja.SNLNet.getBits>`,
+      :meth:`getWidth <najaeda.naja.SNLNet.getWidth>`,
+      :meth:`getType <najaeda.naja.SNLBitNet.getType>`,
+      :meth:`setType <najaeda.naja.SNLNet.setType>`,
+      :meth:`getTypeAsString <najaeda.naja.SNLBitNet.getTypeAsString>`.
+
+    * :meth:`isConstant <najaeda.naja.SNLNet.isConstant>`,
+      :meth:`isConstant0 <najaeda.naja.SNLNet.isConstant0>`,
+      :meth:`isConstant1 <najaeda.naja.SNLNet.isConstant1>`,
+      :meth:`getComponents <najaeda.naja.SNLBitNet.getComponents>`,
+      :meth:`getInstTerms <najaeda.naja.SNLBitNet.getInstTerms>`.
+
+    * :meth:`getBitTerms <najaeda.naja.SNLBitNet.getBitTerms>`.
+
+:class:`~najaeda.naja.SNLInstTerm`
+    * :meth:`getInstance <najaeda.naja.SNLInstTerm.getInstance>`,
+      :meth:`getBitTerm <najaeda.naja.SNLInstTerm.getBitTerm>`,
+      :meth:`getNet <najaeda.naja.SNLInstTerm.getNet>`,
+      :meth:`setNet <najaeda.naja.SNLInstTerm.setNet>`,
+      :meth:`getDirection <najaeda.naja.SNLInstTerm.getDirection>`.
+
+    * :meth:`getRole <najaeda.naja.SNLInstTerm.getRole>`,
+      :meth:`getActiveLevel <najaeda.naja.SNLInstTerm.getActiveLevel>`,
+      :meth:`getResetActiveLevel <najaeda.naja.SNLInstTerm.getResetActiveLevel>`,
+      :meth:`isClock <najaeda.naja.SNLInstTerm.isClock>`,
+      :meth:`isAsyncReset <najaeda.naja.SNLInstTerm.isAsyncReset>`,
+      :meth:`isAsyncSet <najaeda.naja.SNLInstTerm.isAsyncSet>`.
+
+    * :meth:`isSyncReset <najaeda.naja.SNLInstTerm.isSyncReset>`,
+      :meth:`isSyncSet <najaeda.naja.SNLInstTerm.isSyncSet>`,
+      :meth:`isReset <najaeda.naja.SNLInstTerm.isReset>`,
+      :meth:`isEnable <najaeda.naja.SNLInstTerm.isEnable>`,
+      :meth:`isData <najaeda.naja.SNLInstTerm.isData>`.
+
+    * :meth:`isDataInput <najaeda.naja.SNLInstTerm.isDataInput>`,
+      :meth:`isDataOutput <najaeda.naja.SNLInstTerm.isDataOutput>`.
+
+:class:`~najaeda.naja.SNLTermRole`
+    * :attr:`Clock <najaeda.naja.SNLTermRole.Clock>`,
+      :attr:`DataInput <najaeda.naja.SNLTermRole.DataInput>`,
+      :attr:`DataOutput <najaeda.naja.SNLTermRole.DataOutput>`,
+      :attr:`AsyncReset <najaeda.naja.SNLTermRole.AsyncReset>`,
+      :attr:`AsyncSet <najaeda.naja.SNLTermRole.AsyncSet>`.
+
+    * :attr:`SyncReset <najaeda.naja.SNLTermRole.SyncReset>`,
+      :attr:`SyncSet <najaeda.naja.SNLTermRole.SyncSet>`,
+      :attr:`Enable <najaeda.naja.SNLTermRole.Enable>`,
+      :attr:`ScanInput <najaeda.naja.SNLTermRole.ScanInput>`,
+      :attr:`ScanEnable <najaeda.naja.SNLTermRole.ScanEnable>`.
+
+    * :attr:`MemoryReadAddress <najaeda.naja.SNLTermRole.MemoryReadAddress>`,
+      :attr:`MemoryReadData <najaeda.naja.SNLTermRole.MemoryReadData>`,
+      :attr:`MemoryWriteAddress <najaeda.naja.SNLTermRole.MemoryWriteAddress>`,
+      :attr:`MemoryWriteData <najaeda.naja.SNLTermRole.MemoryWriteData>`,
+      :attr:`MemoryWriteEnable <najaeda.naja.SNLTermRole.MemoryWriteEnable>`.
+
+    * :attr:`Other <najaeda.naja.SNLTermRole.Other>`.
+
+:class:`~najaeda.naja.SNLActiveLevel`
+    * :attr:`High <najaeda.naja.SNLActiveLevel.High>`,
+      :attr:`Low <najaeda.naja.SNLActiveLevel.Low>`,
+      :attr:`NA <najaeda.naja.SNLActiveLevel.NA>`.
+
+:class:`~najaeda.naja.SNLPath`
+    * :meth:`empty <najaeda.naja.SNLPath.empty>`,
+      :meth:`size <najaeda.naja.SNLPath.size>`,
+      :meth:`getInstances <najaeda.naja.SNLPath.getInstances>`,
+      :meth:`getInstanceIDs <najaeda.naja.SNLPath.getInstanceIDs>`,
+      :meth:`getHeadInstance <najaeda.naja.SNLPath.getHeadInstance>`.
+
+    * :meth:`getTailInstance <najaeda.naja.SNLPath.getTailInstance>`,
+      :meth:`getHeadPath <najaeda.naja.SNLPath.getHeadPath>`,
+      :meth:`getTailPath <najaeda.naja.SNLPath.getTailPath>`,
+      :meth:`getDesign <najaeda.naja.SNLPath.getDesign>`,
+      :meth:`getModel <najaeda.naja.SNLPath.getModel>`.
+
+:class:`~najaeda.naja.SNLOccurrence`
+    * :meth:`getRole <najaeda.naja.SNLOccurrence.getRole>`,
+      :meth:`getResetActiveLevel <najaeda.naja.SNLOccurrence.getResetActiveLevel>`,
+      :meth:`isInstanceOccurrence <najaeda.naja.SNLOccurrence.isInstanceOccurrence>`,
+      :meth:`getPath <najaeda.naja.SNLOccurrence.getPath>`,
+      :meth:`getInstance <najaeda.naja.SNLOccurrence.getInstance>`.
+
+    * :meth:`getInstTerm <najaeda.naja.SNLOccurrence.getInstTerm>`,
+      :meth:`getNetComponent <najaeda.naja.SNLOccurrence.getNetComponent>`,
+      :meth:`getObject <najaeda.naja.SNLOccurrence.getObject>`,
+      :meth:`getDesign <najaeda.naja.SNLOccurrence.getDesign>`.
+
+:class:`~najaeda.naja.SNLEquipotential`
+    * :class:`EdgeKind <najaeda.naja.SNLEquipotential.EdgeKind>`,
+      :meth:`getGraph <najaeda.naja.SNLEquipotential.getGraph>`,
+      :class:`Mode <najaeda.naja.SNLEquipotential.Mode>`,
+      :meth:`getTerms <najaeda.naja.SNLEquipotential.getTerms>`,
+      :meth:`getInstTermOccurrences <najaeda.naja.SNLEquipotential.getInstTermOccurrences>`.
+
+    * :meth:`isConst0 <najaeda.naja.SNLEquipotential.isConst0>`,
+      :meth:`isConst1 <najaeda.naja.SNLEquipotential.isConst1>`,
+      :meth:`dumpDotFile <najaeda.naja.SNLEquipotential.dumpDotFile>`.
+
+:class:`~najaeda.naja.NLID`
+    * :meth:`fromString <najaeda.naja.NLID.fromString>`,
+      :meth:`toTuple <najaeda.naja.NLID.toTuple>`,
+      :meth:`getType <najaeda.naja.NLID.getType>`,
+      :meth:`getDBID <najaeda.naja.NLID.getDBID>`,
+      :meth:`getLibraryID <najaeda.naja.NLID.getLibraryID>`.
+
+    * :meth:`getDesignID <najaeda.naja.NLID.getDesignID>`,
+      :meth:`getDesignObjectID <najaeda.naja.NLID.getDesignObjectID>`,
+      :meth:`getInstanceID <najaeda.naja.NLID.getInstanceID>`,
+      :meth:`getBit <najaeda.naja.NLID.getBit>`,
+      :meth:`isDesign <najaeda.naja.NLID.isDesign>`.
+
+    * :meth:`isInstance <najaeda.naja.NLID.isInstance>`,
+      :meth:`isNet <najaeda.naja.NLID.isNet>`,
+      :meth:`isTerm <najaeda.naja.NLID.isTerm>`.
+
+:class:`~najaeda.naja.LogicCone`
+    * :attr:`FanIn <najaeda.naja.LogicCone.FanIn>`,
+      :attr:`FanOut <najaeda.naja.LogicCone.FanOut>`,
+      :meth:`getDirection <najaeda.naja.LogicCone.getDirection>`,
+      :meth:`getRoot <najaeda.naja.LogicCone.getRoot>`,
+      :meth:`getNodes <najaeda.naja.LogicCone.getNodes>`.
+
+    * :meth:`getLeaves <najaeda.naja.LogicCone.getLeaves>`,
+      :meth:`getNodeCount <najaeda.naja.LogicCone.getNodeCount>`.
+
+Module functions
+    * Build and snapshots: :func:`najaeda.naja.getVersion`,
+      :func:`najaeda.naja.getGitHash`,
+      :func:`najaeda.naja.snapshotManifest`,
+      :func:`najaeda.naja.getContentHashVersion`,
+      :func:`najaeda.naja.getContentHashAttributeNames`,
+      :func:`najaeda.naja.getContentHashPropertyNames`.
+
+    * Logging: :func:`najaeda.naja.setLogLevel`,
+      :func:`najaeda.naja.addLogFile`,
+      :func:`najaeda.naja.clearLogSinks`,
+      :func:`najaeda.naja.add_log_callback`,
+      :func:`najaeda.naja.remove_log_callback`,
+      :func:`najaeda.naja.set_console_logging`,
+      :func:`najaeda.naja.installLoggingHandler`,
+      :func:`najaeda.naja.log`,
+      :func:`najaeda.naja.logInfo`,
+      :func:`najaeda.naja.logWarn`,
+      :func:`najaeda.naja.logCritical`.
+
+    * Source intent: :func:`najaeda.naja.intentDescribe`.
+
+    See the source intent helpers listed above.
 
 Detailed raw reference
 ----------------------
@@ -897,32 +1314,32 @@ Core database objects
 
 The former ``NLDB.loadVerilog``, ``NLDB.dumpVerilog`` and
 ``SNLDesign.dumpVerilog`` aliases have been removed. Use
-``NLDB.loadGateLevelVerilog``, ``NLDB.dumpGateLevelVerilog`` and
-``SNLDesign.dumpGateLevelVerilog``, respectively. See the migration table in
+:meth:`NLDB.loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>`, :meth:`NLDB.dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>` and
+:meth:`SNLDesign.dumpGateLevelVerilog <najaeda.naja.SNLDesign.dumpGateLevelVerilog>`, respectively. See the migration table in
 :doc:`loading`.
 
-``NLDB.loadGateLevelVerilog`` loads **gate-level (structural) Verilog netlists**; it does
+:meth:`NLDB.loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>` loads **gate-level (structural) Verilog netlists**; it does
 not provide general behavioral Verilog RTL support. For Verilog or SystemVerilog
-RTL, including ``.v`` files, use ``NLDB.loadSystemVerilog`` within its supported
-RTL subset. The normal high-level equivalents are ``netlist.load_gate_level_verilog`` and
-``netlist.load_system_verilog``; see :doc:`loading`. ``NLDB.dumpGateLevelVerilog`` and
-``SNLDesign.dumpGateLevelVerilog`` export structural netlists rather than reconstructing
+RTL, including ``.v`` files, use :meth:`NLDB.loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>` within its supported
+RTL subset. The normal high-level equivalents are :func:`netlist.load_gate_level_verilog <najaeda.netlist.load_gate_level_verilog>` and
+:func:`netlist.load_system_verilog <najaeda.netlist.load_system_verilog>`; see :doc:`loading`. :meth:`NLDB.dumpGateLevelVerilog <najaeda.naja.NLDB.dumpGateLevelVerilog>` and
+:meth:`SNLDesign.dumpGateLevelVerilog <najaeda.naja.SNLDesign.dumpGateLevelVerilog>` export structural netlists rather than reconstructing
 the original behavioral RTL.
 
-``NLDB.loadSystemVerilog(..., preserve_assertions=False)`` ignores concurrent
+:meth:`NLDB.loadSystemVerilog(..., preserve_assertions=False) <najaeda.naja.NLDB.loadSystemVerilog>` ignores concurrent
 assertions during netlist construction by default and reports discarded
 assertions with code ``ignored_concurrent_assertion``. Set
 ``preserve_assertions=True`` to capture module-level concurrent assertion source
 text and referenced packed signals in NLDB0 property instances. The property
 text replaces the former temporal graph; no assertion execution or proof is
 performed. References that cannot be bound faithfully are diagnosed. The corresponding
-high-level loader option is ``netlist.SystemVerilogConfig.preserve_assertions``;
+high-level loader option is :attr:`netlist.SystemVerilogConfig.preserve_assertions <najaeda.netlist.SystemVerilogConfig.preserve_assertions>`;
 this does not provide direct Python property construction. Immediate assertion
 handling remains unchanged. See the loading guide for supported property forms.
 
-``NLDB.loadSystemVerilog(..., frontend_options={"slang": ["--relax-enum-conversions"]})``
+:meth:`NLDB.loadSystemVerilog(..., frontend_options={"slang": ["--relax-enum-conversions"]}) <najaeda.naja.NLDB.loadSystemVerilog>`
 passes backend-specific options through a frontend-neutral mapping. The high-level
-counterpart is ``netlist.SystemVerilogConfig.frontend_options``. The default is
+counterpart is :attr:`netlist.SystemVerilogConfig.frontend_options <najaeda.netlist.SystemVerilogConfig.frontend_options>`. The default is
 ``None``; an empty dictionary or ``{"slang": []}`` adds no options. Currently only
 the active frontend ``"slang"`` is accepted; unknown or inactive frontend names
 raise an error rather than being silently ignored. Future adapters can define
@@ -941,19 +1358,19 @@ Experts can pass them directly without creating a command file solely for
 additional frontend settings. Common loader settings retain their typed APIs;
 see :doc:`loading` for configuration examples.
 
-``NLDB.loadSystemVerilog`` writes incremental frontend diagnostics to
+:meth:`NLDB.loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>` writes incremental frontend diagnostics to
 ``naja_sv_diagnostics.log`` in the current directory by default. Pass
 ``diagnostics_report_path="logs/sv.log"`` to choose a destination, or
 ``diagnostics_report_path=None`` / ``diagnostics_report_path=""`` to disable
 file output and keep console diagnostics. The logged summary names the report
 path or states that no report file was written. The high-level
-``netlist.load_system_verilog`` keyword and ``SystemVerilogConfig`` field provide
+:func:`netlist.load_system_verilog <najaeda.netlist.load_system_verilog>` keyword and ``SystemVerilogConfig`` field provide
 the same option.
 
-``NLDB.loadSystemVerilog`` infers shared memories for direct nonblocking indexed
+:meth:`NLDB.loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>` infers shared memories for direct nonblocking indexed
 writes from multiple clocked processes, with the same supported forms and
 collision restrictions as :doc:`loading`. No opt-in flag is required. Experts
-can inspect the inferred primitive through ``SNLInstance.getModel()``:
+can inspect the inferred primitive through :meth:`SNLInstance.getModel() <najaeda.naja.SNLInstance.getModel>`:
 ``MULTI_CLOCK=1`` selects independent write clocks and masks, with ``WCLK``
 (one bit per write action) and ``WMASK`` (``WR_PORTS * WIDTH`` bits).
 ``WADDR``/``WDATA``/``WMASK`` use port 0 in the least-significant slice;
@@ -971,7 +1388,7 @@ all read outputs depend on every write clock. The model and connections survive
 NajaIF snapshot round trips. Existing shared-clock memory signatures keep their
 interface and identity.
 
-``NLDB.loadSystemVerilog(..., blackbox_multi_writer_memories=True)`` preserves
+:meth:`NLDB.loadSystemVerilog(..., blackbox_multi_writer_memories=True) <najaeda.naja.NLDB.loadSystemVerilog>` preserves
 unsupported multi-writer memory modules as port-only ``UserBlackBox`` models
 and emits ``multi_writer_memory_blackbox`` diagnostics. The default is ``False``
 (strict rejection). This omits the entire containing module's behavior for both
@@ -989,11 +1406,11 @@ explicit rejection of dynamic/overlapping streaming targets described in
 Independent guarded ``always_latch`` writes also support static nested loops,
 array elements, partial writes, and source-order priority, subject to the
 dependency and scheduling restrictions in :doc:`loading`.
-The high-level ``netlist.load_system_verilog`` API exposes the same support;
+The high-level :func:`netlist.load_system_verilog <najaeda.netlist.load_system_verilog>` API exposes the same support;
 using the raw API is not required. See :doc:`loading` for matching semantics.
 
-   Both ``NLDB.loadSystemVerilog`` and ``NLDB.loadVHDL`` accept
-   ``library="DESIGN"`` to select a root ``NLLibrary`` in this database. Missing
+   Both :meth:`NLDB.loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>` and :meth:`NLDB.loadVHDL <najaeda.naja.NLDB.loadVHDL>` accept
+   ``library="DESIGN"`` to select a root :class:`NLLibrary <najaeda.naja.NLLibrary>` in this database. Missing
    destinations are created. Basic names match case-insensitively, extended
    names exactly; ambiguous matches fail. Existing positional arguments retain
    their meaning. The high-level loaders expose the same keyword-only option.
@@ -1001,8 +1418,8 @@ using the raw API is not required. See :doc:`loading` for matching semantics.
    the library owning the source unit, including imported packages. SV uses
    this option for destination storage, without cross-library source binding.
 
-   ``NLDB.loadVHDL(file, top=None, diagnostics_report_path="naja_vhdl_diagnostics.log", library="DESIGN", keep_ast_link=False)`` accepts a single path or a ``list[str]`` and returns the selected top's
-   ``SNLDesign``. ``files=`` is an alias for the legacy ``file=`` keyword; the
+   :meth:`NLDB.loadVHDL(file, top=None, diagnostics_report_path="naja_vhdl_diagnostics.log", library="DESIGN", keep_ast_link=False) <najaeda.naja.NLDB.loadVHDL>` accepts a single path or a ``list[str]`` and returns the selected top's
+   :class:`SNLDesign <najaeda.naja.SNLDesign>`. ``files=`` is an alias for the legacy ``file=`` keyword; the
    legacy positional argument order is unchanged. All files are parsed before
    elaboration, and packages, entities, and architectures resolve independently
    of file order. With ``top=None``, a batch must have one uninstantiated entity
@@ -1017,7 +1434,7 @@ using the raw API is not required. See :doc:`loading` for matching semantics.
    Arithmetic feeding unsigned ``resize`` or a static expression slice is
    elaborated at the required width. Loading preserves dead RTL objects and
    can retain unused logic across intermediate signals; call
-   ``NLUniverse.get().applyDLE()`` after selecting the top for a pruned netlist.
+   :meth:`NLUniverse.get().applyDLE() <najaeda.naja.NLUniverse.get>` after selecting the top for a pruned netlist.
    Vector casts also accept ``std_ulogic_vector`` and preserve operand width and
    bit order. Static ``boolean(...)`` conversions require boolean operands and
    retain short-circuit evaluation, including in generic defaults and package
@@ -1045,7 +1462,7 @@ using the raw API is not required. See :doc:`loading` for matching semantics.
    not yet supported. A package-only load validates parsing, not every function
    body's evaluability. Unsupported calls are diagnosed when elaboration needs
    them. The high-level loader uses the same evaluator once a top is available.
-   Supported record ports become single ``SNLBusTerm`` objects with descending
+   Supported record ports become single :class:`SNLBusTerm <najaeda.naja.SNLBusTerm>` objects with descending
    indices from total width minus one to zero. Fields occupy consecutive bits in
    declaration order, recursively; record field metadata is not exposed as raw
    SNL objects. Use :doc:`loading` for the supported record and unresolved-logic
@@ -1071,7 +1488,7 @@ using the raw API is not required. See :doc:`loading` for matching semantics.
    string path to choose the report, or ``None`` for console-only output.
    Warning codes currently include ``ignored-assertion`` and ``ignored-report``.
    Retained dependency sources are not reported again during internal re-parsing.
-   The high-level ``netlist.load_vhdl`` exposes the same option and also accepts
+   The high-level :func:`netlist.load_vhdl <najaeda.netlist.load_vhdl>` exposes the same option and also accepts
    ``os.PathLike`` paths.
    Nested or unbalanced exclusion directives are errors.
 
@@ -1217,9 +1634,9 @@ using the raw API is not required. See :doc:`loading` for matching semantics.
    and port declarations may explicitly specify the ``signal`` class.
 
    These features are also available through the high-level
-   ``najaeda.netlist.load_vhdl`` loader.
+   :func:`najaeda.netlist.load_vhdl <najaeda.netlist.load_vhdl>` loader.
 
-   The raw ``NLDB`` Verilog, SystemVerilog, VHDL, and Liberty loaders report malformed
+   The raw :class:`NLDB <najaeda.naja.NLDB>` Verilog, SystemVerilog, VHDL, and Liberty loaders report malformed
    Python arguments with standard :class:`TypeError` or :class:`ValueError`
    exceptions.  List-entry errors include the option name and index, such as
    ``files[1]`` or ``defines[0]``.  Native parser and elaboration failures
@@ -1255,6 +1672,7 @@ Design objects
    SNLScalarNet
    SNLBusNet
    SNLBitNet
+   SNLBusNetBit
    SNLInstTerm
    SNLInstParameter
    SNLParameter
@@ -1297,13 +1715,13 @@ Design objects
    :undoc-members:
    :inherited-members:
 
-Use ``SNLDesign.getNetByID(id)`` to retrieve a scalar or bus net by its
+Use :meth:`SNLDesign.getNetByID(id) <najaeda.naja.SNLDesign.getNetByID>` to retrieve a scalar or bus net by its
 design-object ID, including anonymous nets. It returns ``None`` if the ID is
-absent from that design. ``SNLScalarNet.getID()`` and ``SNLBusNet.getID()``
-inherit ``SNLNet.getID()`` and return the same value as
-``net.getNLID().getDesignObjectID()``. These IDs are local to the owning design.
-A bus bit uses its bus ID together with ``getBit()``; resolve it with
-``design.getNetByID(bus_id).getBit(bit_index)``.
+absent from that design. :meth:`SNLScalarNet.getID() <najaeda.naja.SNLScalarNet.getID>` and :meth:`SNLBusNet.getID() <najaeda.naja.SNLBusNet.getID>`
+inherit :meth:`SNLNet.getID() <najaeda.naja.SNLNet.getID>` and return the same value as
+:meth:`net.getNLID().getDesignObjectID() <najaeda.naja.NLID.getDesignObjectID>`. These IDs are local to the owning design.
+A bus bit uses its bus ID together with :meth:`getBit() <najaeda.naja.SNLBusNetBit.getBit>`; resolve it with
+:meth:`design.getNetByID(bus_id).getBit(bit_index) <najaeda.naja.SNLDesign.getNetByID>`.
 
 .. autoclass:: najaeda.naja.SNLNet
    :exclude-members: Type
@@ -1317,6 +1735,11 @@ A bus bit uses its bus ID together with ``getBit()``; resolve it with
    :inherited-members:
 
 .. autoclass:: najaeda.naja.SNLBusNet
+   :members:
+   :undoc-members:
+   :inherited-members:
+
+.. autoclass:: najaeda.naja.SNLBusNetBit
    :members:
    :undoc-members:
    :inherited-members:
@@ -1337,11 +1760,11 @@ A bus bit uses its bus ID together with ``getBit()``; resolve it with
    :inherited-members:
 
 Use the raw API to declare model parameters and set instance values; these
-operations do not currently have high-level ``najaeda.netlist`` wrappers.
-The final value argument of ``createDecimal(design, name[, value])``,
-``createString(design, name[, value])``,
-``createBoolean(design, name[, value])``, and
-``createBinary(design, name, size[, value])`` is optional. Omitting it creates
+operations do not currently have high-level :mod:`najaeda.netlist <najaeda.netlist>` wrappers.
+The final value argument of :meth:`createDecimal(design, name[, value]) <najaeda.naja.SNLParameter.createDecimal>`,
+:meth:`createString(design, name[, value]) <najaeda.naja.SNLParameter.createString>`,
+:meth:`createBoolean(design, name[, value]) <najaeda.naja.SNLParameter.createBoolean>`, and
+:meth:`createBinary(design, name, size[, value]) <najaeda.naja.SNLParameter.createBinary>` is optional. Omitting it creates
 a required parameter with no default. The binary creator retains its existing
 ``size`` argument.
 
@@ -1351,10 +1774,10 @@ a required parameter with no default. The binary creator retains its existing
    assert not width.hasDefaultValue()
    naja.SNLInstParameter.create(instance, width, "8")
 
-``hasDefaultValue()`` distinguishes an absent default from an explicit zero,
-false, or empty string. ``getValue()`` returns the default as a string, or
+:meth:`hasDefaultValue() <najaeda.naja.SNLParameter.hasDefaultValue>` distinguishes an absent default from an explicit zero,
+false, or empty string. :meth:`getValue() <najaeda.naja.SNLParameter.getValue>` returns the default as a string, or
 ``None`` if there is none. Instance values are obtained separately with
-``SNLInstParameter.getValue()``. Cloning and NajaIF snapshots preserve default
+:meth:`SNLInstParameter.getValue() <najaeda.naja.SNLInstParameter.getValue>`. Cloning and NajaIF snapshots preserve default
 presence, including empty string defaults.
 
 Instances may be constructed before their required values are attached. Verilog
@@ -1374,27 +1797,25 @@ parameter does not re-elaborate the model's ports or topology.
 Clocks
 ~~~~~~
 
-An ``NLClock`` is an SDC-style clock definition owned by the ``SNLDesign`` it
+An :class:`NLClock <najaeda.naja.NLClock>` is an SDC-style clock definition owned by the :class:`SNLDesign <najaeda.naja.SNLDesign>` it
 belongs to.  :meth:`najaeda.naja.SNLDesign.getClocks` lists the clocks of one
 design, and :meth:`najaeda.naja.NLDB.getClocks` lists every clock in the
 database.
 
-``createPrimary`` follows SDC ``create_clock``: a period in a time unit, and
+:meth:`createPrimary <najaeda.naja.NLClock.createPrimary>` follows SDC ``create_clock``: a period in a time unit, and
 ordered sources. Primary clocks own their period, unit and waveform, initially
-``(0, period / 2)``. ``setWaveform(rise, fall)`` requires finite values with
+``(0, period / 2)``. :meth:`setWaveform(rise, fall) <najaeda.naja.NLClock.setWaveform>` requires finite values with
 ``0 <= rise < fall <= period``.
 
-``createGenerated`` represents the supported SDC ``create_generated_clock``
+:meth:`createGenerated <najaeda.naja.NLClock.createGenerated>` represents the supported SDC ``create_generated_clock``
 subset: master, master-source terminal, positive integer divide/multiply
 factors, inversion and ordered sources. It stores only these declaration
 inputs. Period, time unit and waveform are derived on every read, including
-through generated-clock chains. ``setWaveform`` on a generated clock raises
+through generated-clock chains. :meth:`setWaveform <najaeda.naja.NLClock.setWaveform>` on a generated clock raises
 ``RuntimeError`` (``NLException`` in C++); change the primary master's waveform
-instead. ``isSynchronousWith`` continues to compare root primary clocks.
+instead. :meth:`isSynchronousWith <najaeda.naja.NLClock.isSynchronousWith>` continues to compare root primary clocks.
 
-Naja uses edge-based division anchored at the master's first rise, following
-the even/odd division convention documented by
-`Quartus create_generated_clock <https://resources.altera.com/quartushelp/current/tafs/tafs/tcl_pkg_sdc_ver_1.5_cmd_create_generated_clock.htm>`_.
+Naja uses edge-based division anchored at the master's first rise.
 For the immediate master's period ``P`` and edges ``(R, F)``, divide factor
 ``D`` and multiply factor ``M``, the resulting period is ``Q = P * D / M``.
 The high time ``H`` is ``Q / 2`` for even ``D``, or
@@ -1409,7 +1830,7 @@ when divided by two, ``(3, 9)`` when divided by three and multiplied by two,
 and ``(9, 21)`` when that last result is inverted. A later primary waveform
 change is immediately reflected by all derived getters.
 
-``getRiseAt()`` and ``getFallAt()`` describe a chronological rise and its next
+:meth:`getRiseAt() <najaeda.naja.NLClock.getRiseAt>` and :meth:`getFallAt() <najaeda.naja.NLClock.getFallAt>` describe a chronological rise and its next
 fall, without reducing timestamps modulo the period. Generated timestamps can
 exceed their period, particularly after inversion or in chains. Inverting a
 full-period high pulse produces coincident edges (zero high time). Values
@@ -1418,7 +1839,7 @@ invalid derived timing. The master must outlive its generated clocks.
 There are no explicit edge lists, edge shifts, duty-cycle or phase controls.
 
 First-pass restrictions: sources and the master source must be top-level
-terminals (``SNLBitTerm``) of the owning design.  Instance terminals are
+terminals (:class:`SNLBitTerm <najaeda.naja.SNLBitTerm>`) of the owning design.  Instance terminals are
 rejected until instance-terminal occurrences are supported.  The master clock
 must belong to the same design.  Clock names are unique within a design.
 
@@ -1430,19 +1851,19 @@ must belong to the same design.  Clock names are unique within a design.
 Timing analysis on netlist occurrences
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The raw API exposes timing queries directly on ``SNLDesign`` and
-``SNLOccurrence``. Call ``top.analyzeTiming()`` once, then query many occurrences.
+The raw API exposes timing queries directly on :class:`SNLDesign <najaeda.naja.SNLDesign>` and
+:class:`SNLOccurrence <najaeda.naja.SNLOccurrence>`. Call :meth:`top.analyzeTiming() <najaeda.naja.SNLDesign.analyzeTiming>` once, then query many occurrences.
 The initial implementation provides clock-domain propagation and capture
 information; it does not calculate delays, arrival times or slack.
 
-``analyzeTiming()`` returns ``None``. It prepares a private C++ timing-analysis
+:meth:`analyzeTiming() <najaeda.naja.SNLDesign.analyzeTiming>` returns ``None``. It prepares a private C++ timing-analysis
 context owned by the active top design. That context owns the graph and cached
 propagation results; Python does not expose graph construction, nodes, edges,
 indices or graph mutation. This API is available through
 ``from najaeda import naja`` in the existing extension and wheel. No high-level
-``najaeda.netlist`` wrapper is required.
+:mod:`najaeda.netlist <najaeda.netlist>` wrapper is required.
 
-Declare clocks before analysis, through ``NLClock`` only. For example, if
+Declare clocks before analysis, through :class:`NLClock <najaeda.naja.NLClock>` only. For example, if
 ``design.sv`` has top port ``clk`` and PLL instance ``u_pll`` with output ``clk_o``:
 
 .. code-block:: python
@@ -1469,20 +1890,20 @@ classify crossings between related clocks.
 Occurrence queries
 ^^^^^^^^^^^^^^^^^^
 
-The following no-argument methods return frozensets of ``SNLClockDomain``:
+The following no-argument methods return frozensets of :class:`SNLClockDomain <najaeda.naja.SNLClockDomain>`:
 
-* ``getLaunchClocks()`` returns launch domains whose data reaches the terminal
+* :meth:`getLaunchClocks() <najaeda.naja.SNLOccurrence.getLaunchClocks>` returns launch domains whose data reaches the terminal
   or bit-net occurrence. State outputs launch according to their clock's
   waveform origins; upstream data domains do not flow through a state element.
-* ``getCaptureClocks()`` returns domains of downstream state elements that
+* :meth:`getCaptureClocks() <najaeda.naja.SNLOccurrence.getCaptureClocks>` returns domains of downstream state elements that
   capture data reached from this terminal. At a data-capture pin it includes the
   capture clocks of that pin. Traversal stops at state boundaries. At a bit-net
   occurrence it unions the capture domains of the net's consumers.
-* ``getClocks()`` returns clock-waveform origins, independently of data
+* :meth:`getClocks() <najaeda.naja.SNLOccurrence.getClocks>` returns clock-waveform origins, independently of data
   launch/capture. Use this to inspect clock pins and inferred divided clocks.
 
 Queries accept single-bit top ports, instance terminals, internal hierarchical
-port aliases and bit nets, with their ``SNLPath``. A terminal query refers to
+port aliases and bit nets, with their :class:`SNLPath <najaeda.naja.SNLPath>`. A terminal query refers to
 that pin: a top output port is a sink, so its receiving set can be empty even
 when other consumers of its connected net capture data. Query the bit net or
 the driving instance output to inspect those downstream consumers. Split inout
@@ -1496,9 +1917,9 @@ that model as a root; supply its hierarchy path to query it in the analyzed top.
 Clock declarations and domains
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``NLClock`` is the declaration; ``SNLClockDomain`` identifies its occurrence in
-the analyzed hierarchy. ``domain.getNLClock()`` returns the original declaration.
-``domain.getSources()`` returns its source ``SNLOccurrence`` objects. Domains
+:class:`NLClock <najaeda.naja.NLClock>` is the declaration; :class:`SNLClockDomain <najaeda.naja.SNLClockDomain>` identifies its occurrence in
+the analyzed hierarchy. :meth:`domain.getNLClock() <najaeda.naja.SNLClockDomain.getNLClock>` returns the original declaration.
+:meth:`domain.getSources() <najaeda.naja.SNLClockDomain.getSources>` returns its source :class:`SNLOccurrence <najaeda.naja.SNLOccurrence>` objects. Domains
 compare and hash by their identity within one analysis, so separate queries
 produce comparable sets. They expose no graph indices.
 
@@ -1509,60 +1930,60 @@ All four declaration cases are supported:
   terminal. Unknown modules loaded with ``blackbox_unknown_modules=True`` have
   inferred inout pins; the native constructor seeds the drive role internally.
 * A shared model instantiated in different hierarchies produces one domain per
-  occurrence, sharing an ``NLClock`` but with distinct source occurrences.
-* Generated declarations use ``NLClock.createGenerated`` as usual.
-  ``domain.getNLClock().getMaster()`` and ``isSynchronousWith()`` remain available.
+  occurrence, sharing an :class:`NLClock <najaeda.naja.NLClock>` but with distinct source occurrences.
+* Generated declarations use :meth:`NLClock.createGenerated <najaeda.naja.NLClock.createGenerated>` as usual.
+  :meth:`domain.getNLClock().getMaster() <najaeda.naja.NLClock.getMaster>` and :meth:`isSynchronousWith() <najaeda.naja.NLClock.isSynchronousWith>` remain available.
   Analysis does not merge domains based on clock relationships.
 
 There is no additional Python clock-creation path. Internal nets and individual
 instance terminals (including a mux output) cannot be selected directly as
-``NLClock`` sources. A model-terminal declaration seeds every occurrence of
-that model. Selecting one occurrence or an internal net needs an ``NLClock``
+:class:`NLClock <najaeda.naja.NLClock>` sources. A model-terminal declaration seeds every occurrence of
+that model. Selecting one occurrence or an internal net needs an :class:`NLClock <najaeda.naja.NLClock>`
 extension.
 
 Design-level results
 ^^^^^^^^^^^^^^^^^^^^
 
-After ``analyzeTiming()``, the analyzed ``SNLDesign`` exposes:
+After :meth:`analyzeTiming() <najaeda.naja.SNLDesign.analyzeTiming>`, the analyzed :class:`SNLDesign <najaeda.naja.SNLDesign>` exposes:
 
-* ``getClockDomains()``: domains in deterministic declaration/occurrence order.
-* ``getEndpoints(check=None)``: a list of ``SNLOccurrence`` objects.
+* :meth:`getClockDomains() <najaeda.naja.SNLDesign.getClockDomains>`: domains in deterministic declaration/occurrence order.
+* :meth:`getEndpoints(check=None) <najaeda.naja.SNLDesign.getEndpoints>`: a list of :class:`SNLOccurrence <najaeda.naja.SNLOccurrence>` objects.
   ``check="setup"`` selects data-capture pins of flops/latches and memory
   write-side inputs (the original endpoint set). ``check="recovery"`` selects
   asynchronous set/reset pins for recovery/removal checks. ``None`` returns
   both in deterministic order. Clock-gate enables are excluded. Other values
   raise ``RuntimeError``. No per-edge Python objects are created.
-* ``getTimingCoverageReport()``: dictionaries containing ``occurrence``, ``model``
+* :meth:`getTimingCoverageReport() <najaeda.naja.SNLDesign.getTimingCoverageReport>`: dictionaries containing ``occurrence``, ``model``
   (model name), ``reason``, ``treatment`` and ``detail``. Reasons are ``memory``,
   ``inout``, ``blackbox``, ``unsupported_latch``, ``multiple_drivers``,
   ``incomplete_modeling`` and ``ambiguous_clock_gate``. Treatments are ``opaque``,
   ``approximated``, ``bidirectional`` and ``all_drivers``. Fully modeled memories
   have no entry; ordinary latches report the existing approximation without
   time borrowing.
-* ``getTimingCoverageCounts()``: entry counts by reason, including zeros.
-* ``getTimingDiagnostics()``: ``noClock`` (flop clock-pin occurrences),
+* :meth:`getTimingCoverageCounts() <najaeda.naja.SNLDesign.getTimingCoverageCounts>`: entry counts by reason, including zeros.
+* :meth:`getTimingDiagnostics() <najaeda.naja.SNLDesign.getTimingDiagnostics>`: ``noClock`` (flop clock-pin occurrences),
   ``generatedClocks`` and ``clockControls`` (lists of dictionaries with
   ``clockPin``, ``output`` occurrences and ``clocks``, a domain frozenset).
   Inferred generated-clock relationships are distinct from explicit generated
-  ``NLClock`` declarations. Control diagnostics retain their existing
+  :class:`NLClock <najaeda.naja.NLClock>` declarations. Control diagnostics retain their existing
   conservative meaning; they do not prove a synchronizer or enable function.
 
-A rejected combinational cycle raises ``SNLTimingCycleError`` (a ``RuntimeError``)
+A rejected combinational cycle raises :exc:`SNLTimingCycleError <najaeda.naja.SNLTimingCycleError>` (a ``RuntimeError``)
 with ``occurrence``, ``description`` and diagnostic ``role`` attributes.
 No loop-breaking policy is applied.
 
 Reset declarations and the two analysis views
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``NLReset`` is owned by its ``SNLDesign``, like ``NLClock``. Declare a reset
+:class:`NLReset <najaeda.naja.NLReset>` is owned by its :class:`SNLDesign <najaeda.naja.SNLDesign>`, like :class:`NLClock <najaeda.naja.NLClock>`. Declare a reset
 before analysis::
 
    reset = naja.NLReset.create(top, "domain_a", [top.getScalarTerm("rst_a_n")],
                               naja.SNLActiveLevel.Low,
                               assertion="async", deassertion="sync")
 
-``create(design, name, sources, activeLevel, assertion="async",
-deassertion="sync")`` requires a nonempty unique name, a nonempty list of
+:meth:`create(design, name, sources, activeLevel, assertion="async",
+deassertion="sync") <najaeda.naja.NLReset.create>` requires a nonempty unique name, a nonempty list of
 unique owning-design bit terminals, and ``Low`` or ``High``. Foreign terminals,
 whole buses, instance terminals and internal nets are rejected. Assertion and
 deassertion each accept ``"async"`` or ``"sync"``; these are checker metadata
@@ -1571,25 +1992,25 @@ reset source; either declaration order rejects that overlap. This avoids
 forcing a clock source constant while retaining its waveform interpretation.
 
 The native C++ API uses ``NLReset::Timing::Async`` and ``NLReset::Timing::Sync``
-for both arguments and for the return values of ``getAssertion()`` and
-``getDeassertion()``. Its defaults are ``Timing::Async`` for assertion and
+for both arguments and for the return values of :meth:`getAssertion() <najaeda.naja.NLReset.getAssertion>` and
+:meth:`getDeassertion() <najaeda.naja.NLReset.getDeassertion>`. Its defaults are ``Timing::Async`` for assertion and
 ``Timing::Sync`` for deassertion. The Python binding validates and converts
 ``"async"``/``"sync"`` at the boundary; its accessors continue to return strings.
 
-Accessors are ``getName()``, ``getDesign()``, ``getSources()``,
-``getActiveLevel()``, ``getInactiveValue()`` (1 for active-low, 0 for active-high),
-``getAssertion()`` and ``getDeassertion()``. ``destroy()`` removes the declaration;
-``design.getResets()`` lists declarations in insertion order;
-``db.getResets()`` lists declarations across all libraries of the database. Declarations must
+Accessors are :meth:`getName() <najaeda.naja.NLReset.getName>`, :meth:`getDesign() <najaeda.naja.NLReset.getDesign>`, :meth:`getSources() <najaeda.naja.NLReset.getSources>`,
+:meth:`getActiveLevel() <najaeda.naja.NLReset.getActiveLevel>`, :meth:`getInactiveValue() <najaeda.naja.NLReset.getInactiveValue>` (1 for active-low, 0 for active-high),
+:meth:`getAssertion() <najaeda.naja.NLReset.getAssertion>` and :meth:`getDeassertion() <najaeda.naja.NLReset.getDeassertion>`. :meth:`destroy() <najaeda.naja.NLReset.destroy>` removes the declaration;
+:meth:`design.getResets() <najaeda.naja.SNLDesign.getResets>` lists declarations in insertion order;
+:meth:`db.getResets() <najaeda.naja.NLDB.getResets>` lists declarations across all libraries of the database. Declarations must
 outlive their analyses and source terminals. Like clocks, they are analysis
 constraints and must be recreated after a snapshot reload. Creating or destroying
 a reset invalidates the Python timing cache and all views from that analysis.
 
-``top.getResetDomains()`` returns ``SNLResetDomain`` objects, ordered by hierarchy
+:meth:`top.getResetDomains() <najaeda.naja.SNLDesign.getResetDomains>` returns :class:`SNLResetDomain <najaeda.naja.SNLResetDomain>` objects, ordered by hierarchy
 occurrence and then declaration name, independently of reset declaration order.
-``domain.getNLReset()`` returns the declaration; ``domain.getSources()`` returns
+:meth:`domain.getNLReset() <najaeda.naja.SNLResetDomain.getNLReset>` returns the declaration; :meth:`domain.getSources() <najaeda.naja.SNLResetDomain.getSources>` returns
 its source occurrences. Equality and hashing refer to one analysis's domain
-identity, as for ``SNLClockDomain``. A declaration on a shared model creates one
+identity, as for :class:`SNLClockDomain <najaeda.naja.SNLClockDomain>`. A declaration on a shared model creates one
 domain per occurrence. This also works on a blackbox controller's output with
 ``blackbox_unknown_modules=True``; hidden inout drive/load roles remain internal.
 
@@ -1602,15 +2023,15 @@ blackboxes and uncovered functions. A combinational input arc is disabled when
 its source is constant or when the output's restricted function is independent
 of that input. Connectivity and hierarchy ports remain physical wires.
 
-``getLaunchClocks()``, ``getCaptureClocks()``, ``getFaninStartpoints()`` and
-``getFanoutEndpoints()`` use the remaining data arcs. ``direct`` accepts a live
+:meth:`getLaunchClocks() <najaeda.naja.SNLOccurrence.getLaunchClocks>`, :meth:`getCaptureClocks() <najaeda.naja.SNLOccurrence.getCaptureClocks>`, :meth:`getFaninStartpoints() <najaeda.naja.SNLOccurrence.getFaninStartpoints>` and
+:meth:`getFanoutEndpoints() <najaeda.naja.SNLOccurrence.getFanoutEndpoints>` use the remaining data arcs. ``direct`` accepts a live
 cell arc whose restricted function is identity or inversion, including a mux
 with an inactive reset select and an AND with reset held at 1. Vector muxes
 retain bit-to-bit mapping in ``registerOutputs``. Canonical synchronous-reset RTL
 may already use a native DB0 synchronous-reset flop, so it can be direct even
 without a declaration; explicit reset muxes require the data-view reduction.
 There is no case-analysis API yet; the constant engine takes explicit seeds
-so another constraint provider can reuse it later. ``getClocks()`` keeps the
+so another constraint provider can reuse it later. :meth:`getClocks() <najaeda.naja.SNLOccurrence.getClocks>` keeps the
 original waveform propagation, independently of data pruning.
 
 The **reset view** propagates each declared domain over all physical
@@ -1621,11 +2042,11 @@ when R reaches its asynchronous reset/set control and all physical data-cone
 startpoints are constants or outputs already inferred as derived from R.
 Inference reaches a fixed point; stage 1 has constant data, and a later stage
 is one plus the maximum predecessor stage for that domain. Ordinary data-driven
-reset signals do not meet this rule. ``SNLOccurrence.getResets()`` returns a
-frozenset of ``SNLResetDomain`` reaching that pin or bit net in this reset view.
+reset signals do not meet this rule. :meth:`SNLOccurrence.getResets() <najaeda.naja.SNLOccurrence.getResets>` returns a
+frozenset of :class:`SNLResetDomain <najaeda.naja.SNLResetDomain>` reaching that pin or bit net in this reset view.
 It is independent of the pin's data-view fanin.
 
-With reset declarations, ``getTimingDiagnostics()`` adds two lists:
+With reset declarations, :meth:`getTimingDiagnostics() <najaeda.naja.SNLDesign.getTimingDiagnostics>` adds two lists:
 
 * ``resetSynchronizers``: dictionaries with ``output`` (state-output occurrence),
   ``resets`` (reset-domain frozenset) and ``stage`` (1-based chain index).
@@ -1635,7 +2056,7 @@ With reset declarations, ``getTimingDiagnostics()`` adds two lists:
 
 Recovery endpoints are retained even when reset-inactive evaluation makes them
 constant. For example, recovery fanin of ``rst_n & other`` contains ``other``'s
-startpoints, while ``getResets()`` still identifies ``rst_n``'s domain. A declared
+startpoints, while :meth:`getResets() <najaeda.naja.SNLOccurrence.getResets>` still identifies ``rst_n``'s domain. A declared
 reset source reached through wires/hierarchy with no disabled arc is a fanin
 record of kind ``"reset"``: ``launchPin == startpoint``, empty ``launchClocks``
 and a ``resets`` frozenset. With reset declarations present, register fanin rows
@@ -1696,8 +2117,8 @@ verdicts, reset sequencing guarantees, clock relationships or X-propagation rule
 Structural data cones
 ^^^^^^^^^^^^^^^^^^^^^
 
-``occurrence.getFaninStartpoints(withCells=True)`` and
-``occurrence.getFanoutEndpoints(withCells=True)`` return deterministic lists of
+:meth:`occurrence.getFaninStartpoints(withCells=True) <najaeda.naja.SNLOccurrence.getFaninStartpoints>` and
+:meth:`occurrence.getFanoutEndpoints(withCells=True) <najaeda.naja.SNLOccurrence.getFanoutEndpoints>` return deterministic lists of
 record dictionaries. They accept the same single-bit terminals, hierarchical
 port aliases and bit nets as the clock queries. Missing, invalid or stale
 analysis raises ``RuntimeError``. No graph objects or hidden inout roles are
@@ -1734,7 +2155,7 @@ Fanin records contain:
   the domains seeded there. Model-level declarations retain occurrence-specific
   source identities. Register Q outputs, including dividers carrying generated
   clocks, remain ``register`` startpoints.
-* ``launchClocks``: a frozenset of ``SNLClockDomain``. Storage records use the
+* ``launchClocks``: a frozenset of :class:`SNLClockDomain <najaeda.naja.SNLClockDomain>`. Storage records use the
   associated clock/gate waveform origins. Undeclared inputs, unclocked storage,
   constants and undeclared opaque outputs have empty sets.
 * ``cells`` and ``direct``, as above.
@@ -1774,20 +2195,20 @@ pins it reaches and any reached data endpoints, without traversing clock-to-Q
 arcs. Clock-gate clock pins are reported and traversal continues through their
 explicit clock-pass arcs to downstream clock pins; enable and test-enable
 capture pins remain traversal boundaries. A clean clock pin's fanin contains
-its clock-source startpoint, preserving equality with ``getLaunchClocks()``.
+its clock-source startpoint, preserving equality with :meth:`getLaunchClocks() <najaeda.naja.SNLOccurrence.getLaunchClocks>`.
 A clock used as data similarly appears as a ``clock`` startpoint.
 Write inputs that also serve as asynchronous
 read addresses are reported as captures and also traversed through their read
 arcs. Asynchronous read-only addresses/enables are pass-through pins.
 
-To follow a synchronizer chain, call ``getFanoutEndpoints()`` on each occurrence
+To follow a synchronizer chain, call :meth:`getFanoutEndpoints() <najaeda.naja.SNLOccurrence.getFanoutEndpoints>` on each occurrence
 in ``registerOutputs``. Do not restart from ``registerClock``: on a multi-bit
 register that would expand the whole register and lose bit precision. These
 queries expose structure, without classifying synchronizers or protocols.
 
 The consistency contract for data cones is:
 
-* Unioning ``launchClocks`` over fanin records reproduces ``getLaunchClocks()``.
+* Unioning ``launchClocks`` over fanin records reproduces :meth:`getLaunchClocks() <najaeda.naja.SNLOccurrence.getLaunchClocks>`.
 * For a launch pin and a stop pin, forward and backward records agree on
   reachability, ``cells`` and ``direct``. Multiple memory write clocks can
   produce several backward records for the same launch pin.
@@ -1897,7 +2318,7 @@ The C++ context is attached to the design, independent of its Python wrapper's
 lifetime. Raw Python netlist editing calls invalidate cached analyses, including
 clock declarations or waveform changes after analysis. Attempted edits
 conservatively invalidate even when they fail or affect unrelated objects.
-Queries raise until ``top.analyzeTiming()`` is called again. This operation
+Queries raise until :meth:`top.analyzeTiming() <najaeda.naja.SNLDesign.analyzeTiming>` is called again. This operation
 refreshes DNL, builds and propagates internally, and publishes a replacement
 only on success. Earlier domain and analysis-returned occurrence views then
 raise. An unsuccessful rebuild leaves the previous cache in place, subject to
@@ -1919,16 +2340,18 @@ crossing classification remain outside this initial API.
 .. autoclass:: najaeda.naja.SNLClockDomain
    :members:
 
+.. autoexception:: najaeda.naja.NajaCancelled
+
 .. autoexception:: najaeda.naja.SNLTimingCycleError
 
 Attributes
 ~~~~~~~~~~
 
-NajaIF schema 0.3.0 preserves ``SNLAttribute`` values on designs, terms, nets,
+NajaIF schema 0.3.0 preserves :class:`SNLAttribute <najaeda.naja.SNLAttribute>` values on designs, terms, nets,
 bus bits, instances, and instance terminals. Attribute order, duplicate names,
-and string/number types survive ``NLDB.dumpNajaIF()`` / ``NLDB.loadNajaIF()``.
+and string/number types survive :meth:`NLDB.dumpNajaIF() <najaeda.naja.NLDB.dumpNajaIF>` / :meth:`NLDB.loadNajaIF() <najaeda.naja.NLDB.loadNajaIF>`.
 As in the live SNL model, empty string values and valueless attributes both have
-``hasValue() == False``. Use the existing high-level ``get_attributes()`` methods
+:meth:`hasValue() <najaeda.naja.SNLAttribute.hasValue>` == ``False``. Use the existing high-level :meth:`Instance.get_attributes() <najaeda.netlist.Instance.get_attributes>`, :meth:`Term.get_attributes() <najaeda.netlist.Term.get_attributes>`, :meth:`Net.get_attributes() <najaeda.netlist.Net.get_attributes>` methods
 for routine queries; no raw API calls are needed to retain attributes in a
 snapshot. Older snapshots must be regenerated from their original inputs.
 
@@ -1954,10 +2377,10 @@ Hierarchy and connectivity
    :undoc-members:
    :inherited-members:
 
-``SNLOccurrence.getObject()`` returns the referenced net, term, or instance
-with its concrete Python type (including ``SNLBusNetBit`` and ``SNLBusTermBit``),
+:meth:`SNLOccurrence.getObject() <najaeda.naja.SNLOccurrence.getObject>` returns the referenced net, term, or instance
+with its concrete Python type (including :class:`SNLBusNetBit <najaeda.naja.SNLBusNetBit>` and :class:`SNLBusTermBit <najaeda.naja.SNLBusTermBit>`),
 or ``None`` for an empty occurrence. Use it to inspect net occurrences in
-``SNLEquipotential.getGraph()`` nodes, including nodes without leaf pins.
+:meth:`SNLEquipotential.getGraph() <najaeda.naja.SNLEquipotential.getGraph>` nodes, including nodes without leaf pins.
 This expert operation is available through the raw API; no high-level wrapper
 is needed to inspect a raw equipotential graph.
 
@@ -1972,12 +2395,12 @@ is needed to inspect a raw equipotential graph.
    :undoc-members:
    :inherited-members:
 
-   Pass ``mode=SNLEquipotential.Mode.TraverseAssigns`` to the constructor
+   Pass :class:`mode=SNLEquipotential.Mode.TraverseAssigns <najaeda.naja.SNLEquipotential.Mode>` to the constructor
    to cross Assign instances and omit their instance terminals.  The
-   default is ``SNLEquipotential.Mode.Standard``.
+   default is :class:`SNLEquipotential.Mode.Standard <najaeda.naja.SNLEquipotential.Mode>`.
 
    Experts building hierarchical schematic views can pass ``keep_graph=True``
-   independently of ``mode``. ``getGraph()`` then returns ``(nodes, edges)``;
+   independently of ``mode``. :meth:`getGraph() <najaeda.naja.SNLEquipotential.getGraph>` then returns ``(nodes, edges)``;
    otherwise it returns ``None``. Each node is
    ``(net_occurrence, [leaf_inst_term_occurrences], [top_bit_terms])``.
    Nodes follow net discovery order, with the starting net first; leaves and
@@ -1985,18 +2408,18 @@ is needed to inspect a raw equipotential graph.
    once, including crossings that close a cycle. Each edge is
    ``(kind, crossing_occurrence, from_index, to_index)``:
 
-   * ``SNLEquipotential.EdgeKind.Port`` uses the non-leaf instance terminal
+   * :class:`SNLEquipotential.EdgeKind.Port <najaeda.naja.SNLEquipotential.EdgeKind>` uses the non-leaf instance terminal
      occurrence in the parent path, directed from the outer net to the inner net.
-   * ``SNLEquipotential.EdgeKind.Assign`` uses the assign input instance terminal
+   * :class:`SNLEquipotential.EdgeKind.Assign <najaeda.naja.SNLEquipotential.EdgeKind>` uses the assign input instance terminal
      occurrence, directed from input net to output net at the same path. These
      edges appear only in ``TraverseAssigns`` mode.
 
    Unconnected port or assign sides do not form edges. The graph is derived
    data: retaining it does not change equipotential equality or ordering.
    Copies share an immutable native graph; the returned Python lists are views
-   copied from that graph and can be edited without changing it. ``dumpDotFile``
+   copied from that graph and can be edited without changing it. :meth:`dumpDotFile <najaeda.naja.SNLEquipotential.dumpDotFile>`
    shows net nodes, their leaves and top terms, and labeled crossings when the
-   graph is kept. The high-level ``najaeda.netlist.Equipotential`` wrapper does
+   graph is kept. The high-level :class:`najaeda.netlist.Equipotential <najaeda.netlist.Equipotential>` wrapper does
    not yet expose this option; use the raw API for hierarchical routing.
 
 .. autoclass:: najaeda.naja.SNLNetComponent
@@ -2042,9 +2465,9 @@ Enum-like values
    :members:
    :undoc-members:
 
-``SNLNet.Type.AssignX`` and ``SNLNet.Type.AssignZ`` represent structural
-four-state constants.  Use ``SNLNet.isConstantX()`` and
-``SNLNet.isConstantZ()`` to distinguish them; ``isConstant()`` accepts all
+:class:`SNLNet.Type.AssignX <najaeda.naja.SNLNet.Type>` and :class:`SNLNet.Type.AssignZ <najaeda.naja.SNLNet.Type>` represent structural
+four-state constants.  Use :meth:`SNLNet.isConstantX() <najaeda.naja.SNLNet.isConstantX>` and
+:meth:`SNLNet.isConstantZ() <najaeda.naja.SNLNet.isConstantZ>` to distinguish them; :meth:`isConstant() <najaeda.naja.SNLNet.isConstant>` accepts all
 four assign values while the zero and one predicates remain binary-only.
 
 .. autoclass:: najaeda.naja.SNLTermRole
@@ -2098,7 +2521,7 @@ Module functions
 .. autofunction:: najaeda.naja.getGitHash
 
 CMake and root source Bazel builds report the checkout's abbreviated Git
-revision through ``getGitHash()``. Bazel collects it before build actions and
+revision through :func:`getGitHash() <najaeda.naja.getGitHash>`. Bazel collects it before build actions and
 configures the version header with hermetic Python. Source archives without
 Git use ``unknown`` unless an explicit fallback identity is supplied. Dependency
 builds use their module-derived producer identity, never the consuming project's
@@ -2106,8 +2529,8 @@ workspace identity. Matching source builds can exchange snapshots when their
 producer and primitive-layout identities agree; semantic intent still requires
 source re-elaboration after cold reload.
 
-``snapshotManifest(path)`` reads only a snapshot's ``snl.mf`` manifest;
-it does not load the Cap'n Proto payload or create an ``NLUniverse``.  It
+:func:`snapshotManifest(path) <najaeda.naja.snapshotManifest>` reads only a snapshot's ``snl.mf`` manifest;
+it does not load the Cap'n Proto payload or create an :class:`NLUniverse <najaeda.naja.NLUniverse>`.  It
 returns the schema version and the Naja producer version / Git hash.  At
 present, loading a snapshot requires an exact match of both producer
 values with the reader build; regenerate snapshots after changing builds.
@@ -2122,24 +2545,24 @@ layout version is independent of the wire schema version owned by ``naja-if``.
 
 **Native logging callbacks**
 
-``add_log_callback(fn, level="info")`` registers a callable and returns an integer
+:func:`add_log_callback(fn, level="info") <najaeda.naja.add_log_callback>` registers a callable and returns an integer
 handle. The callable receives ``fn(level, message)`` synchronously on the native
 logging thread, with the GIL acquired. ``message`` is the formatted payload,
 without timestamps, logger names or other pattern fields. Level names are
 ``trace``, ``debug``, ``info``, ``warning``, ``error`` and ``critical``; the minimum
-level also accepts ``warn`` and ``off``, as with ``log()``. The global
-``setLogLevel()`` filter still applies before individual sink thresholds.
+level also accepts ``warn`` and ``off``, as with :func:`log() <najaeda.naja.log>`. The global
+:func:`setLogLevel() <najaeda.naja.setLogLevel>` filter still applies before individual sink thresholds.
 
-``remove_log_callback(handle)`` stops delivery and releases the callable.
+:func:`remove_log_callback(handle) <najaeda.naja.remove_log_callback>` stops delivery and releases the callable.
 Unknown handles are ignored. A call already executing may finish; a callback
-may remove itself. ``clearLogSinks()`` also unregisters callbacks and restores
+may remove itself. :func:`clearLogSinks() <najaeda.naja.clearLogSinks>` also unregisters callbacks and restores
 the default console sink. Keep callbacks short and dispatch UI work to the UI
 thread yourself. Exceptions are reported through ``sys.unraisablehook`` using
 ``PyErr_WriteUnraisable`` and do not interrupt native loading. Callback delivery
-is suppressed for nested logs and for messages sent by Python through ``log()``,
-``logInfo()``, ``logWarn()`` or ``logCritical()``, preventing feedback loops.
+is suppressed for nested logs and for messages sent by Python through :func:`log() <najaeda.naja.log>`,
+:func:`logInfo() <najaeda.naja.logInfo>`, :func:`logWarn() <najaeda.naja.logWarn>` or :func:`logCritical() <najaeda.naja.logCritical>`, preventing feedback loops.
 
-``set_console_logging(False)`` disables native console sinks while preserving
+:func:`set_console_logging(False) <najaeda.naja.set_console_logging>` disables native console sinks while preserving
 callbacks and file sinks. ``True`` restores one console sink at its default
 ``info`` threshold. Console logging is enabled by default.
 
@@ -2169,13 +2592,13 @@ Memory reset roles
 ------------------
 
 For DB0 ``naja_mem__*`` primitives and other designs with a memory interface,
-``SNLBitTerm.getRole()`` reports ``SNLTermRole.SyncReset`` for synchronous
-resets and ``SNLTermRole.AsyncReset`` for asynchronous resets. Both satisfy
-``isReset()``; synchronous resets also satisfy ``isSyncReset()``.
-``getResetActiveLevel()`` returns ``SNLActiveLevel.Low`` for either active-low
-reset mode and ``SNLActiveLevel.High`` for either active-high mode. With no
+:meth:`SNLBitTerm.getRole() <najaeda.naja.SNLBitTerm.getRole>` reports :class:`SNLTermRole.SyncReset <najaeda.naja.SNLTermRole>` for synchronous
+resets and :class:`SNLTermRole.AsyncReset <najaeda.naja.SNLTermRole>` for asynchronous resets. Both satisfy
+:meth:`isReset() <najaeda.naja.SNLBitTerm.isReset>`; synchronous resets also satisfy :meth:`isSyncReset() <najaeda.naja.SNLBitTerm.isSyncReset>`.
+:meth:`getResetActiveLevel() <najaeda.naja.SNLBitTerm.getResetActiveLevel>` returns :class:`SNLActiveLevel.Low <najaeda.naja.SNLActiveLevel>` for either active-low
+reset mode and :class:`SNLActiveLevel.High <najaeda.naja.SNLActiveLevel>` for either active-high mode. With no
 reset enabled, the reset pin has role ``Other`` and active level ``NA``.
-The same queries on ``SNLInstTerm`` follow the model's bit term.
+The same queries on :class:`SNLInstTerm <najaeda.naja.SNLInstTerm>` follow the model's bit term.
 
 DB0 memory parameters ``RST_ENABLE``, ``RST_ASYNC``, ``RST_ACTIVE_LOW``,
 ``INIT_ENABLE``, and ``MULTI_CLOCK`` (when present) have Boolean type, as does
@@ -2187,37 +2610,37 @@ primitives, while Boolean parameters on ordinary models retain the existing
 Word-level operator predicates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``SNLDesign.isAddSub()`` identifies NLDB0 addition and subtraction models;
-``isSubtract()`` distinguishes subtraction. ``isMultiply()``, ``isShift()``,
-and ``isDivMod()`` identify multiplication, shifts, and division/modulo.
-``isShiftRight()`` and ``isShiftArithmetic()`` expose shift direction and
+:meth:`SNLDesign.isAddSub() <najaeda.naja.SNLDesign.isAddSub>` identifies NLDB0 addition and subtraction models;
+:meth:`isSubtract() <najaeda.naja.SNLDesign.isSubtract>` distinguishes subtraction. :meth:`isMultiply() <najaeda.naja.SNLDesign.isMultiply>`, :meth:`isShift() <najaeda.naja.SNLDesign.isShift>`,
+and :meth:`isDivMod() <najaeda.naja.SNLDesign.isDivMod>` identify multiplication, shifts, and division/modulo.
+:meth:`isShiftRight() <najaeda.naja.SNLDesign.isShiftRight>` and :meth:`isShiftArithmetic() <najaeda.naja.SNLDesign.isShiftArithmetic>` expose shift direction and
 arithmetic mode. All seven return booleans and return ``False`` for unrelated
 models, including Liberty cells, gates, blackboxes, and hierarchical designs.
 The shift-detail predicates also return ``False`` for invalid shift metadata.
 
 Use the raw predicates when a viewer needs shift direction or arithmetic mode.
-For instance classification, the high-level API provides ``Instance.is_add()``,
-``is_sub()``, ``is_mul()``, ``is_shift()``, and ``is_divmod()``.
-``is_add()`` excludes subtraction.
+For instance classification, the high-level API provides :meth:`Instance.is_add() <najaeda.netlist.Instance.is_add>`,
+:meth:`is_sub() <najaeda.netlist.Instance.is_sub>`, :meth:`is_mul() <najaeda.netlist.Instance.is_mul>`, :meth:`is_shift() <najaeda.netlist.Instance.is_shift>`, and :meth:`is_divmod() <najaeda.netlist.Instance.is_divmod>`.
+:meth:`is_add() <najaeda.netlist.Instance.is_add>` excludes subtraction.
 
 Gate predicates and truth-table errors
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``SNLDesign.isConst0()``, ``isConst1()``, ``isConst()``, ``isInv()``,
-``isBuf()``, and the gate-family predicates return ``False`` when a model
+:meth:`SNLDesign.isConst0() <najaeda.naja.SNLDesign.isConst0>`, :meth:`isConst1() <najaeda.naja.SNLDesign.isConst1>`, :meth:`isConst() <najaeda.naja.SNLDesign.isConst>`, :meth:`isInv() <najaeda.naja.SNLDesign.isInv>`,
+:meth:`isBuf() <najaeda.naja.SNLDesign.isBuf>`, and the gate-family predicates return ``False`` when a model
 has per-output truth tables instead of a single truth table (for example,
-a full adder). ``getTruthTable()`` requires a single truth table; native
+a full adder). :meth:`getTruthTable() <najaeda.naja.SNLDesign.getTruthTable>` requires a single truth table; native
 errors raise ``RuntimeError`` with the native diagnostic preserved.
-Use ``getTruthTableByOutputID()`` to query an individual output. Its native
+Use :meth:`getTruthTableByOutputID() <najaeda.naja.SNLDesign.getTruthTableByOutputID>` to query an individual output. Its native
 errors also raise ``RuntimeError``.
 
 
-``SNLDesign.getGatePolarity()`` recognizes AND, NAND, OR, NOR, XOR and XNOR
+:meth:`SNLDesign.getGatePolarity() <najaeda.naja.SNLDesign.getGatePolarity>` recognizes AND, NAND, OR, NOR, XOR and XNOR
 functions with optional input inversions. It returns ``None`` or
 ``(type_name, inverted_inputs)``, where ``type_name`` is ``"and"``, ``"nand"``,
 ``"or"``, ``"nor"``, ``"xor"`` or ``"xnor"`` and ``inverted_inputs`` is a list
-of ``SNLBitTerm`` objects in design input-term order. The existing
-``isAnd()`` / ``isNand()`` / ``isOr()`` / ``isNor()`` / ``isXor()`` / ``isXnor()``
+of :class:`SNLBitTerm <najaeda.naja.SNLBitTerm>` objects in design input-term order. The existing
+:meth:`isAnd() <najaeda.naja.SNLDesign.isAnd>` / :meth:`isNand() <najaeda.naja.SNLDesign.isNand>` / :meth:`isOr() <najaeda.naja.SNLDesign.isOr>` / :meth:`isNor() <najaeda.naja.SNLDesign.isNor>` / :meth:`isXor() <najaeda.naja.SNLDesign.isXor>` / :meth:`isXnor() <najaeda.naja.SNLDesign.isXnor>`
 predicates remain strict and do not recognize inverted-input variants.
 
 The chosen form minimizes the number of inverted inputs; ties prefer NAND
@@ -2225,19 +2648,19 @@ or NOR (an inverted output). For example, ``!(!P*Q)`` returns
 ``("nand", [P])``, while ``P*!Q`` returns ``("nor", [P])``. Parity functions
 return XOR or XNOR with an empty list. Generic gate tables also return an
 empty list. Row bit zero corresponds to the first input term, including for
-tables supplied through ``setTruthTable()``.
+tables supplied through :meth:`setTruthTable() <najaeda.naja.SNLDesign.setTruthTable>`.
 
 The query returns ``None`` for missing or multiple truth tables, sequential
 cells, parameter-dependent tables, fewer than two inputs, unused input pins,
 and functions outside these six families. Experts can use this raw API to
 select schematic gate symbols and input bubbles. There is currently no
-high-level ``najaeda.netlist`` wrapper.
+high-level :mod:`najaeda.netlist <najaeda.netlist>` wrapper.
 
 
 Language-neutral source references
 ----------------------------------
 
-``SNLDesign`` and all ``SNLDesignObject`` subclasses (instances, nets, terms and
+:class:`SNLDesign <najaeda.naja.SNLDesign>` and all ``SNLDesignObject`` subclasses (instances, nets, terms and
 bits) expose the following expert APIs. These require no retained source or AST.
 
 .. list-table:: Source reference methods
@@ -2245,11 +2668,11 @@ bits) expose the following expert APIs. These require no retained source or AST.
 
    * - Method
      - Contract
-   * - ``hasSourceReferences()``
+   * - :meth:`hasSourceReferences() <najaeda.naja.SNLDesign.hasSourceReferences>`
      - Allocation-free presence check for a declaration or origins.
-   * - ``getSourceDeclaration()``
+   * - :meth:`getSourceDeclaration() <najaeda.naja.SNLDesign.getSourceDeclaration>`
      - Reference for this object's declaration, or ``None``.
-   * - ``getSourceOrigins()``
+   * - :meth:`getSourceOrigins() <najaeda.naja.SNLDesign.getSourceOrigins>`
      - List of upstream references, in insertion order.
 
 A reference is ``((file, line, column, end_line, end_column), provider, language,
@@ -2264,8 +2687,8 @@ For example::
    origins = gate.getSourceOrigins()
 
 The instance's declaration identifies its instantiation; query
-``instance.getModel().getSourceDeclaration()`` for its model definition.
-``hasSourceLoc()`` and ``getSourceLoc()`` retain their independent legacy meaning;
+:meth:`instance.getModel().getSourceDeclaration() <najaeda.naja.SNLInstance.getModel>` for its model definition.
+:meth:`hasSourceLoc() <najaeda.naja.SNLDesign.hasSourceLoc>` and :meth:`getSourceLoc() <najaeda.naja.SNLDesign.getSourceLoc>` retain their independent legacy meaning;
 new roles neither reclassify nor overwrite that slot. SystemVerilog loading
 dual-writes the legacy slot and typed declarations for module definitions, ports,
 named signals and source instantiations; lowered logic gets origins labelled
@@ -2291,7 +2714,7 @@ Native loaders populate the source queries used by viewers such as naja-schemati
 Source coordinate width
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Both legacy ``getSourceLoc()`` and new source-reference ranges support 32-bit
+Both legacy :meth:`getSourceLoc() <najaeda.naja.SNLDesign.getSourceLoc>` and new source-reference ranges support 32-bit
 columns; their Python tuple shapes are unchanged. Native C++ consumers must
 rebuild for the widened ``SNLSourceLoc`` layout. SystemVerilog loading and
 legacy source-location Verilog export preserve columns above 65,535.
@@ -2305,7 +2728,7 @@ producer match, so snapshots from earlier revisions must be regenerated.
 Source presence and legacy population
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use ``object.hasSourceReferences()`` to compute viewer source-availability flags
+Use :meth:`object.hasSourceReferences() <najaeda.naja.SNLDesign.hasSourceReferences>` to compute viewer source-availability flags
 without constructing reference tuples or lists. It checks declarations and
 origins. The independent legacy location is excluded.
 This matches C++ ``SNLRTLInfos::hasSourceReferences()``.
@@ -2319,11 +2742,11 @@ from NajaIF. Python exposes query methods only.
 Term-role compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Raw ``SNLBitTerm`` (scalar terms and bus bits) and ``SNLInstTerm`` expose canonical
-camelCase predicates such as ``isClock()`` and ``isAsyncReset()``. The pre-0.7.29
-snake_case spellings remain compatibility aliases: ``is_clock``, ``is_async_reset``,
-``is_async_set``, ``is_sync_reset``, ``is_sync_set``, ``is_reset``, ``is_enable``,
-``is_data``, ``is_data_input`` and ``is_data_output``. New raw callers should use
+Raw :class:`SNLBitTerm <najaeda.naja.SNLBitTerm>` (scalar terms and bus bits) and :class:`SNLInstTerm <najaeda.naja.SNLInstTerm>` expose canonical
+camelCase predicates such as :meth:`isClock() <najaeda.naja.SNLBitTerm.isClock>` and :meth:`isAsyncReset() <najaeda.naja.SNLBitTerm.isAsyncReset>`. The pre-0.7.29
+snake_case spellings remain compatibility aliases: :meth:`is_clock <najaeda.naja.SNLBitTerm.is_clock>`, :meth:`is_async_reset <najaeda.naja.SNLBitTerm.is_async_reset>`,
+:meth:`is_async_set <najaeda.naja.SNLBitTerm.is_async_set>`, :meth:`is_sync_reset <najaeda.naja.SNLBitTerm.is_sync_reset>`, :meth:`is_sync_set <najaeda.naja.SNLBitTerm.is_sync_set>`, :meth:`is_reset <najaeda.naja.SNLBitTerm.is_reset>`, :meth:`is_enable <najaeda.naja.SNLBitTerm.is_enable>`,
+:meth:`is_data <najaeda.naja.SNLBitTerm.is_data>`, :meth:`is_data_input <najaeda.naja.SNLBitTerm.is_data_input>` and :meth:`is_data_output <najaeda.naja.SNLBitTerm.is_data_output>`. New raw callers should use
 camelCase. Each alias emits ``DeprecationWarning`` and will be removed in a
 future release; no removal version is scheduled. Python normally hides this
 warning in imported code; use ``-Wd`` to display it. The high-level ``Term`` API
@@ -2332,13 +2755,13 @@ keeps its snake_case convention and is not deprecated.
 Structural Verilog provenance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``NLDB.loadGateLevelVerilog(files, keep_assigns=True, blackbox_unknown_modules=False,
+:meth:`NLDB.loadGateLevelVerilog(files, keep_assigns=True, blackbox_unknown_modules=False,
 preprocess_enabled=False, conflicting_design_name_policy=None,
-yosys_source_attributes=False)`` appends an explicit Yosys provenance option.
+yosys_source_attributes=False) <najaeda.naja.NLDB.loadGateLevelVerilog>` appends an explicit Yosys provenance option.
 Existing positional arguments keep their meanings. Use the high-level
-``GateLevelVerilogConfig(yosys_source_attributes=True)`` for normal loading workflows.
-Experts can use the raw option with ``getSourceDeclaration()`` and
-``getSourceOrigins()`` directly; no extra high-level source wrapper is needed.
+:class:`GateLevelVerilogConfig(yosys_source_attributes=True) <najaeda.netlist.GateLevelVerilogConfig>` for normal loading workflows.
+Experts can use the raw option with :meth:`getSourceDeclaration() <najaeda.naja.SNLDesign.getSourceDeclaration>` and
+:meth:`getSourceOrigins() <najaeda.naja.SNLDesign.getSourceOrigins>` directly; no extra high-level source wrapper is needed.
 
 Unpreprocessed structural inputs populate declarations (provider
 ``naja-verilog``, language ``verilog``, unknown representation) without touching
@@ -2369,11 +2792,11 @@ test enables remain connected through their explicit OR logic.
 Loader progress and cancellation
 --------------------------------
 
-``NLDB.loadGateLevelVerilog``, ``NLDB.loadSystemVerilog``, ``NLDB.loadVHDL``,
-``NLDB.loadLibertyPrimitives`` and static ``NLDB.loadNajaIF`` accept
+:meth:`NLDB.loadGateLevelVerilog <najaeda.naja.NLDB.loadGateLevelVerilog>`, :meth:`NLDB.loadSystemVerilog <najaeda.naja.NLDB.loadSystemVerilog>`, :meth:`NLDB.loadVHDL <najaeda.naja.NLDB.loadVHDL>`,
+:meth:`NLDB.loadLibertyPrimitives <najaeda.naja.NLDB.loadLibertyPrimitives>` and static :meth:`NLDB.loadNajaIF <najaeda.naja.NLDB.loadNajaIF>` accept
 ``progress=None`` or a callable receiving ``stage``, ``detail``, ``current`` and
 ``total`` as keyword arguments. The callback runs on the loading thread with
-the GIL acquired. Returning ``False`` raises ``naja.NajaCancelled``, a public
+the GIL acquired. Returning ``False`` raises :exc:`naja.NajaCancelled <najaeda.naja.NajaCancelled>`, a public
 ``RuntimeError`` subclass. Callback exceptions propagate unchanged. Partially
 loaded databases are safe to destroy, but cancellation does not roll back work.
 See :doc:`loading` for stage order, units, throttling and threading restrictions.
@@ -2383,12 +2806,12 @@ experts need the raw API only when managing a particular database directly.
 General term active levels
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``SNLBitTerm.getActiveLevel()`` returns the level stored by
-``setRole(role, active_level)`` for any role, including ``ScanEnable`` and
-``Enable``. ``SNLInstTerm.getActiveLevel()`` resolves instance parameter role
+:meth:`SNLBitTerm.getActiveLevel() <najaeda.naja.SNLBitTerm.getActiveLevel>` returns the level stored by
+:meth:`setRole(role, active_level) <najaeda.naja.SNLBitTerm.setRole>` for any role, including ``ScanEnable`` and
+``Enable``. :meth:`SNLInstTerm.getActiveLevel() <najaeda.naja.SNLInstTerm.getActiveLevel>` resolves instance parameter role
 tables and falls back to the model term's level for omitted entries.
-``getResetActiveLevel()`` retains its reset/set-only behavior and returns
-``SNLActiveLevel.NA`` for other roles. Use these raw methods when inspecting
+:meth:`getResetActiveLevel() <najaeda.naja.SNLBitTerm.getResetActiveLevel>` retains its reset/set-only behavior and returns
+:attr:`SNLActiveLevel.NA <najaeda.naja.SNLActiveLevel.NA>` for other roles. Use these raw methods when inspecting
 primitive modeling; no high-level wrapper is required to read this metadata.
 
 Liberty loading recognizes scan roles from ``nextstate_type`` and from
