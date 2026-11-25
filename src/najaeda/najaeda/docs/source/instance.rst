@@ -41,7 +41,7 @@ In this model:
 - **n-input gates** have a **single scalar output** and a **bus input terminal** (of size *n*).
 - **n-output gates** have a **scalar input** and a **bus output terminal** (of size *n*).
 
-All terminals in these generic instances are **unnamed** (see :py:attr:`najaeda.netlist.Instance.is_unnamed`).
+All terminals in these generic instances are **unnamed** (see :py:meth:`najaeda.netlist.Term.is_unnamed`).
 
 Use :py:meth:`najaeda.netlist.Instance.is_and`, :py:meth:`~najaeda.netlist.Instance.is_nand`,
 :py:meth:`~najaeda.netlist.Instance.is_or`, :py:meth:`~najaeda.netlist.Instance.is_nor`,

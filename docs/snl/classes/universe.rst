@@ -1,7 +1,7 @@
 NL Top Classes
 ==============
 
-.. doxygenclass:: naja::NL::SNLUniverse
+.. doxygenclass:: naja::NL::NLUniverse
    :members:
 
 .. doxygenclass:: naja::NL::NLDB

@@ -43,7 +43,14 @@ extensions = [
     'sphinx.ext.napoleon',      # (Optional) Supports Google and NumPy-style docstrings
     'sphinx.ext.viewcode',      # (Optional) Links to source code in docs
     'sphinx.ext.todo',          # (Optional) For TODOs in the documentation
+    'sphinx.ext.intersphinx',   # Resolve standard-library types
 ]
+
+intersphinx_mapping = {'python': ('https://docs.python.org/3/', None)}
+# Napoleon emits this parameter qualifier as a type; it is not an API name.
+nitpick_ignore = [('py:class', 'optional')]
+# Matrix fragments are application routes rather than HTML anchor IDs.
+linkcheck_anchors_ignore_for_url = [r'https://matrix\.to/.*']
 
 try:
     from najaeda import naja as raw_naja
@@ -79,13 +86,41 @@ def check_raw_api_links(app, doctree, docname):
 
 def check_raw_api_reference(app, env, node, contnode):
     target = node.get('reftarget', '')
+    # The extension's internal type names differ from its public nested exports.
+    aliases = {
+        'SNLTermDirection': 'najaeda.naja.SNLTerm.Direction',
+        'SNLNetType': 'najaeda.naja.SNLNet.Type',
+        'SNLEquipotentialMode': 'najaeda.naja.SNLEquipotential.Mode',
+        'SNLEquipotentialEdgeKind': 'najaeda.naja.SNLEquipotential.EdgeKind',
+    }
+    if target in aliases:
+        return env.domains['py'].resolve_xref(
+            env, node['refdoc'], app.builder, 'class', aliases[target], node, contnode
+        )
     if target.startswith('najaeda.naja.'):
         raise ExtensionError(f'Unresolved raw API reference: {target}')
+
+
+def resolve_source_backlinks(app, env):
+    """Point source links back to indexed APIs rather than repeated guide entries."""
+    modules = getattr(env, '_viewcode_modules', {})
+    objects = env.domains['py'].objects
+    for module, entry in list(modules.items()):
+        if not entry:
+            # Viewcode's module index otherwise links to unavailable native source.
+            del modules[module]
+            continue
+        _, _, used, refname = entry
+        for name in list(used):
+            target = objects.get(f'{refname}.{name}')
+            if target:
+                used[name] = target.docname
 
 
 def setup(app):
     app.connect('doctree-resolved', check_raw_api_links)
     app.connect('missing-reference', check_raw_api_reference)
+    app.connect('env-updated', resolve_source_backlinks)
 
 templates_path = ['_templates']
 exclude_patterns = []
