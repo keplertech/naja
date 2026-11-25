@@ -2582,6 +2582,7 @@ void SNLDesignModeling::setFunction(SNLBitTerm* output, const BooleanExpression&
   }
   auto merged = mergeAssociativeOperators(function);
   const auto dependencies = NLBitDependencies::decodeBits(table.getDependencies());
+  if (dependencies.size() != table.size()) fail("truth table requires one dependency per input variable");
   std::vector<SNLBitTerm*> inputs;
   for (auto* term : design->getBitTerms()) {
     if (term->getDirection() != SNLTerm::Direction::Input) continue;

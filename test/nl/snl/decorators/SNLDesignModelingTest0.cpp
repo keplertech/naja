@@ -1793,3 +1793,19 @@ TEST_F(SNLDesignModelingTest0, FunctionWithReducedDependencies) {
   expression.root = expression.addOperation(SNLDesignModeling::BooleanExpression::Operator::And, {expression.root, extra});
   EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
 }
+
+TEST_F(SNLDesignModelingTest0, FunctionRejectsIncompleteTableDependencies) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* library = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive, NLName("incomplete"));
+  auto* input = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+  auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+  // The first two rows look like the identity; the unbound variable's rows
+  // contradict it. Never validate only the prefix covered by dependencies.
+  SNLDesignModeling::setTruthTable(design, SNLTruthTable(2, 2, {1}));
+  SNLDesignModeling::BooleanExpression expression;
+  expression.root = expression.addTerm(input);
+  EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
+}
