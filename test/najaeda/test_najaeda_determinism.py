@@ -924,6 +924,20 @@ module top(input logic [3:0] index, input logic [3:0] data,
 endmodule
 """)
 
+    def test_systemverilog_unpacked_indexed_writes(self):
+        self.check_determinism("sv", """
+module top(input logic clk, rst_n, enable,
+           input logic signed [5:0] index, input logic [2:0] data,
+           output wire [8:0] q);
+  logic [2:0] bank [-2:0];
+  for(genvar g=-2;g<=0;g++) assign q[(g+2)*3+:3]=bank[g];
+  always_ff @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin for(int j=-2;j<0;j++) bank[j]<='0; end
+    else if(enable) begin bank[index]<=data; bank[index]<=~data; end
+  end
+endmodule
+""")
+
     def test_systemverilog_nested_packed_writes(self):
         self.check_determinism("sv", """
 module top(input logic clk, rst_n, enable,

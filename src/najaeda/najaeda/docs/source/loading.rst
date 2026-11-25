@@ -403,6 +403,11 @@ Ordinary dynamic packed bit and indexed slice writes can use the canonical
 base value unchanged for unknown indices, and clips partially overlapping
 writes. The primitive is language neutral and survives NajaIF save/load;
 frontends normalize their own indexing and assignment rules before using it.
+Dynamic whole-element writes to fixed-size unpacked arrays also use this
+representation when lowered as registers, including arrays with partial reset.
+Unknown or out-of-range indices leave the array unchanged. Declared index
+direction and bounds are preserved, and sequential writes retain nonblocking
+assignment ordering and the reset behavior of each storage bit.
 The VHDL loader also uses it for supported simple combinational element writes
 whose binary index domain is provably in bounds. Nested targets and compound
 updates retain their existing lowering. Formal consumers need explicit support
