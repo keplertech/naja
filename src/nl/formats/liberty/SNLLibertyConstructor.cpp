@@ -71,6 +71,7 @@ bool containsLibertyNode(
     const Yosys::LibertyAst* node,
     const std::string& id) {
   for (auto* child : node->children) {
+    if (child->id == "test_cell") continue;
     if (child->id == id || containsLibertyNode(child, id)) {
       return true;
     }
@@ -735,6 +736,155 @@ std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> getExpressionTerms(
   return terms;
 }
 
+// Evaluate all eight assignments of metadata-identified D, SI and SE at once.
+// Unknown terms or state references make this model uncheckable.
+std::optional<uint8_t> scanTruthTable(
+    const SNLDesignModeling::BooleanExpression& expression,
+    SNLBitTerm* data, SNLBitTerm* scan, SNLBitTerm* enable) {
+  using Operator = SNLDesignModeling::BooleanExpression::Operator;
+  std::vector<uint8_t> values;
+  for (const auto& node : expression.nodes) {
+    uint8_t value = 0;
+    switch (node.operation) {
+      case Operator::Constant: value = node.constant ? 0xff : 0; break;
+      case Operator::Term:
+        if (node.term == data) value = 0xaa;
+        else if (node.term == scan) value = 0xcc;
+        else if (node.term == enable) value = 0xf0;
+        else return std::nullopt;
+        break;
+      case Operator::State: return std::nullopt;
+      default:
+        value = node.operation == Operator::And ? 0xff : 0;
+        for (auto operand : node.operands) {
+          if (operand >= values.size()) return std::nullopt;
+          switch (node.operation) {
+            case Operator::Not: value = ~values[operand]; break;
+            case Operator::And: value &= values[operand]; break;
+            case Operator::Or: value |= values[operand]; break;
+            case Operator::Xor: value ^= values[operand]; break;
+            default: return std::nullopt;
+          }
+        }
+    }
+    values.push_back(value);
+  }
+  if (expression.root >= values.size()) return std::nullopt;
+  return values[expression.root];
+}
+
+void registerScanModeling(SNLDesign* primitive, const Yosys::LibertyAst* cell) {
+  using Modeling = SNLDesignModeling;
+  using Role = Modeling::SNLTermRole;
+  using Level = Modeling::SNLActiveLevel;
+  std::map<SNLBitTerm*, Modeling::TermRole, SNLBitTerm::InDesignLess> testRoles;
+  std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> conflicts;
+  auto addRole = [&](SNLBitTerm* term, Role role, Level level) {
+    auto [it, inserted] = testRoles.emplace(term, Modeling::TermRole{role, level});
+    if (!inserted && (it->second.role != role || it->second.activeLevel != level)) {
+      conflicts.insert(term);
+    }
+  };
+  for (auto* testCell : cell->children) {
+    if (testCell->id != "test_cell") continue;
+    bool hasScan = false;
+    bool hasEnable = false;
+    for (auto* pin : testCell->children) {
+      if (pin->id != "pin" || pin->args.empty()) continue;
+      auto* term = dynamic_cast<SNLBitTerm*>(primitive->getTerm(NLName(pin->args[0])));
+      if (!term) {
+        NAJA_LOG_WARN("Liberty cell {} test_cell pin {} has no matching cell bit term; skipping.",
+            primitive->getName().getString(), pin->args[0]);
+        continue;
+      }
+      auto* type = findDirectChild(pin, "signal_type");
+      if (!type) continue;
+      if (type->value == "test_scan_in_inverted") {
+        throw SNLLibertyConstructorException(
+            "test_scan_in_inverted requires an inverted scan-data representation; "
+            "no scan role can be assigned to pin " + pin->args[0]);
+      }
+      if (type->value == "test_scan_in") {
+        addRole(term, Role::ScanInput, Level::NA);
+        hasScan = true;
+      } else if (type->value == "test_scan_enable" ||
+                 type->value == "test_scan_enable_inverted") {
+        addRole(term, Role::ScanEnable, type->value == "test_scan_enable" ? Level::High : Level::Low);
+        hasEnable = true;
+      }
+    }
+    if (!hasScan || !hasEnable) continue;
+    for (auto* ff : testCell->children) {
+      if (ff->id != "ff") continue;
+      auto* next = findDirectChild(ff, "next_state");
+      if (!next) continue;
+      try {
+        SNLBooleanTree tree;
+        tree.parse(primitive, next->value);
+        auto terms = getExpressionTerms(tree.getBooleanExpression());
+        std::vector<SNLBitTerm*> candidates;
+        for (auto* term : terms) {
+          if (term->getDirection() == SNLTerm::Direction::Input && !testRoles.count(term)) {
+            candidates.push_back(term);
+          }
+        }
+        if (candidates.size() == 1) addRole(candidates.front(), Role::DataInput, Level::NA);
+      } catch (const SNLLibertyConstructorException& error) {
+        NAJA_LOG_WARN("Liberty cell {} cannot read test_cell next_state: {}",
+            primitive->getName().getString(), error.getReason());
+      }
+    }
+  }
+  for (const auto& [term, testRole] : testRoles) {
+    auto role = Modeling::getTermRole(term);
+    if (role != Role::Other && role != testRole.role) {
+      // Data inference must not displace an existing non-scan role.
+      if (testRole.role == Role::DataInput && role != Role::ScanInput && role != Role::ScanEnable) continue;
+      conflicts.insert(term);
+    }
+    if (!conflicts.count(term)) Modeling::setTermRole(term, testRole.role, testRole.activeLevel);
+  }
+  for (auto* term : conflicts) {
+    NAJA_LOG_WARN("Liberty cell {} pin {} has conflicting scan metadata; clearing its scan role.",
+        primitive->getName().getString(), term->getName().getString());
+    Modeling::setTermRole(term, Role::Other);
+  }
+
+  std::vector<SNLBitTerm*> data, scan, enables;
+  for (auto* term : primitive->getBitTerms()) {
+    switch (Modeling::getTermRole(term)) {
+      case Role::DataInput: data.push_back(term); break;
+      case Role::ScanInput: scan.push_back(term); break;
+      case Role::ScanEnable: enables.push_back(term); break;
+      default: break;
+    }
+  }
+  if (scan.empty() || enables.empty()) return;
+  Level level = Level::NA;
+  if (data.size() == 1 && scan.size() == 1 && enables.size() == 1 &&
+      Modeling::hasSequentialModel(primitive)) {
+    const auto& model = Modeling::getSequentialModel(primitive);
+    if (model.kind == Modeling::SequentialModel::Kind::FlipFlop && model.states.size() == 1) {
+      auto table = scanTruthTable(model.states.front().nextState, data[0], scan[0], enables[0]);
+      // D=0xaa, SI=0xcc, SE=0xf0: SE ? SI : D = 0xca; the
+      // reverse selection is 0xac. Complements invert both branches.
+      if (table == 0xca || table == 0x35) level = Level::High;
+      else if (table == 0xac || table == 0x53) level = Level::Low;
+    }
+  }
+  for (auto* enable : enables) {
+    auto declared = Modeling::getActiveLevel(enable);
+    if (level == Level::NA) {
+      NAJA_LOG_WARN("Liberty cell {} pin {} next_state is not a checkable scan mux; active level is NA.",
+          primitive->getName().getString(), enable->getName().getString());
+    } else if (declared != Level::NA && declared != level) {
+      NAJA_LOG_WARN("Liberty cell {} pin {} scan-enable level contradicts next_state; using the functional model level.",
+          primitive->getName().getString(), enable->getName().getString());
+    }
+    Modeling::setTermRole(enable, Role::ScanEnable, level);
+  }
+}
+
 SNLDesignModeling::SequentialState::ClearPresetValue getClearPresetValue(
     const Yosys::LibertyAst* ff) {
   using Value = SNLDesignModeling::SequentialState::ClearPresetValue;
@@ -1306,6 +1456,7 @@ void parseTerms(
         termFunctionPins,
         termFunctionLines);
   }
+  registerScanModeling(primitive, cell);
 }
 
 void parseCell(

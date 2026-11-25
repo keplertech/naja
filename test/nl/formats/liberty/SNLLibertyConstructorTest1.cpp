@@ -915,6 +915,7 @@ TEST_F(SNLLibertyConstructorTest1, testFFScanModel) {
     }
   }
   EXPECT_EQ(nextStateTerms, (std::set<SNLBitTerm*>{d, se, si}));
+  EXPECT_EQ(SNLDesignModeling::SNLActiveLevel::High, SNLDesignModeling::getActiveLevel(se));
   EXPECT_EQ(SNLDesignModeling::getTermRole(d),
             SNLDesignModeling::SNLTermRole::DataInput);
   EXPECT_EQ(SNLDesignModeling::getTermRole(se),
@@ -1119,4 +1120,76 @@ TEST_F(SNLLibertyConstructorTest1, testSequentialModelErrorHasCellContext) {
             "Scalar term `UNKNOWN_STATE` referenced at character 1 "
             "was not found in the cell interface."));
   }
+}
+
+TEST_F(SNLLibertyConstructorTest1, testScanMetadata) {
+  using Modeling = SNLDesignModeling;
+  using Role = Modeling::SNLTermRole;
+  using Level = Modeling::SNLActiveLevel;
+  std::vector<std::string> warnings;
+  auto sink = naja::log::addCallbackSink([&](auto, std::string_view message) {
+    warnings.emplace_back(message);
+  }, spdlog::level::warn);
+  SNLLibertyConstructor constructor(library_);
+  constructor.construct(std::filesystem::path(SNL_LIBERTY_BENCHMARKS) /
+      "benchmarks" / "tests" / "scan_metadata.lib");
+  naja::log::removeSink(sink);
+  for (const auto& name : {"scan_high", "scan_low", "agree", "conflict", "missing",
+                          "nonmux", "inverted", "plain", "contradiction", "mixed_polarity",
+                          "metadata_only", "unmarked_mux"}) {
+    SCOPED_TRACE(name);
+    auto* design = library_->getSNLDesign(NLName(name));
+    ASSERT_NE(nullptr, design);
+    EXPECT_EQ(5u, design->getTerms().size());
+    auto* a = design->getScalarTerm(NLName("a"));
+    auto* b = design->getScalarTerm(NLName("b"));
+    auto* c = design->getScalarTerm(NLName("c"));
+    auto* k = design->getScalarTerm(NLName("k"));
+    auto* z = design->getScalarTerm(NLName("z"));
+    const std::string cell(name);
+    bool unmarked = cell == "plain" || cell == "unmarked_mux";
+    EXPECT_EQ(unmarked ? Role::Other : Role::DataInput, Modeling::getTermRole(a));
+    bool noScan = unmarked || cell == "conflict";
+    EXPECT_EQ(noScan ? Role::Other : Role::ScanInput, Modeling::getTermRole(b));
+    EXPECT_EQ(noScan ? Role::Other : Role::ScanEnable, Modeling::getTermRole(c));
+    auto level = noScan || cell == "nonmux" || cell == "mixed_polarity" ? Level::NA :
+        cell == "scan_low" || cell == "contradiction" ? Level::Low : Level::High;
+    EXPECT_EQ(level, Modeling::getActiveLevel(c));
+    EXPECT_EQ(Level::NA, Modeling::getResetActiveLevel(c));
+    ASSERT_TRUE(Modeling::hasSequentialModel(design));
+    const auto& model = Modeling::getSequentialModel(design);
+    ASSERT_EQ(1u, model.states.size());
+    ASSERT_EQ(1u, model.outputs.size());
+    EXPECT_EQ(k, model.clockedOn.nodes[model.clockedOn.root].term);
+    EXPECT_EQ(Modeling::BooleanExpression::Operator::State,
+        model.outputs[0].function.nodes[model.outputs[0].function.root].operation);
+    auto terms = std::set<SNLBitTerm*>{};
+    for (const auto& node : model.states[0].nextState.nodes) {
+      if (node.term) terms.insert(node.term);
+    }
+    EXPECT_EQ(cell == "plain" ? (std::set<SNLBitTerm*>{a}) :
+        (std::set<SNLBitTerm*>{a, b, c}), terms);
+    EXPECT_THAT(Modeling::getOutputRelatedClocks(z), ElementsAre(k));
+    EXPECT_TRUE(Modeling::getCombinatorialInputs(z).empty());
+    auto* owner = SNLDesign::create(
+        NLLibrary::create(library_->getDB()), NLName("owner_" + cell));
+    auto* instance = SNLInstance::create(owner, design);
+    EXPECT_EQ(level, Modeling::getActiveLevel(instance->getInstTerm(c)));
+  }
+  auto* testOnly = library_->getSNLDesign(NLName("test_only"));
+  ASSERT_NE(nullptr, testOnly);
+  EXPECT_EQ(2u, testOnly->getTerms().size());
+  EXPECT_FALSE(Modeling::hasSequentialModel(testOnly));
+  EXPECT_TRUE(Modeling::isBuf(testOnly));
+  EXPECT_EQ(Role::DataInput, Modeling::getTermRole(testOnly->getScalarTerm(NLName("a"))));
+  auto warned = [&](const std::string& fragment) {
+    return std::any_of(warnings.begin(), warnings.end(), [&](const auto& warning) {
+      return warning.find(fragment) != std::string::npos;
+    });
+  };
+  EXPECT_TRUE(warned("cell conflict pin b"));
+  EXPECT_TRUE(warned("cell conflict pin c"));
+  EXPECT_TRUE(warned("cell missing test_cell pin absent"));
+  EXPECT_TRUE(warned("cell nonmux pin c"));
+  EXPECT_TRUE(warned("cell contradiction pin c"));
 }

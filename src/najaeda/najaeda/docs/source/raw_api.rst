@@ -1109,6 +1109,7 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`hasSourceLoc <najaeda.naja.SNLTerm.hasSourceLoc>`,
       :meth:`setRole <najaeda.naja.SNLBitTerm.setRole>`,
       :meth:`getRole <najaeda.naja.SNLBitTerm.getRole>`,
+      :meth:`getActiveLevel <najaeda.naja.SNLBitTerm.getActiveLevel>`,
       :meth:`getResetActiveLevel <najaeda.naja.SNLBitTerm.getResetActiveLevel>`.
 
     * :meth:`isClock <najaeda.naja.SNLBitTerm.isClock>`,
@@ -1154,6 +1155,7 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`getDirection <najaeda.naja.SNLInstTerm.getDirection>`.
 
     * :meth:`getRole <najaeda.naja.SNLInstTerm.getRole>`,
+      :meth:`getActiveLevel <najaeda.naja.SNLInstTerm.getActiveLevel>`,
       :meth:`getResetActiveLevel <najaeda.naja.SNLInstTerm.getResetActiveLevel>`,
       :meth:`isClock <najaeda.naja.SNLInstTerm.isClock>`,
       :meth:`isAsyncReset <najaeda.naja.SNLInstTerm.isAsyncReset>`,
@@ -2800,3 +2802,22 @@ loaded databases are safe to destroy, but cancellation does not roll back work.
 See :doc:`loading` for stage order, units, throttling and threading restrictions.
 The corresponding high-level ``netlist.load_*`` wrappers support this contract;
 experts need the raw API only when managing a particular database directly.
+
+General term active levels
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:meth:`SNLBitTerm.getActiveLevel() <najaeda.naja.SNLBitTerm.getActiveLevel>` returns the level stored by
+:meth:`setRole(role, active_level) <najaeda.naja.SNLBitTerm.setRole>` for any role, including ``ScanEnable`` and
+``Enable``. :meth:`SNLInstTerm.getActiveLevel() <najaeda.naja.SNLInstTerm.getActiveLevel>` resolves instance parameter role
+tables and falls back to the model term's level for omitted entries.
+:meth:`getResetActiveLevel() <najaeda.naja.SNLBitTerm.getResetActiveLevel>` retains its reset/set-only behavior and returns
+:attr:`SNLActiveLevel.NA <najaeda.naja.SNLActiveLevel.NA>` for other roles. Use these raw methods when inspecting
+primitive modeling; no high-level wrapper is required to read this metadata.
+
+Liberty loading recognizes scan roles from ``nextstate_type`` and from
+``test_cell`` pin ``signal_type`` attributes. Test groups supply metadata only;
+they never replace functional terms, sequential models or timing arcs.
+Disagreeing scan roles are cleared with a warning. For metadata-identified scan
+muxes, the functional next-state model determines the scan-enable active level,
+including muxes that invert both data branches. Uncheckable muxes retain their
+roles with level ``NA`` and a warning. Pin names never infer scan roles.

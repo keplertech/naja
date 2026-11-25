@@ -177,6 +177,7 @@ bool LibertyParser::shouldSkipStructuralChildren(const LibertyAst *ast) const
 		"library",
 		"type",
 		"cell",
+		"test_cell",
 		"pin",
 		"bus",
 		"bundle",
@@ -224,11 +225,15 @@ bool LibertyParser::shouldKeepStructuralChild(const LibertyAst *parent, const Li
 		return childId == "pin" || childId == "bus" || childId == "bundle" ||
 				childId == "ff" || childId == "ff_bank" ||
 				childId == "latch" || childId == "latch_bank" ||
-				childId == "memory" || childId == "statetable";
+				childId == "memory" || childId == "statetable" || childId == "test_cell";
+
+	if (parentId == "test_cell")
+		return childId == "pin" || childId == "ff";
 
 	if (parentId == "pin")
 		return childId == "direction" || childId == "function" ||
 				childId == "state_function" || childId == "nextstate_type" ||
+				childId == "signal_type" ||
 				childId == "memory_read" || childId == "memory_write" ||
 				childId == "timing";
 

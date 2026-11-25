@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from pathlib import Path
 import tempfile
 import unittest
 import warnings
@@ -51,6 +52,55 @@ class SNLDesignModelingTest(unittest.TestCase):
             warnings.simplefilter("error", DeprecationWarning)
             with self.assertRaises(DeprecationWarning):
               getattr(obj, alias)()
+
+  def testScanMetadata(self):
+    formats = Path(os.environ.get("FORMATS_PATH", Path(__file__).resolve().parents[2] / "formats"))
+    self.db.loadLibertyPrimitives([str(formats / "liberty/benchmarks/tests/scan_metadata.lib")])
+    library = self.db.getLibrary("scan_metadata")
+    role, level = naja.SNLTermRole, naja.SNLActiveLevel
+    for name in ("scan_high", "scan_low", "agree", "conflict", "missing", "nonmux",
+                 "inverted", "plain", "contradiction", "mixed_polarity", "metadata_only", "unmarked_mux"):
+      with self.subTest(cell=name):
+        cell = library.getSNLDesign(name)
+        a, b, c = [cell.getScalarTerm(pin) for pin in ("a", "b", "c")]
+        self.assertEqual(5, len(list(cell.getTerms())))
+        unmarked = name in ("plain", "unmarked_mux")
+        no_scan = unmarked or name == "conflict"
+        self.assertEqual(role.Other if unmarked else role.DataInput, a.getRole())
+        self.assertEqual(role.Other if no_scan else role.ScanInput, b.getRole())
+        self.assertEqual(role.Other if no_scan else role.ScanEnable, c.getRole())
+        expected = level.NA if no_scan or name in ("nonmux", "mixed_polarity") else (
+          level.Low if name in ("scan_low", "contradiction") else level.High)
+        self.assertEqual(expected, c.getActiveLevel())
+        self.assertEqual(level.NA, c.getResetActiveLevel())
+        instance = naja.SNLInstance.create(naja.SNLDesign.create(self.designs), cell)
+        self.assertEqual(expected, instance.getInstTerm(c).getActiveLevel())
+
+    test_only = library.getSNLDesign("test_only")
+    self.assertTrue(test_only.isBuf())
+    self.assertFalse(test_only.hasSequentialModel())
+    self.assertEqual(role.DataInput, test_only.getScalarTerm("a").getRole())
+
+  def testGeneralActiveLevel(self):
+    role, level = naja.SNLTermRole, naja.SNLActiveLevel
+    cell = naja.SNLDesign.createPrimitive(self.primitives, "levels")
+    term = naja.SNLScalarTerm.create(cell, naja.SNLTerm.Direction.Input, "p")
+    for active in (level.Low, level.High, level.NA):
+      term.setRole(role.ScanEnable, active)
+      self.assertEqual(active, term.getActiveLevel())
+      self.assertEqual(level.NA, term.getResetActiveLevel())
+    term.setRole(role.Enable, level.Low)
+    parameter = naja.SNLParameter.createBoolean(cell, "mode", False)
+    cell.setRolesFromParameters(["mode"], [
+      {"values": [0], "roles": {term: (role.ScanEnable, level.High)}},
+      {"values": [1], "roles": {}}])
+    instance = naja.SNLInstance.create(naja.SNLDesign.create(self.designs), cell)
+    pin = instance.getInstTerm(term)
+    self.assertEqual(level.High, pin.getActiveLevel())
+    self.assertEqual(level.NA, pin.getResetActiveLevel())
+    naja.SNLInstParameter.create(instance, parameter, "1'b1")
+    self.assertEqual(role.Enable, pin.getRole())
+    self.assertEqual(level.Low, pin.getActiveLevel())
 
   def testLibraries(self):
     self.assertTrue(self.designs.isStandard())

@@ -289,3 +289,30 @@ library(test) {
   EXPECT_EQ(nullptr, findChild(timing, "cell_rise"));
   EXPECT_EQ(nullptr, findChild(timing, "rise_transition"));
 }
+
+TEST(YosysLibertyTest0, structuralModeKeepsTestCellScanMetadata) {
+  std::istringstream input(R"liberty(
+    library (sample) {
+      cell (element) {
+        test_cell {
+          ff (state, inverted) { next_state : "p"; clocked_on : "c"; }
+          pin (p) { direction : input; signal_type : test_scan_in; capacitance : 1; }
+        }
+      }
+    }
+  )liberty");
+  Yosys::LibertyParser parser(input, Yosys::LibertyParser::ParseMode::Structural);
+  auto* cell = findChild(parser.ast, "cell");
+  ASSERT_NE(nullptr, cell);
+  auto* test = findChild(cell, "test_cell");
+  ASSERT_NE(nullptr, test);
+  auto* pin = findChild(test, "pin");
+  ASSERT_NE(nullptr, pin);
+  ASSERT_NE(nullptr, findChild(pin, "signal_type"));
+  EXPECT_EQ("test_scan_in", findChild(pin, "signal_type")->value);
+  EXPECT_EQ(nullptr, findChild(pin, "capacitance"));
+  auto* ff = findChild(test, "ff");
+  ASSERT_NE(nullptr, ff);
+  ASSERT_NE(nullptr, findChild(ff, "next_state"));
+  EXPECT_EQ("p", findChild(ff, "next_state")->value);
+}
