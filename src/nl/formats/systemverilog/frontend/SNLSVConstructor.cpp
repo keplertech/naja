@@ -25035,6 +25035,16 @@ endmodule
         if (shouldIgnoreTrackedLHS(assignedLHS, ignoredSymbols)) {
           return true;
         }
+        const auto* selectedLHS = stripConversions(*assignedLHS);
+        if (!assignmentActionRequiresCurrentBits(action) &&
+            selectedLHS->kind == slang::ast::ExpressionKind::ElementSelect &&
+            selectedLHS->as<slang::ast::ElementSelectExpression>().value().type->isUnpackedArray()) {
+          bool handled = false;
+          if (!tryApplyCombinationalDynamicElementSubAssignmentForLhs(
+                design, *assignedLHS, lhsExpr, action, lhsBits,
+                dataBits, failureReason, handled)) return false;
+          if (handled) return true;
+        }
         if (!sameLhs(assignedLHS, &lhsExpr)) {
           const auto* strippedAssignedLHS = stripConversions(*assignedLHS);
           if (hasDynamicLHSSelection(*assignedLHS) &&
@@ -27795,7 +27805,7 @@ endmodule
       return true;
     }
 
-    bool tryApplyPackedVectorUpdate(
+    bool tryApplyVectorUpdate(
       SNLDesign* design, const Expression& assignedLHS, const Expression& trackedLhs,
       const AssignAction& action, std::vector<SNLBitNet*>& dataBits,
       std::string& failureReason, bool& handled) {
@@ -27823,7 +27833,10 @@ endmodule
       } else return true;
       if (!base || !sameLhs(base, &trackedLhs)) return true;
       const auto& type = base->type->getCanonicalType();
-      if (type.isUnpackedArray() || !type.hasFixedRange()) return true;
+      if (!type.hasFixedRange() ||
+          (type.isUnpackedArray() && lhs->kind != slang::ast::ExpressionKind::ElementSelect)) return true;
+      // Whole unpacked elements occupy aligned slices of the flattened base.
+      // Their invalid indices cannot clip into a neighboring element.
       const auto range = type.getFixedRange();
       const size_t count = range.width();
       if (!count || dataBits.size() % count) return true;
@@ -27881,7 +27894,7 @@ endmodule
             dataBits, failureReason, handled)) return false;
       if (handled) return true;
 
-      if (!tryApplyPackedVectorUpdate(design, assignedLHS, trackedLhs, action,
+      if (!tryApplyVectorUpdate(design, assignedLHS, trackedLhs, action,
             dataBits, failureReason, handled)) return false;
       if (handled) return true;
 

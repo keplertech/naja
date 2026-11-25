@@ -6927,12 +6927,18 @@ static bool evaluateFunctionResultBit(
     }
     if (NLDB0::isVectorUpdate(model)) {
       const auto outputBit = driver->getBitTerm()->getBit();
-      std::vector<bool> inputs{read(NLDB0::getVectorUpdateBase(model)->getBit(outputBit))};
+      std::vector<bool> inputs{false};
       for (auto* port : {NLDB0::getVectorUpdateData(model), NLDB0::getVectorUpdateOffset(model)})
         for (auto* bit : port->getBits()) inputs.push_back(read(bit));
       inputs.push_back(read(NLDB0::getVectorUpdateEnable(model)));
-      return NLDB0::getVectorUpdateTruthTable(model,
-          driver->getBitTerm()->getOrderID()).evaluateVectorUpdate(inputs);
+      const auto table = NLDB0::getVectorUpdateTruthTable(model, driver->getBitTerm()->getOrderID());
+      const auto withoutBase = table.evaluateVectorUpdate(inputs);
+      inputs[0] = true;
+      if (withoutBase == table.evaluateVectorUpdate(inputs)) return withoutBase;
+      // An overwritten automatic local need not have an initialized old value.
+      // Like a mux, evaluate BASE only when this output actually retains it.
+      inputs[0] = read(NLDB0::getVectorUpdateBase(model)->getBit(outputBit));
+      return table.evaluateVectorUpdate(inputs);
     }
     if (NLDB0::isMux2(model)) {
       auto* term = read(NLDB0::getMux2Select(model))
@@ -43003,6 +43009,96 @@ endmodule
   EXPECT_EQ(1u, wrapper->getSlaveInstances().size());
   EXPECT_TRUE(std::any_of(wrapper->getInstances().begin(), wrapper->getInstances().end(),
     [](auto* instance) { return NLDB0::isDLatch(instance->getModel()); }));
+}
+
+TEST_F(SNLSVConstructorTestSimple, UnpackedIndexedWritesPreserveUnknownAddresses) {
+  for (bool combinational : {false, true}) {
+    for (const auto& bounds : {std::pair{0, 2}, std::pair{2, 0}, std::pair{-3, -1}}) {
+      const auto [left, right] = bounds;
+      const auto low = std::min(left, right);
+      const auto high = std::max(left, right);
+      const auto name = std::string("unpacked_write_") +
+        (combinational ? "comb_" : "seq_") + std::to_string(left + 4) + "_" + std::to_string(right + 4);
+      SCOPED_TRACE(name);
+      const auto source = "module " + name + R"((input logic clk,rst_n,enable,priority_write,
+  input logic signed [39:0] index, input logic [2:0] data,
+  input logic [8:0] base, output wire [8:0] q, output logic [2:0] sampled);
+  logic [2:0] bank [)" + std::to_string(left) + ":" + std::to_string(right) + "];\n" +
+        "for(genvar g=" + std::to_string(low) + ";g<=" + std::to_string(high) +
+        ";g++) assign q[(g-(" + std::to_string(low) + "))*3+:3]=bank[g];\n" +
+        (combinational ?
+          "always_comb begin for(int j=" + std::to_string(low) + ";j<=" + std::to_string(high) +
+          ";j++) bank[j]=base[(j-(" + std::to_string(low) + "))*3+:3];\n" :
+          "always_ff @(posedge clk or negedge rst_n) begin\n"
+          "if(!rst_n) begin for(int j=" + std::to_string(low) + ";j<" + std::to_string(high) +
+          ";j++) bank[j]<='0; end else ") +
+        "if(enable) begin bank[index] " + (combinational ? "=" : "<=") + " data;\n"
+        "if(priority_write) bank[index] " + (combinational ? "=" : "<=") + " ~data; end end\n"
+        "always_ff @(posedge clk) sampled<=bank[" + std::to_string(low) + "];\nendmodule\n";
+      const auto path = writeSVTestFile(name, source);
+      SNLSVConstructor(library_).construct(path);
+      auto* top = library_->getSNLDesign(NLName(name));
+      ASSERT_NE(nullptr, top);
+      EXPECT_GE(countPrimitiveInstances(top, NLDB0::isVectorUpdate), 2u);
+      EXPECT_EQ(0u, countPrimitiveInstances(top, NLDB0::isMemory));
+      const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+      if (std::system("command -v iverilog >/dev/null 2>&1") ||
+          std::system("command -v vvp >/dev/null 2>&1")) {
+        GTEST_SKIP() << "Icarus Verilog required for four-state write verification";
+      }
+      auto reference = source;
+      reference.replace(reference.find(name), name.size(), "reference_array");
+      // Guard the native reference against simulator truncation of very wide
+      // array indices. Invalid whole-element writes never partially overlap.
+      const auto target = std::string("bank[index] ");
+      size_t pos = 0;
+      while ((pos = reference.find(target, pos)) != std::string::npos) {
+        const auto guard = "if(index >= " + std::to_string(low) + " && index <= " + std::to_string(high) + ") ";
+        reference.insert(pos, guard);
+        pos += guard.size() + target.size();
+      }
+      const auto tbPath = dumped.parent_path() / "tb.sv";
+      std::ofstream tb(tbPath);
+      tb << reference << R"(module tb;
+reg clk=0,rst_n=1,enable=0,priority_write=0;
+reg signed [39:0] index=0;
+reg [2:0] data=0;
+reg [8:0] base=9'b101_010_111;
+wire [8:0] actual,expected;
+wire [2:0] actual_sampled,expected_sampled;
+)" << name << R"( dut(clk,rst_n,enable,priority_write,index,data,base,actual,actual_sampled);
+reference_array ref_model(clk,rst_n,enable,priority_write,index,data,base,expected,expected_sampled);
+task check; begin #1;
+  if(actual !== expected || actual_sampled !== expected_sampled)
+    $fatal(1,"array write mismatch index=%h actual=%b expected=%b sampled=%b/%b",index,actual,expected,actual_sampled,expected_sampled);
+end endtask
+task tick; begin check; clk=1; check; clk=0; check; end endtask
+integer i,p;
+initial begin
+  check; rst_n=0; check; tick; rst_n=1; check;
+  for(p=0;p<6;p=p+1) begin
+    enable=p!=0; priority_write=p[0];
+    case(p) 0:data=0; 1:data=7; 2:data=2; 3:data=3'bx1z; 4:data='z; 5:data=0; endcase
+    for(i=-5;i<5;i=i+1) begin index=i; tick; end
+    index=40'h1000000000; tick;
+    index='x; tick; index='z; tick;
+    index=0; index[0]=1'bx; tick;
+    index=0; index[39]=1'bz; tick;
+    rst_n=0; check; tick; rst_n=1; check;
+  end
+  $finish;
+end
+endmodule
+)";
+      tb.close();
+      const auto quote = [](const std::filesystem::path& p) { return "'" + p.string() + "'"; };
+      const auto executable = dumped.parent_path() / "sim.vvp";
+      const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+        " " + quote(dumped) + " " + quote(dumped.parent_path() / "naja_primitives.v");
+      ASSERT_EQ(0, std::system(command.c_str()));
+      ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+    }
+  }
 }
 
 TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
