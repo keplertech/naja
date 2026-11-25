@@ -779,7 +779,7 @@ void registerScanModeling(SNLDesign* primitive, const Yosys::LibertyAst* cell) {
   using Level = Modeling::SNLActiveLevel;
   std::map<SNLBitTerm*, Modeling::TermRole, SNLBitTerm::InDesignLess> testRoles;
   std::set<SNLBitTerm*, SNLBitTerm::InDesignLess> conflicts;
-  auto addRole = [&](SNLBitTerm* term, Role role, Level level = Level::NA) {
+  auto addRole = [&](SNLBitTerm* term, Role role, Level level) {
     auto [it, inserted] = testRoles.emplace(term, Modeling::TermRole{role, level});
     if (!inserted && (it->second.role != role || it->second.activeLevel != level)) {
       conflicts.insert(term);
@@ -805,7 +805,7 @@ void registerScanModeling(SNLDesign* primitive, const Yosys::LibertyAst* cell) {
             "no scan role can be assigned to pin " + pin->args[0]);
       }
       if (type->value == "test_scan_in") {
-        addRole(term, Role::ScanInput);
+        addRole(term, Role::ScanInput, Level::NA);
         hasScan = true;
       } else if (type->value == "test_scan_enable" ||
                  type->value == "test_scan_enable_inverted") {
@@ -828,7 +828,7 @@ void registerScanModeling(SNLDesign* primitive, const Yosys::LibertyAst* cell) {
             candidates.push_back(term);
           }
         }
-        if (candidates.size() == 1) addRole(candidates.front(), Role::DataInput);
+        if (candidates.size() == 1) addRole(candidates.front(), Role::DataInput, Level::NA);
       } catch (const SNLLibertyConstructorException& error) {
         NAJA_LOG_WARN("Liberty cell {} cannot read test_cell next_state: {}",
             primitive->getName().getString(), error.getReason());
