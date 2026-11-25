@@ -152,13 +152,6 @@ def dump_state(output, timing=False, resets=False, graphs=False):
             "source_origins": obj.getSourceOrigins(),
         }
 
-    def function_tree(expression):
-        if expression is None or isinstance(expression, bool):
-            return expression
-        if expression[0] == "term":
-            return ["term", expression[1].getNLID().toTuple()]
-        return [expression[0], *[function_tree(child) for child in expression[1:]]]
-
     def visit(library):
         for design in library.getSNLDesigns():
             state.append([
@@ -173,7 +166,7 @@ def dump_state(output, timing=False, resets=False, graphs=False):
                    for t in i.getInstTerms()]] for i in design.getInstances()],
                 [[n.getNLID().toTuple(), n.getName(), attributes(n)] for n in design.getNets()],
                 [[t.getNLID().toTuple(), t.getName(), attributes(t)] for t in design.getTerms()],
-                [[t.getNLID().toTuple(), attributes(t), function_tree(t.getFunction())] for t in design.getBitTerms()],
+                [[t.getNLID().toTuple(), attributes(t)] for t in design.getBitTerms()],
                 [[n.getNLID().toTuple(), attributes(n)] for n in design.getBitNets()],
             ])
         for child in library.getLibraries():
@@ -280,13 +273,6 @@ def worker(kind, source, output, run):
             options = {"slang": ["--top=top", "-GN=2"]}
         db.loadSystemVerilog([source], diagnostics_report_path=None, frontend_options=options,
                              preserve_assertions=kind == "sv_formal")
-    elif kind == "lib":
-        db.loadLibertyPrimitives([source])
-        library = db.getLibrary("functions")
-        top = naja.SNLDesign.create(naja.NLLibrary.create(db), "top")
-        for cell in library.getSNLDesigns():
-            naja.SNLInstance.create(top, cell, cell.getName())
-        universe.setTopDesign(top)
     elif kind == "v_graph":
         db.loadGateLevelVerilog([source])
     elif kind == "v":
@@ -405,24 +391,6 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 else:
                     with self.subTest(language=kind, run=run, phase="fresh process"):
                         self.assert_artifacts_equal(baseline, original)
-
-    def test_written_combinational_functions(self):
-        self.check_determinism("lib", """
-library(functions) {
-  cell(first) {
-    pin(P) { direction: input; }
-    pin(Y) { direction: output; function: "!(!P*Q)"; }
-    pin(Q) { direction: input; }
-  }
-  cell(second) {
-    pin(P) { direction: input; }
-    pin(Q) { direction: input; }
-    pin(R) { direction: input; }
-    pin(Y) { direction: output; function: "P^Q^R"; }
-    pin(Z) { direction: output; function: "!((P*Q)+R)"; }
-  }
-}
-""")
 
     def test_canonical_db0_families(self):
         binary = os.environ.get("NAJA_DB0_AUDIT_BINARY")

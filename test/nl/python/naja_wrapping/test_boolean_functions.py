@@ -104,7 +104,7 @@ class BooleanFunctionTest(unittest.TestCase):
         self.assertEqual([2, 8], pair.getTruthTableByOutputID(pair.getScalarTerm("Y").getID()))
         self.assertEqual([2, 1], pair.getTruthTableByOutputID(pair.getScalarTerm("Z").getID()))
 
-    def test_snapshot_fresh_process(self):
+    def test_snapshot_omits_functions(self):
         library = self.load_fixture()
         # Include a directly constructed primitive, with interleaved pin directions.
         design, p, q, y = self.primitive()
@@ -118,21 +118,21 @@ class BooleanFunctionTest(unittest.TestCase):
             for cell in lib.getSNLDesigns():
                 for term in cell.getBitTerms():
                     if term.getFunction() is not None:
-                        expected[f"{lib.getName()}/{cell.getName()}/{term.getName()}"] = [named(term.getFunction()), cell.getTruthTableByOutputID(term.getID())]
+                        expected[f"{lib.getName()}/{cell.getName()}/{term.getName()}"] = cell.getTruthTableByOutputID(term.getID())
         with tempfile.TemporaryDirectory() as directory:
             snapshot = str(Path(directory) / "snapshot")
             self.db.dumpNajaIF(snapshot)
             script = '''
 import json, sys, naja
-from test_boolean_functions import named
 assert naja.NLUniverse.get() is None
 db = naja.NLDB.loadNajaIF(sys.argv[1])
 result = {}
 for lib in db.getLibraries():
     for cell in lib.getSNLDesigns():
         for term in cell.getBitTerms():
-            if term.getFunction() is not None:
-                result[f"{lib.getName()}/{cell.getName()}/{term.getName()}"] = [named(term.getFunction()), cell.getTruthTableByOutputID(term.getID())]
+            assert term.getFunction() is None
+            if term.getDirection() == naja.SNLTerm.Direction.Output:
+                result[f"{lib.getName()}/{cell.getName()}/{term.getName()}"] = cell.getTruthTableByOutputID(term.getID())
 print(json.dumps(result, sort_keys=True))
 '''
             environment = dict(os.environ)

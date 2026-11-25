@@ -12,7 +12,6 @@
 #include <cstring>
 #include <sstream>
 #include <list>
-#include <set>
 //#include <boost/asio.hpp>
 
 #include <capnp/message.h>
@@ -28,7 +27,6 @@
 #include "NLException.h"
 
 #include "SNLDesign.h"
-#include "SNLDesignModeling.h"
 #include "SNLDesignObject.h"
 #include "SNLRTLInfos.h"
 #include "SNLCapnPRTLInfos.h"
@@ -180,81 +178,6 @@ DesignType SNLtoCapNpDesignType(SNLDesign::Type type) {
   return DesignType::STANDARD; //LCOV_EXCL_LINE
 }
 
-using BooleanExpression = SNLDesignModeling::BooleanExpression;
-using BooleanOperation = SNLDesignInterface::BooleanNode::Operation;
-
-BooleanOperation dumpBooleanOperation(BooleanExpression::Operator operation) {
-  using Op = BooleanExpression::Operator;
-  switch (operation) {
-    case Op::Constant: return BooleanOperation::CONSTANT;
-    case Op::Term: return BooleanOperation::TERM;
-    case Op::Not: return BooleanOperation::NOT;
-    case Op::And: return BooleanOperation::AND;
-    case Op::Or: return BooleanOperation::OR;
-    case Op::Xor: return BooleanOperation::XOR;
-    default: throw NLException("Cannot serialize a non-combinational expression");
-  }
-}
-
-BooleanExpression::Operator loadBooleanOperation(BooleanOperation operation) {
-  using Op = BooleanExpression::Operator;
-  switch (operation) {
-    case BooleanOperation::CONSTANT: return Op::Constant;
-    case BooleanOperation::TERM: return Op::Term;
-    case BooleanOperation::NOT: return Op::Not;
-    case BooleanOperation::AND: return Op::And;
-    case BooleanOperation::OR: return Op::Or;
-    case BooleanOperation::XOR: return Op::Xor;
-    default: throw NLException("Invalid combinational Boolean operator in snapshot");
-  }
-}
-
-void dumpFunctions(SNLDesignInterface::Builder& builder, const SNLDesign* design) {
-  std::vector<std::pair<SNLBitTerm*, BooleanExpression>> functions;
-  for (auto* term : design->getBitTerms()) {
-    if (auto function = SNLDesignModeling::getFunction(term)) functions.emplace_back(term, std::move(*function));
-  }
-  auto serialized = builder.initFunctions(functions.size());
-  for (size_t i = 0; i < functions.size(); ++i) {
-    const auto& [output, expression] = functions[i];
-    auto function = serialized[i];
-    function.setOutput(output->getOrderID());
-    function.setRoot(expression.root);
-    auto nodes = function.initNodes(expression.nodes.size());
-    for (size_t j = 0; j < expression.nodes.size(); ++j) {
-      const auto& node = expression.nodes[j];
-      nodes[j].setOperation(dumpBooleanOperation(node.operation));
-      nodes[j].setConstant(node.constant);
-      if (node.operation == BooleanExpression::Operator::Term) nodes[j].setTerm(node.term->getOrderID());
-      auto operands = nodes[j].initOperands(node.operands.size());
-      for (size_t k = 0; k < node.operands.size(); ++k) operands.set(k, node.operands[k]);
-    }
-  }
-}
-
-void loadFunctions(const SNLDesignInterface::Reader& reader, SNLDesign* design) {
-  std::vector<SNLBitTerm*> terms(design->getBitTerms().begin(), design->getBitTerms().end());
-  std::set<uint32_t> outputs;
-  for (auto function : reader.getFunctions()) {
-    if (function.getOutput() >= terms.size() || !outputs.insert(function.getOutput()).second)
-      throw NLException("Invalid or duplicate function output in snapshot");
-    BooleanExpression expression;
-    expression.root = function.getRoot();
-    for (auto node : function.getNodes()) {
-      BooleanExpression::Node value;
-      value.operation = loadBooleanOperation(node.getOperation());
-      value.constant = node.getConstant();
-      if (value.operation == BooleanExpression::Operator::Term) {
-        if (node.getTerm() >= terms.size()) throw NLException("Invalid function term in snapshot");
-        value.term = terms[node.getTerm()];
-      }
-      for (auto operand : node.getOperands()) value.operands.push_back(operand);
-      expression.nodes.push_back(std::move(value));
-    }
-    SNLDesignModeling::setFunction(terms[function.getOutput()], expression);
-  }
-}
-
 void dumpDesignInterface(
   SNLDesignInterface::Builder& designInterface,
   const SNLDesign* snlDesign) {
@@ -264,7 +187,6 @@ void dumpDesignInterface(
   }
   designInterface.setType(SNLtoCapNpDesignType(snlDesign->getType()));
   dumpAttributes(designInterface, snlDesign);
-  dumpFunctions(designInterface, snlDesign);
   if (snlDesign->hasRTLInfos()) {
     dumpRTLInfos(designInterface.initRtlInfos(), snlDesign->getRTLInfos());
   }
@@ -535,7 +457,6 @@ void loadDesignInterface(
       }
     }
   }
-  loadFunctions(designInterface, snlDesign);
 }
 
 void loadLibraryInterface(

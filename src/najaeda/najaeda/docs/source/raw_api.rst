@@ -2850,5 +2850,6 @@ call ``cell.setTruthTable(8)`` followed by
 High-level users loading Liberty obtain these expressions automatically; a
 high-level setter is unnecessary for this primitive-modeling operation.
 
-NajaIF snapshots preserve these functions alongside Liberty truth tables,
-including term references and written expression structure.
+Written functions are retained in memory only and are not stored in NajaIF
+snapshots. Load the Liberty library to obtain them again. Existing truth-table
+snapshot behavior is unchanged.
