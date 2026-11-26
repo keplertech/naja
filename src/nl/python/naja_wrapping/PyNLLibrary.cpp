@@ -75,6 +75,20 @@ static PyObject* PyNLLibrary_getSNLDesign(PyNLLibrary* self, PyObject* arg) {
 GetObjectMethod(NLLibrary, NLDB, getDB)
 GetObjectByName(NLLibrary, NLLibrary, getLibrary)
 
+static PyObject* PyNLLibrary_getSNLDesignCaseInsensitive(PyNLLibrary* self, PyObject* arg) {
+  METHOD_HEAD("NLLibrary.getSNLDesignCaseInsensitive()")
+  if (!PyUnicode_Check(arg)) {
+    PyErr_SetString(PyExc_TypeError, "name must be a str");
+    return nullptr;
+  }
+  const auto* name = PyUnicode_AsUTF8(arg);
+  if (!name) return nullptr;
+  TRY
+  return PySNLDesign_Link(selfObject->getSNLDesignCaseInsensitive(NLName(name)));
+  NLCATCH
+  return nullptr;
+}
+
 DirectGetNumericMethod(PyNLLibrary_getID, getID, PyNLLibrary, NLLibrary)
 DirectGetNLIDMethod(PyNLLibrary_getNLID, PyNLLibrary, NLLibrary)
 
@@ -126,6 +140,8 @@ PyMethodDef PyNLLibrary_Methods[] = {
     "retrieve a NLLibrary."},
   { "getLibraries", (PyCFunction)PyNLLibrary_getLibraries, METH_NOARGS,
     "iterate over the child NLLibraries."},
+  { "getSNLDesignCaseInsensitive", (PyCFunction)PyNLLibrary_getSNLDesignCaseInsensitive, METH_O,
+    "Look up a unique name ignoring ASCII case; ambiguous names raise RuntimeError."},
   { "getSNLDesign", (PyCFunction)PyNLLibrary_getSNLDesign, METH_O,
     "retrieve a SNLDesign."},
   { "getSNLDesigns", (PyCFunction)PyNLLibrary_getSNLDesigns, METH_NOARGS,

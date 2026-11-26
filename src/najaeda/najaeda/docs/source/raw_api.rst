@@ -80,6 +80,24 @@ Callers of the former snake_case spellings must switch to these names; those spe
 Dictionary keys returned by raw functions retain their
 existing spellings.
 
+Case-insensitive name lookup
+----------------------------
+
+``NLDB.getLibraryCaseInsensitive(name)``,
+``NLLibrary.getSNLDesignCaseInsensitive(name)`` and
+``SNLDesign.getTermCaseInsensitive(name)`` accept a string and return a unique
+matching object, or ``None``. They fold ASCII case independently of the process
+locale and raise ``RuntimeError`` on ambiguity, even if one spelling matches
+exactly. Existing lookup methods remain case-sensitive. Queries inspect current
+names after creation, renaming or deletion and never rename native objects.
+Library lookup searches database roots; design and terminal lookup search only
+the receiver's immediate contents.
+
+Use these raw methods directly for expert tools that explicitly need folded
+lookup. No high-level instance lookup semantics change. HDL loaders select the
+appropriate matching rule themselves: VHDL basic identifiers use folded lookup,
+while extended identifiers and SystemVerilog names use exact lookup.
+
 When to use the raw API
 -----------------------
 
@@ -921,6 +939,8 @@ The C++ SNL API remains the semantic source of truth.
     * :meth:`getMaxLogicLevel <najaeda.naja.NLUniverse.getMaxLogicLevel>`.
 
 :class:`~najaeda.naja.NLDB`
+    * :meth:`getLibraryCaseInsensitive <najaeda.naja.NLDB.getLibraryCaseInsensitive>`: unique ASCII case-insensitive name lookup.
+
     * :meth:`getContentHash <najaeda.naja.NLDB.getContentHash>`,
       :meth:`create <najaeda.naja.NLDB.create>`,
       :meth:`destroy <najaeda.naja.NLDB.destroy>`,
@@ -946,6 +966,8 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`getResets <najaeda.naja.NLDB.getResets>`.
 
 :class:`~najaeda.naja.NLLibrary`
+    * :meth:`getSNLDesignCaseInsensitive <najaeda.naja.NLLibrary.getSNLDesignCaseInsensitive>`: unique ASCII case-insensitive name lookup.
+
     * :meth:`getContentHash <najaeda.naja.NLLibrary.getContentHash>`,
       :meth:`create <najaeda.naja.NLLibrary.create>`,
       :meth:`createPrimitives <najaeda.naja.NLLibrary.createPrimitives>`,
@@ -964,6 +986,8 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`getLibraries <najaeda.naja.NLLibrary.getLibraries>`.
 
 :class:`~najaeda.naja.SNLDesign`
+    * :meth:`getTermCaseInsensitive <najaeda.naja.SNLDesign.getTermCaseInsensitive>`: unique ASCII case-insensitive name lookup.
+
     * :meth:`getContentHash <najaeda.naja.SNLDesign.getContentHash>`,
       :meth:`create <najaeda.naja.SNLDesign.create>`,
       :meth:`createPrimitive <najaeda.naja.SNLDesign.createPrimitive>`,

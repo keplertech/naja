@@ -405,3 +405,14 @@ TEST_F(SNLDesignTest, testSetName) {
   EXPECT_EQ(design1, library->getSNLDesign(NLName("design1")));
   EXPECT_THROW(design1->setName(NLName("design0")), NLException);
 }
+
+TEST_F(SNLDesignTest, caseInsensitiveLookup) {
+  auto* design = SNLDesign::create(db_->getLibrary(NLName("MYLIB")), NLName("Gate"));
+  auto* first = SNLScalarTerm::create(design, SNLTerm::Direction::Input, NLName("Pin"));
+  EXPECT_EQ(first, design->getTermCaseInsensitive(NLName("PIN")));
+  EXPECT_EQ(nullptr, design->getTerm(NLName("PIN")));
+  auto* second = SNLBusTerm::create(design, SNLTerm::Direction::Output, 3, 1, NLName("pin"));
+  EXPECT_THROW(design->getTermCaseInsensitive(NLName("Pin")), NLException);
+  second->destroy();
+  EXPECT_EQ(first, design->getTermCaseInsensitive(NLName("pin")));
+}

@@ -1026,6 +1026,20 @@ PyObject* PyNLDB_getLibrary(PyNLDB* self, PyObject* arg) {
   return PyNLLibrary_Link(lib);
 }
 
+static PyObject* PyNLDB_getLibraryCaseInsensitive(PyNLDB* self, PyObject* arg) {
+  METHOD_HEAD("NLDB.getLibraryCaseInsensitive()")
+  if (!PyUnicode_Check(arg)) {
+    PyErr_SetString(PyExc_TypeError, "name must be a str");
+    return nullptr;
+  }
+  const auto* name = PyUnicode_AsUTF8(arg);
+  if (!name) return nullptr;
+  TRY
+  return PyNLLibrary_Link(selfObject->getLibraryCaseInsensitive(NLName(name)));
+  NLCATCH
+  return nullptr;
+}
+
 DirectGetNumericMethod(PyNLDB_getID, getID, PyNLDB, NLDB)
 DirectGetNLIDMethod(PyNLDB_getNLID, PyNLDB, NLDB)
 
@@ -1137,6 +1151,8 @@ PyMethodDef PyNLDB_Methods[] = {
     "(default False)."},
   { "dumpGateLevelVerilog", (PyCFunction)PyNLDB_dumpGateLevelVerilog, METH_VARARGS,
     "dump this NLDB as gate-level (structural) Verilog, not the original behavioral RTL."},
+  { "getLibraryCaseInsensitive", (PyCFunction)PyNLDB_getLibraryCaseInsensitive, METH_O,
+    "Look up a unique name ignoring ASCII case; ambiguous names raise RuntimeError."},
   { "getLibrary", (PyCFunction)PyNLDB_getLibrary, METH_O,
     "retrieve a NLLibrary."},
   { "getLibraries", (PyCFunction)PyNLDB_getLibraries, METH_NOARGS,

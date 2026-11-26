@@ -490,6 +490,17 @@ void loadLibraryInterface(
     if (existingPrimitives) {
       if (loadingConfiguration.primitiveConflictPolicy_ ==
           SNLCapnP::LoadingConfiguration::PrimitiveConflictPolicy::PreferExisting) {
+        // References in the snapshot use numeric IDs. Source-loaded primitive
+        // modeling may be richer, but the serialized interfaces must agree.
+        ::capnp::MallocMessageBuilder generated;
+        auto builder = generated.initRoot<DBInterface::LibraryInterface>();
+        dumpLibraryInterface(builder, existingPrimitives);
+        auto expected = ::capnp::canonicalize(libraryInterface);
+        auto actual = ::capnp::canonicalize(builder.asReader());
+        if (expected.size() != actual.size() || std::memcmp(
+            expected.begin(), actual.begin(), expected.size() * sizeof(::capnp::word)))
+          throw NLException("Cannot reuse source-loaded primitives: snapshot library interface differs: " +
+              existingPrimitives->getName().getString());
         return;
       }
       if (loadingConfiguration.primitiveConflictPolicy_ ==

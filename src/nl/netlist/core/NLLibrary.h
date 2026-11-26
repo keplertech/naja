@@ -115,6 +115,8 @@ class NLLibrary final: public NLObject {
     SNLDesign* getSNLDesign(NLID::DesignID id) const;
     /// \return SNLDesign named name
     SNLDesign* getSNLDesign(const NLName& name) const;
+    /// ASCII case-insensitive lookup; null if absent, throws NLException if ambiguous.
+    SNLDesign* getSNLDesignCaseInsensitive(const NLName& name) const;
     /// \return the collection of SNLDesign contained in this NLLibrary
     NajaCollection<SNLDesign*> getSNLDesigns() const;
 

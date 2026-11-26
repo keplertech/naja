@@ -293,6 +293,18 @@ SNLDesign* NLLibrary::getSNLDesign(NLID::DesignID id) const {
   return nullptr;
 }
 
+SNLDesign* NLLibrary::getSNLDesignCaseInsensitive(const NLName& name) const {
+  if (name.empty()) return nullptr;
+  const auto folded = foldNameCase(name.getString());
+  SNLDesign* result = nullptr;
+  for (auto* candidate : getSNLDesigns()) {
+    if (foldNameCase(candidate->getName().getString()) != folded) continue;
+    if (result) throw NLException("ambiguous case-insensitive getSNLDesign: " + name.getString());
+    result = candidate;
+  }
+  return result;
+}
+
 SNLDesign* NLLibrary::getSNLDesign(const NLName& name) const {
   auto dit = designNameIDMap_.find(name);
   if (dit != designNameIDMap_.end()) {

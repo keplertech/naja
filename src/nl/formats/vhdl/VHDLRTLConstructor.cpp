@@ -7,6 +7,7 @@
 #include "NLException.h"
 #include "NLDB0.h"
 #include "SNLHDLLibrary.h"
+#include "SNLHDLPrimitives.h"
 #include "SNLHDLSpecialization.h"
 #include "SNLInstParameter.h"
 #include "NLLibrary.h"
@@ -228,6 +229,7 @@ class LibraryContext {
   std::string_view source;
   VHDLIntent::SessionPtr intentSession;
   NajaProgressReporter* progress = nullptr;
+  SNLHDLPrimitives primitives{destination->getDB()};
   NLLibrary* owner(size_t offset) const {
     for (const auto& source : sources)
       if (offset >= source.offset && offset < source.offset + source.size) return source.library;
@@ -1775,6 +1777,25 @@ class RTLConstructor {
     integers_.erase(name);
   }
 
+  static bool extendedName(const vhdl::Name& name) {
+    return !name.spelling.empty() && name.spelling.front() == '\\';
+  }
+
+  static std::string primitiveName(const vhdl::Name& name) {
+    if (!extendedName(name)) return name.spelling;
+    std::string result;
+    for (size_t i = 1; i + 1 < name.spelling.size(); ++i) {
+      result += name.spelling[i];
+      if (name.spelling[i] == '\\' && i + 2 < name.spelling.size() && name.spelling[i + 1] == '\\') ++i;
+    }
+    return result;
+  }
+
+  static SNLTerm* primitiveTerm(SNLDesign* model, const vhdl::Name& name) {
+    return extendedName(name) ? model->getTerm(NLName(primitiveName(name))) :
+        model->getTermCaseInsensitive(NLName(name.spelling));
+  }
+
   void lowerInstance(const vhdl::EntityInstantiation& instance, const std::string& prefix = "") {
     if (libraryContext_.progress) libraryContext_.progress->checkpoint(entity_.name.spelling);
     DiagnosticScope location(instance.span);
@@ -1786,9 +1807,60 @@ class RTLConstructor {
     for (const auto& candidate : syntax_.entities)
       if (libraryContext_.owner(candidate.span.start.offset) == targetLibrary &&
           key(candidate.name) == key(instance.entity)) entity = &candidate;
-    if (!entity) fail("missing entity: " + key(instance.entity));
     if (instance.component && !components_.contains(key(instance.entity)))
       fail("component is not visible: " + key(instance.entity));
+    SNLDesign* primitive = nullptr;
+    try {
+      primitive = libraryContext_.primitives.find(primitiveName(instance.entity),
+          !extendedName(instance.entity), instance.component ? nullptr : targetLibrary);
+    } catch (const NLException& error) { fail(error.what()); }
+    bool generatedInterface = false;
+    vhdl::EntityDeclaration generated;
+    if (primitive) {
+      try { SNLHDLPrimitives::validateInterface(primitive); }
+      catch (const NLException& error) { fail(error.what()); }
+      if (entity) {
+        for (const auto& candidate : syntax_.architectures)
+          if (libraryContext_.owner(candidate.span.start.offset) == targetLibrary &&
+              key(candidate.entity) == key(instance.entity))
+            fail("behavioral HDL definition conflicts with primitive: " + key(instance.entity));
+      } else if (instance.component) {
+        entity = components_.at(key(instance.entity));
+      } else {
+        generatedInterface = true;
+        generated.name = instance.entity;
+        generated.span = instance.span;
+        for (auto* term : primitive->getTerms()) {
+          vhdl::PortDeclaration port;
+          // Extended formal names preserve the exact Liberty spelling. Named
+          // associations below still accept basic identifiers case-insensitively.
+          auto spelling = term->getName().getString();
+          std::string escaped = "\\";
+          for (char c : spelling) { escaped += c; if (c == '\\') escaped += c; }
+          escaped += "\\";
+          port.names.push_back({escaped, escaped, instance.span});
+          port.mode = term->getDirection() == SNLTerm::Direction::Input ? vhdl::PortMode::In :
+              term->getDirection() == SNLTerm::Direction::Output ? vhdl::PortMode::Out : vhdl::PortMode::InOut;
+          const auto type = dynamic_cast<SNLBusTerm*>(term) ? "std_logic_vector" : "std_logic";
+          port.type.name = {type, type, instance.span};
+          if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
+            vhdl::DiscreteRange range;
+            range.left = bus->getMSB(); range.right = bus->getLSB();
+            range.ascending = range.left < range.right;
+            port.type.constraint = range;
+          }
+          generated.ports.push_back(std::move(port));
+        }
+        entity = &generated;
+      }
+      if (!instance.generics.empty() || !entity->generics.empty())
+        fail("primitive generic declarations/overrides are unsupported: " + key(instance.entity));
+      if (generatedInterface && (instance.formals.size() != instance.actuals.size() ||
+          std::any_of(instance.formals.begin(), instance.formals.end(),
+          [](const auto& formal) { return !formal.has_value(); })))
+        fail("positional primitive associations require an explicit VHDL declaration");
+    }
+    if (!entity) fail("missing entity: " + key(instance.entity));
     const auto& interface = instance.component ? *components_.at(key(instance.entity)) : *entity;
     std::vector<std::string> genericNames;
     for (const auto& generic : interface.generics)
@@ -1810,6 +1882,13 @@ class RTLConstructor {
     childScope.genericActual_ = [&](const std::string& name, const Shape* expected) {
       return genericValue(*actuals.at(name), expected);
     };
+    if (primitive) {
+      childScope.stdLogic_ = stdLogic_ || generatedInterface;
+      childScope.numeric_ = numeric_;
+      childScope.unsigned_ = unsigned_;
+      childScope.signed_ = signed_;
+      childScope.work_ = work_;
+    }
     childScope.prepareEntity();
     overrides = childScope.genericOverrides_;
     const auto parentObjects = objects_;
@@ -1865,23 +1944,39 @@ class RTLConstructor {
     booleans_ = parentBooleans;
     strings_ = parentStrings;
     reals_ = parentReals;
-    auto* model = build_(targetLibrary, key(instance.entity), overrides);
+    auto* model = primitive ? primitive : build_(targetLibrary, key(instance.entity), overrides);
     if (const auto* property = dynamic_cast<RTLSourceProperty*>(model->getProperty("VHDLRTLSource")))
       for (const auto& [path, content] : property->initializationFiles) {
         const auto [dependency, inserted] = initializationFiles_->emplace(path, content);
         if (!inserted && dependency->second != content) fail("initialization file changed during elaboration: " + path);
       }
     std::vector<SNLTerm*> ports;
+    std::map<SNLTerm*, std::string> portKeys;
     for (const auto& declaration : interface.ports) for (const auto& name : declaration.names) {
       SNLTerm* matching = nullptr;
-      for (auto* term : model->getTerms()) {
-        std::string id = term->getName().getString();
-        for (auto& c : id) c = std::tolower(static_cast<unsigned char>(c));
-        if (id == key(name)) matching = term;
+      try {
+        matching = primitive ? primitiveTerm(model, name) :
+            (extendedName(name) ? model->getTerm(NLName(name.spelling)) :
+             model->getTermCaseInsensitive(NLName(name.spelling)));
+      } catch (const NLException& error) { fail(error.what()); }
+      if (!matching) fail("missing bound port: " + name.spelling);
+      if (primitive) {
+        const auto& formalShape = formalShapes.at(key(name));
+        if (formalShape.integerWidth || formalShape.enumeration || !formalShape.fields.empty() ||
+            formalShape.ranges.size() > 1 || formalShape.dynamicBounds ||
+            (bool(dynamic_cast<SNLBusTerm*>(matching)) != !formalShape.ranges.empty()))
+          fail("unsupported primitive port type or shape: " + name.spelling);
+        const auto direction = declaration.mode == vhdl::PortMode::In ? SNLTerm::Direction::Input :
+            declaration.mode == vhdl::PortMode::Out || declaration.mode == vhdl::PortMode::Buffer ?
+            SNLTerm::Direction::Output : SNLTerm::Direction::InOut;
+        if (declaration.mode == vhdl::PortMode::Linkage || matching->getDirection() != direction ||
+            matching->getWidth() != formalShapes.at(key(name)).size())
+          fail("primitive port interface mismatch: " + name.spelling);
       }
-      if (!matching) fail("missing bound port");
+      if (!portKeys.emplace(matching, key(name)).second) fail("duplicate bound primitive port");
       ports.push_back(matching);
     }
+    if (primitive && ports.size() != model->getTerms().size()) fail("primitive port interface mismatch");
     const auto instanceName = prefix + instance.label.spelling;
     if (!instanceNames_.insert(prefix + key(instance.label)).second) fail("duplicate instance label");
     auto* child = declaration(SNLInstance::create(design_, model, NLName(instanceName)), instance.span);
@@ -1907,18 +2002,20 @@ class RTLConstructor {
       if (!instance.formals.empty() && instance.formals[i]) {
         named = true;
         port = nullptr;
-        for (auto* candidate : ports) {
-          std::string name = candidate->getName().getString();
-          for (auto& c : name) c = std::tolower(static_cast<unsigned char>(c));
-          if (name == key(*instance.formals[i])) port = candidate;
+        if (primitive) {
+          try { port = primitiveTerm(model, *instance.formals[i]); }
+          catch (const NLException& error) { fail(error.what()); }
+          if (port && !portKeys.contains(port)) port = nullptr;
+        } else {
+          for (auto* candidate : ports)
+            if (portKeys.at(candidate) == key(*instance.formals[i])) port = candidate;
         }
       } else if (named) fail("positional port follows named port");
       if (!port) fail("invalid port association");
       if (bound.contains(port) && previousPort != port)
         fail("individual port associations must be consecutive");
       previousPort = port;
-      std::string literalFormal = port->getName().getString();
-      for (auto& c : literalFormal) c = std::tolower(static_cast<unsigned char>(c));
+      const auto& literalFormal = portKeys.at(port);
       Selection formal{literalFormal, formalShapes.at(literalFormal), 0};
       if (!instance.formalIndices.empty()) {
         for (const auto& indexExpr : instance.formalIndices[i]) {

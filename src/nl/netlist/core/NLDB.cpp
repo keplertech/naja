@@ -138,6 +138,18 @@ NLLibrary* NLDB::getLibrary(NLID::LibraryID id) const {
   return nullptr;
 }
 
+NLLibrary* NLDB::getLibraryCaseInsensitive(const NLName& name) const {
+  if (name.empty()) return nullptr;
+  const auto folded = foldNameCase(name.getString());
+  NLLibrary* result = nullptr;
+  for (auto* candidate : getLibraries()) {
+    if (foldNameCase(candidate->getName().getString()) != folded) continue;
+    if (result) throw NLException("ambiguous case-insensitive getLibrary: " + name.getString());
+    result = candidate;
+  }
+  return result;
+}
+
 NLLibrary* NLDB::getLibrary(const NLName& name) const {
   auto it = libraryNameIDMap_.find(name);
   if (it != libraryNameIDMap_.end()) {

@@ -67,3 +67,18 @@ TEST_F(NLDBTest, testErrors) {
   EXPECT_EQ(1, db->getID());
   EXPECT_THROW(NLDB::create(NLUniverse::get(), NLID::DBID(1)), NLException);
 }
+
+TEST_F(NLDBTest, caseInsensitiveLookup) {
+  auto* db = NLDB::create(NLUniverse::create());
+  auto* first = NLLibrary::create(db, NLName("Cells"));
+  auto* nested = NLLibrary::create(first, NLName("Nested"));
+  EXPECT_EQ(nullptr, db->getLibraryCaseInsensitive(NLName("nested")));
+  EXPECT_EQ(first, db->getLibraryCaseInsensitive(NLName("CELLS")));
+  EXPECT_EQ(nullptr, db->getLibrary(NLName("CELLS")));
+  auto* second = NLLibrary::create(db, NLName("cells"));
+  EXPECT_THROW(db->getLibraryCaseInsensitive(NLName("Cells")), NLException);
+  second->setName(NLName("Other"));
+  EXPECT_EQ(first, db->getLibraryCaseInsensitive(NLName("cells")));
+  first->destroy();
+  EXPECT_EQ(nullptr, db->getLibraryCaseInsensitive(NLName("cells")));
+}

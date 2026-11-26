@@ -21,6 +21,7 @@
 #include "SNLUtils.h"
 #include "SNLLibertyConstructor.h"
 #include "SNLSVConstructor.h"
+#include "VHDLConstructor.h"
 #include "SNLVRLConstructor.h"
 #include "SNLVRLDumper.h"
 
@@ -36,7 +37,7 @@ using namespace naja::NAJA_OPT;
 
 namespace {
 
-enum class FormatType { NOT_PROVIDED, UNKNOWN, VERILOG, SYSTEMVERILOG, SNL, DOT, SVG};
+enum class FormatType { NOT_PROVIDED, UNKNOWN, VERILOG, SYSTEMVERILOG, VHDL, SNL, DOT, SVG};
 FormatType argToFormatType(const std::string& inputFormat) {
   if (inputFormat.empty()) {
     return FormatType::NOT_PROVIDED;
@@ -44,6 +45,8 @@ FormatType argToFormatType(const std::string& inputFormat) {
     return FormatType::VERILOG;
   } else if (inputFormat == "systemverilog" || inputFormat == "sv") {
     return FormatType::SYSTEMVERILOG;
+  } else if (inputFormat == "vhdl") {
+    return FormatType::VHDL;
   } else if (inputFormat == "snl") {
     return FormatType::SNL;
   } else if (inputFormat == "dot") {
@@ -170,7 +173,7 @@ int main(int argc, char* argv[]) {
       "Edit gate level netlists using python script and apply optimizations");
   program.add_argument("-f", "--from_format")
     .help("from/input format: gate-level-verilog, "
-          "systemverilog|sv (Verilog/SystemVerilog RTL subset), snl; "
+          "systemverilog|sv (Verilog/SystemVerilog RTL subset), vhdl, snl; "
           "verilog is a compatibility alias and will be deprecated soon");
   program.add_argument("-t", "--to_format")
     .help("to/output format: gate-level-verilog, snl, dot; "
@@ -179,7 +182,7 @@ int main(int argc, char* argv[]) {
   program.add_argument("-o", "--output").help("output netlist");
   program.add_argument("-p", "--primitives")
     .nargs(argparse::nargs_pattern::at_least_one)
-    .help("input primitives: list of path to primitives files (liberty format or Naja python format)");
+    .help("input primitives: Liberty or Naja Python files, loaded before HDL or SNL input");
   program.add_argument("-d", "--dump_primitives")
     .help("dump primitives library in verilog");
   program.add_argument("-e", "--pre_edit")
@@ -202,6 +205,9 @@ int main(int argc, char* argv[]) {
     .help("Dump performance log file (default: naja_perf.log, env override: NAJA_PERF)");
   program.add_argument("--sv_flist")
     .help("SystemVerilog slang command file path (passed as -f <file>)");
+  program.add_argument("--vhdl_top").help("VHDL top entity name");
+  program.add_argument("--vhdl_diagnostics_report")
+    .help("VHDL diagnostics report path (empty disables file output)");
   program.add_argument("--sv_top")
     .help("SystemVerilog top module name (injected as --top)");
   program.add_argument("--sv_elaborated_ast_json_path")
@@ -275,7 +281,7 @@ int main(int argc, char* argv[]) {
       inputFormatType == FormatType::SVG) {
     NAJA_LOG_CRITICAL(
       "Invalid value '{}' for --from_format (-f). "
-      "Expected one of: gate-level-verilog (or verilog), systemverilog (or sv), snl",
+      "Expected one of: gate-level-verilog (or verilog), systemverilog (or sv), vhdl, snl",
       inputFormat);
     argError = true;
   }
@@ -305,9 +311,9 @@ int main(int argc, char* argv[]) {
           "--to_format (-t) is required when --output (-o) is provided "
           "without an input format to infer from");
         argError = true;
-      } else if (inputFormatType == FormatType::SYSTEMVERILOG) {
+      } else if (inputFormatType == FormatType::SYSTEMVERILOG || inputFormatType == FormatType::VHDL) {
         NAJA_LOG_CRITICAL(
-          "--to_format (-t) is required for SystemVerilog input. "
+          "--to_format (-t) is required for HDL input. "
           "Expected one of: gate-level-verilog (or verilog), snl, dot");
         argError = true;
       } else {
@@ -319,6 +325,7 @@ int main(int argc, char* argv[]) {
   
   if (outputFormatType == FormatType::UNKNOWN ||
       outputFormatType == FormatType::SYSTEMVERILOG ||
+      outputFormatType == FormatType::VHDL ||
       outputFormatType == FormatType::SVG) {
     NAJA_LOG_CRITICAL(
       "Invalid value '{}' for --to_format (-t). "
@@ -329,12 +336,6 @@ int main(int argc, char* argv[]) {
 
   Paths primitivesPaths;
   if (auto primitives = program.present("-p")) {
-    if (inputFormatType == FormatType::SNL) {
-      NAJA_LOG_CRITICAL(
-        "--primitives (-p) is incompatible with --from_format snl because "
-        "an SNL snapshot already carries its primitive libraries");
-      argError = true;
-    }
     auto primitivesPathsString = program.get<std::vector<std::string>>("-p");
     primitivesPaths.resize(primitivesPathsString.size());
     std::transform(primitivesPathsString.begin(),
@@ -346,6 +347,16 @@ int main(int argc, char* argv[]) {
     );
   }
 
+  const auto vhdlTop = program.present("--vhdl_top");
+  const auto vhdlReport = program.present("--vhdl_diagnostics_report");
+  if ((vhdlTop || vhdlReport) && inputFormatType != FormatType::VHDL) {
+    NAJA_LOG_CRITICAL("VHDL options (--vhdl_*) require --from_format vhdl");
+    argError = true;
+  }
+  if (vhdlTop && vhdlTop->empty()) {
+    NAJA_LOG_CRITICAL("VHDL top name (--vhdl_top) cannot be empty");
+    argError = true;
+  }
   bool hasSvFlistPath = false;
   std::filesystem::path svFlistPath;
   if (auto svFlist = program.present("--sv_flist")) {
@@ -524,6 +535,10 @@ int main(int argc, char* argv[]) {
         naja::NajaPerf::Scope scope("Parsing SNL format");
         const auto start{std::chrono::steady_clock::now()};
         auto inputPath = inputPaths[0];
+        if (!primitivesPaths.empty()) {
+          db = NLDB::create(NLUniverse::get());
+          primitivesLibrary = loadPrimitivesLibrary(db);
+        }
         db = SNLCapnP::load(inputPath);
         NLUniverse::get()->setTopDesign(db->getTopDesign());
         const auto end{std::chrono::steady_clock::now()};
@@ -674,6 +689,20 @@ int main(int argc, char* argv[]) {
           oss << "Parsing done in: " << elapsed_seconds.count() << "s";
           NAJA_LOG_INFO(oss.str());
         }
+      } else if (inputFormatType == FormatType::VHDL) {
+        db = NLDB::create(NLUniverse::get());
+        primitivesLibrary = loadPrimitivesLibrary(db);
+        auto* designLibrary = NLLibrary::create(db, NLName("DESIGN"));
+        VHDLConstructor::ConstructOptions options;
+        if (vhdlReport) {
+          if (vhdlReport->empty()) options.diagnosticsReportPath.reset();
+          else options.diagnosticsReportPath = *vhdlReport;
+        }
+        VHDLConstructor constructor(designLibrary, options);
+        auto* top = constructor.constructFiles(inputPaths, vhdlTop.value_or(""));
+        if (!top) throw NLException("No top entity was found after parsing VHDL");
+        NLUniverse::get()->setTopDesign(top);
+        NAJA_LOG_INFO("Found top design: " + top->getString());
     } else if (inputFormatType == FormatType::NOT_PROVIDED) {
       db = NLDB::create(NLUniverse::get());
       NLUniverse::get()->setTopDB(db);

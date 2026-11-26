@@ -6,8 +6,16 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace naja::NL {
+
+// ASCII identifiers are folded without depending on the process locale.
+inline std::string foldNameCase(std::string_view name) {
+  std::string folded(name);
+  for (auto& c : folded) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+  return folded;
+}
 
 class NLName {
   public:

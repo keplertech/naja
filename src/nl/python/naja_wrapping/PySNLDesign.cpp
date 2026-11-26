@@ -934,6 +934,20 @@ static PyObject* PySNLDesign_getTimingDiagnostics(PyObject* self, PyObject*) { r
 
 static PyObject* PySNLDesign_getResetDomains(PyObject* self, PyObject*) { return PySNLDesign_getTimingData(self, 5); }
 
+static PyObject* PySNLDesign_getTermCaseInsensitive(PySNLDesign* self, PyObject* arg) {
+  METHOD_HEAD("SNLDesign.getTermCaseInsensitive()")
+  if (!PyUnicode_Check(arg)) {
+    PyErr_SetString(PyExc_TypeError, "name must be a str");
+    return nullptr;
+  }
+  const auto* name = PyUnicode_AsUTF8(arg);
+  if (!name) return nullptr;
+  TRY
+  return PySNLTerm_Link(selfObject->getTermCaseInsensitive(NLName(name)));
+  NLCATCH
+  return nullptr;
+}
+
 PyMethodDef PySNLDesign_Methods[] = {
   {"getResets", (PyCFunction)PySNLDesign_getResets, METH_NOARGS, "List reset declarations owned by this design."},
   {"getResetDomains", (PyCFunction)PySNLDesign_getResetDomains, METH_NOARGS, "Return occurrence-specific reset domains."},
@@ -1081,6 +1095,8 @@ PyMethodDef PySNLDesign_Methods[] = {
     "Returns the SNLDesign owner SNLDB."},
   { "getLibrary", (PyCFunction)PySNLDesign_getLibrary, METH_NOARGS,
     "Returns the SNLDesign owner NLLibrary."},
+  { "getTermCaseInsensitive", (PyCFunction)PySNLDesign_getTermCaseInsensitive, METH_O,
+    "Look up a unique term ignoring ASCII case; ambiguous names raise RuntimeError."},
   { "getTerm", (PyCFunction)PySNLDesign_getTerm, METH_VARARGS,
     "retrieve a SNLTerm."},
   { "getTermByID", (PyCFunction)PySNLDesign_getTermByID, METH_VARARGS,
