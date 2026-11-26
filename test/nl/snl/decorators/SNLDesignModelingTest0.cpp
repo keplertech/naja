@@ -2028,3 +2028,39 @@ TEST_F(SNLDesignModelingTest0, WideReducedAndReorderedFunctions) {
     EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
   }
 }
+
+TEST_F(SNLDesignModelingTest0, FunctionRejectsGenericTableWithNonLocalDependencies) {
+  NLUniverse::create();
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  for (auto type : {NLDB0::GateType::And, NLDB0::GateType::Or, NLDB0::GateType::Xor}) {
+    auto* design = NLDB0::getOrCreateNInputGate(type, 7);
+    auto* output = NLDB0::getGateSingleTerm(design);
+    const auto table = SNLDesignModeling::getTruthTable(design, output->getOrderID());
+    ASSERT_TRUE(table.isGeneric());
+    ASSERT_FALSE(NLBitDependencies::isSimple(table.getDependencies()));
+    Expression expression;
+    std::vector<Expression::NodeID> terms;
+    for (auto* input : NLDB0::getGateNTerms(design)->getBusBits())
+      terms.push_back(expression.addTerm(input));
+    const auto operation = type == NLDB0::GateType::And ? Op::And :
+        type == NLDB0::GateType::Or ? Op::Or : Op::Xor;
+    expression.root = expression.addOperation(operation, terms);
+    expression.root = expression.addOperation(Op::Not, {expression.root});
+    expression.root = expression.addOperation(Op::Not, {expression.root});
+    auto zero = expression.addConstant(false);
+    auto one = expression.addConstant(true);
+    expression.root = expression.addOperation(Op::Or, {expression.root, zero});
+    expression.root = expression.addOperation(Op::And, {expression.root, one});
+    expression.root = expression.addOperation(Op::Xor, {expression.root, zero});
+    // Generic gates number their output before their inputs. Preserve the
+    // existing reduction diagnostic, without installing a partially checked tree.
+    try {
+      SNLDesignModeling::setFunction(output, expression);
+      FAIL() << "accepted generic reduction with non-local dependencies";
+    } catch (const NLException& error) {
+      EXPECT_STREQ("getReducedWithConstants() does not support non full dependencies", error.what());
+    }
+    EXPECT_FALSE(SNLDesignModeling::getFunction(output));
+  }
+}
