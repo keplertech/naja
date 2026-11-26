@@ -1858,7 +1858,7 @@ TEST_F(SNLDesignModelingTest0, FunctionValidationRowBoundaries) {
   auto* library = NLLibrary::create(NLDB::create(NLUniverse::get()), NLLibrary::Type::Primitives);
   using Expression = SNLDesignModeling::BooleanExpression;
   using Op = Expression::Operator;
-  for (size_t count : {0, 1, 5, 6, 7}) {
+  for (size_t count : {0, 1, 5, 6, 7, 8, 12, 20}) {
     auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive);
     auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
     std::vector<size_t> dependencies;
@@ -1913,4 +1913,154 @@ TEST_F(SNLDesignModelingTest0, FunctionValidationExpandsReducedTable) {
   EXPECT_NO_THROW(SNLDesignModeling::setFunction(output, expression));
   expression.root = expression.addOperation(Op::Xor, {first,extra});
   EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
+}
+
+TEST_F(SNLDesignModelingTest0, WideFunctionValidation) {
+  NLUniverse::create();
+  auto* library = NLLibrary::create(NLDB::create(NLUniverse::get()), NLLibrary::Type::Primitives);
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  for (size_t count : {7, 8, 12, 20}) {
+    for (bool mux : {false, true}) {
+      SCOPED_TRACE(count);
+      SCOPED_TRACE(mux);
+      auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive);
+      std::vector<size_t> dependencies;
+      std::vector<Expression::NodeID> terms;
+      Expression expression;
+      for (size_t i = 0; i < count; ++i) {
+        auto* input = SNLScalarTerm::create(design, SNLTerm::Direction::Input);
+        dependencies.push_back(input->getOrderID());
+        terms.push_back(expression.addTerm(input));
+      }
+      auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+      if (mux) {
+        // A mux tree with the final input selecting the outermost branch.
+        expression.root = terms[0];
+        for (size_t i = 2; i < count; i += 2) {
+          auto inverted = expression.addOperation(Op::Not, {terms[i]});
+          auto low = expression.addOperation(Op::And, {inverted, expression.root});
+          auto high = expression.addOperation(Op::And, {terms[i], terms[i - 1]});
+          expression.root = expression.addOperation(Op::Or, {low, high});
+        }
+      } else {
+        // True only at the final row, far beyond the first block.
+        expression.root = expression.addOperation(Op::And, terms);
+      }
+      // Constants and double negations must retain their written structure.
+      expression.root = expression.addOperation(Op::Not, {expression.root});
+      expression.root = expression.addOperation(Op::Not, {expression.root});
+      expression.root = expression.addOperation(Op::And, {expression.root, expression.addConstant(true)});
+      std::vector<bool> rows(size_t{1} << count);
+      for (size_t row = 0; row < rows.size(); ++row) {
+        bool value = (row & 1) != 0;
+        if (mux) {
+          for (size_t i = 2; i < count; i += 2)
+            if ((row >> i) & 1) value = (row >> (i - 1)) & 1;
+        } else value = row == rows.size() - 1;
+        rows[row] = value;
+      }
+      auto deps = NLBitDependencies::encodeBits(dependencies);
+      SNLDesignModeling::setTruthTable(design, SNLTruthTable(count, rows, deps));
+      ASSERT_NO_THROW(SNLDesignModeling::setFunction(output, expression));
+      auto stored = SNLDesignModeling::getFunction(output);
+      ASSERT_TRUE(stored);
+      EXPECT_EQ(Op::Not, stored->nodes[stored->nodes[stored->root].operands[0]].operation);
+
+      auto* incorrect = SNLDesign::create(library, SNLDesign::Type::Primitive);
+      for (auto& node : expression.nodes) {
+        if (node.operation == Op::Term)
+          node.term = SNLScalarTerm::create(incorrect, SNLTerm::Direction::Input);
+      }
+      auto* incorrectOutput = SNLScalarTerm::create(incorrect, SNLTerm::Direction::Output);
+      rows[rows.size() - 2] = !rows[rows.size() - 2];
+      SNLDesignModeling::setTruthTable(incorrect, SNLTruthTable(count, rows, deps));
+      try {
+        SNLDesignModeling::setFunction(incorrectOutput, expression);
+        FAIL() << "accepted a mismatch beyond row 64";
+      } catch (const NLException& error) {
+        EXPECT_STREQ("SNLDesignModeling::setFunction: expression contradicts truth table", error.what());
+      }
+    }
+  }
+}
+
+TEST_F(SNLDesignModelingTest0, WideReducedAndReorderedFunctions) {
+  NLUniverse::create();
+  auto* library = NLLibrary::create(NLDB::create(NLUniverse::get()), NLLibrary::Type::Primitives);
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  for (bool reordered : {false, true}) {
+    auto* design = SNLDesign::create(library, SNLDesign::Type::Primitive);
+    std::vector<SNLScalarTerm*> inputs;
+    for (size_t i = 0; i < 10; ++i)
+      inputs.push_back(SNLScalarTerm::create(design, SNLTerm::Direction::Input));
+    auto* output = SNLScalarTerm::create(design, SNLTerm::Direction::Output);
+    // Explicitly permute order IDs to exercise dependency order independently
+    // of traversal order, crossing the low/high column boundary.
+    if (reordered) {
+      inputs[0]->setOrderID(8);
+      inputs[8]->setOrderID(0);
+    }
+    std::vector<size_t> dependencies;
+    Expression expression;
+    std::vector<Expression::NodeID> operands;
+    for (size_t i : {0, 2, 3, 4, 5, 6, 7, 8}) {
+      dependencies.push_back(inputs[i]->getOrderID());
+      auto term = expression.addTerm(inputs[i]);
+      operands.push_back(i == 0 ? expression.addOperation(Op::Not, {term}) : term);
+    }
+    expression.root = expression.addOperation(Op::And, operands);
+    std::vector<bool> rows(256, false);
+    rows[reordered ? 127 : 254] = true;
+    SNLDesignModeling::setTruthTable(design,
+        SNLTruthTable(8, rows, NLBitDependencies::encodeBits(dependencies)));
+    ASSERT_NO_THROW(SNLDesignModeling::setFunction(output, expression));
+    // Omitted inputs must still be enumerated if the expression mentions them.
+    auto extra = expression.addTerm(inputs[1]);
+    auto other = expression.addTerm(inputs[9]);
+    auto unchanged = expression.root;
+    expression.root = expression.addOperation(Op::Xor, {unchanged, extra, extra, other, other});
+    EXPECT_NO_THROW(SNLDesignModeling::setFunction(output, expression));
+    expression.root = expression.addOperation(Op::Xor, {unchanged, extra});
+    EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
+    expression.root = expression.addOperation(Op::Xor, {unchanged, other});
+    EXPECT_THROW(SNLDesignModeling::setFunction(output, expression), NLException);
+  }
+}
+
+TEST_F(SNLDesignModelingTest0, FunctionRejectsGenericTableWithNonLocalDependencies) {
+  NLUniverse::create();
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  for (auto type : {NLDB0::GateType::And, NLDB0::GateType::Or, NLDB0::GateType::Xor}) {
+    auto* design = NLDB0::getOrCreateNInputGate(type, 7);
+    auto* output = NLDB0::getGateSingleTerm(design);
+    const auto table = SNLDesignModeling::getTruthTable(design, output->getOrderID());
+    ASSERT_TRUE(table.isGeneric());
+    ASSERT_FALSE(NLBitDependencies::isSimple(table.getDependencies()));
+    Expression expression;
+    std::vector<Expression::NodeID> terms;
+    for (auto* input : NLDB0::getGateNTerms(design)->getBusBits())
+      terms.push_back(expression.addTerm(input));
+    const auto operation = type == NLDB0::GateType::And ? Op::And :
+        type == NLDB0::GateType::Or ? Op::Or : Op::Xor;
+    expression.root = expression.addOperation(operation, terms);
+    expression.root = expression.addOperation(Op::Not, {expression.root});
+    expression.root = expression.addOperation(Op::Not, {expression.root});
+    auto zero = expression.addConstant(false);
+    auto one = expression.addConstant(true);
+    expression.root = expression.addOperation(Op::Or, {expression.root, zero});
+    expression.root = expression.addOperation(Op::And, {expression.root, one});
+    expression.root = expression.addOperation(Op::Xor, {expression.root, zero});
+    // Generic gates number their output before their inputs. Preserve the
+    // existing reduction diagnostic, without installing a partially checked tree.
+    try {
+      SNLDesignModeling::setFunction(output, expression);
+      FAIL() << "accepted generic reduction with non-local dependencies";
+    } catch (const NLException& error) {
+      EXPECT_STREQ("getReducedWithConstants() does not support non full dependencies", error.what());
+    }
+    EXPECT_FALSE(SNLDesignModeling::getFunction(output));
+  }
 }
