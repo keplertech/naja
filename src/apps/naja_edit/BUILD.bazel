@@ -28,6 +28,7 @@ cc_binary(
         "//src/nl/formats/liberty:naja_snl_liberty",
         "//src/nl/formats/systemverilog:naja_snl_systemverilog",
         "//src/nl/formats/verilog:naja_snl_verilog",
+        "//src/nl/formats/vhdl:naja_snl_vhdl",
         "//src/nl/netlist:naja_snl_visual",
         "//src/nl/netlist/serialization/capnp:naja_nl_dump",
         "//src/nl/python/pyloader:naja_snl_pyloader",

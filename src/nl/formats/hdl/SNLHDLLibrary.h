@@ -13,7 +13,7 @@ namespace naja::NL {
 // Basic logical names are case-insensitive; extended names retain their case.
 inline std::string canonicalHDLLibraryName(std::string name) {
   if (name.empty() || name.front() != '\\')
-    for (auto& c : name) c = std::tolower(static_cast<unsigned char>(c));
+    for (auto& c : name) c = (c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
   return name;
 }
 

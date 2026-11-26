@@ -8,6 +8,7 @@ using ::testing::ElementsAre;
 
 #include "NLUniverse.h"
 #include "NLException.h"
+#include "SNLDesign.h"
 using namespace naja::NL;
 
 class NLLibraryTest: public ::testing::Test {
@@ -277,4 +278,15 @@ TEST_F(NLLibraryTest, testErrors) {
   EXPECT_EQ(nullptr, prims->getLibrary(NLID::LibraryID(5)));
   //ID collision
   EXPECT_THROW(NLLibrary::create(prims, NLID::LibraryID(2), NLLibrary::Type::Primitives), NLException);
+}
+
+TEST_F(NLLibraryTest, caseInsensitiveLookup) {
+  auto* library = NLLibrary::create(NLDB::create(universe_), NLName("Cells"));
+  auto* first = SNLDesign::create(library, NLName("Gate"));
+  EXPECT_EQ(first, library->getSNLDesignCaseInsensitive(NLName("GATE")));
+  EXPECT_EQ(nullptr, library->getSNLDesign(NLName("GATE")));
+  auto* second = SNLDesign::create(library, NLName("gate"));
+  EXPECT_THROW(library->getSNLDesignCaseInsensitive(NLName("Gate")), NLException);
+  second->destroy();
+  EXPECT_EQ(first, library->getSNLDesignCaseInsensitive(NLName("gate")));
 }

@@ -320,6 +320,18 @@ SNLTerm* SNLDesign::getTerm(NLID::DesignObjectID id) const {
   return nullptr;
 }
 
+SNLTerm* SNLDesign::getTermCaseInsensitive(const NLName& name) const {
+  if (name.empty()) return nullptr;
+  const auto folded = foldNameCase(name.getString());
+  SNLTerm* result = nullptr;
+  for (auto* candidate : getTerms()) {
+    if (foldNameCase(candidate->getName().getString()) != folded) continue;
+    if (result) throw NLException("ambiguous case-insensitive getTerm: " + name.getString());
+    result = candidate;
+  }
+  return result;
+}
+
 SNLTerm* SNLDesign::getTerm(const NLName& name) const {
   auto it = termNameIDMap_.find(name);
   if (it != termNameIDMap_.end()) {

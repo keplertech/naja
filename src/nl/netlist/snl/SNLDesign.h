@@ -119,6 +119,8 @@ class SNLDesign final: public NLObject {
     SNLTerm* getTermByID(NLID::DesignObjectID id) const { return getTerm(id); }
     /// \return SNLTerm with NLName name or nullptr if it does not exist
     SNLTerm* getTerm(const NLName& name) const;
+    /// ASCII case-insensitive lookup; null if absent, throws NLException if ambiguous.
+    SNLTerm* getTermCaseInsensitive(const NLName& name) const;
     /// \return SNLScalarTerm with NLID::DesignObjectID id or nullptr if it does not exist
     SNLScalarTerm* getScalarTerm(NLID::DesignObjectID id) const;
     /// \return SNLBusTermBit with NLID::DesignObjectID id and NLID::Bit bit or nullptr if it does not exist.

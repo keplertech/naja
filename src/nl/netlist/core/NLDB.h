@@ -60,6 +60,8 @@ class NLDB final: public NLObject {
     NLLibrary* getLibrary(NLID::LibraryID id) const;
     /// \return the unique NLLibrary in this NLDB with NLName:name 
     NLLibrary* getLibrary(const NLName& name) const;
+    /// ASCII case-insensitive lookup; null if absent, throws NLException if ambiguous.
+    NLLibrary* getLibraryCaseInsensitive(const NLName& name) const;
 
     /// \return the SNLDesign with NLID::DBDesignReference reference or null if it does not exist
     SNLDesign* getSNLDesign(const NLID::DBDesignReference& designReference) const;

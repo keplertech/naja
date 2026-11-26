@@ -2786,7 +2786,9 @@ def load_primitives_from_file(file: str):
 
 
 def load_naja_if(path: str, *, progress=None):
-    """Load the Naja IF from the given path."""
+    """Load NajaIF; load the same ordered Liberty sources first to retain
+    sequential/timing modeling that snapshots do not yet serialize completely.
+    """
     if not os.path.isdir(path):
         raise FileNotFoundError(f"Cannot load Naja IF from non existing directory: {path}")
     logger.info(f"Loading Naja IF from {path}")

@@ -36,9 +36,13 @@ sh_test(
         "test/nl/formats/systemverilog/benchmarks",
         "test/nl/formats/liberty/benchmarks",
     ],
-    env = {"NAJA_DB0_AUDIT_BINARY": "$(rootpath //test/nl/snl/serialization/capnp:snlCapnPTests)"},
+    env = {
+        "NAJA_DB0_AUDIT_BINARY": "$(rootpath //test/nl/snl/serialization/capnp:snlCapnPTests)",
+        "NAJA_EDIT_BINARY": "$(rootpath //src/apps/naja_edit:naja_edit)",
+    },
     toolchains = ["@rules_python//python:current_py_toolchain"],
     data = [
+        "//src/apps/naja_edit:naja_edit",
         ":test_sources",
         "//test/nl/snl/serialization/capnp:snlCapnPTests",
         "//src/najaeda/najaeda:sources",

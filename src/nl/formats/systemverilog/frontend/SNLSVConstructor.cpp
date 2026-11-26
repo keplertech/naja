@@ -60,6 +60,7 @@
 #include "SNLRTLInfos.h"
 #include "SNLRTLPrimitives.h"
 #include "SNLHDLMuxSelection.h"
+#include "SNLHDLPrimitives.h"
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 
@@ -3064,6 +3065,41 @@ endmodule
       // (for example: --top, -G parameter overrides, library maps).
       if (progress_) { progress_->finish(); progress_->begin("elaborate"); }
       compilation_ = driver.createCompilation();
+      primitives_ = std::make_unique<SNLHDLPrimitives>(library_->getDB());
+      std::set<std::string> definitions;
+      for (const auto* definition : compilation_->getDefinitions())
+        definitions.emplace(definition->name);
+      for (auto* model : primitives_->models()) {
+        const auto name = model->getName().getString();
+        if (!definitions.insert(name).second) continue;
+        // Always escape identifiers, including SV keywords and Liberty punctuation.
+        const auto identifier = [](const std::string& value) {
+          if (value.empty() || value.find_first_of(" \t\r\n") != std::string::npos)
+            throw NLException("unrepresentable SystemVerilog primitive identifier: " + value);
+          return "\\" + value + " ";
+        };
+        std::ostringstream source;
+        source << "module " << identifier(name) << "(";
+        bool first = true;
+        for (auto* term : model->getTerms()) {
+          if (!dynamic_cast<SNLScalarTerm*>(term) && !dynamic_cast<SNLBusTerm*>(term))
+            continue; // Referenced unsupported interfaces are rejected by buildDesign.
+          if (!first) source << ", ";
+          first = false;
+          source << (term->getDirection() == SNLTerm::Direction::Input ? "input wire " :
+                     term->getDirection() == SNLTerm::Direction::Output ? "output wire " : "inout wire ");
+          if (auto* bus = dynamic_cast<SNLBusTerm*>(term))
+            source << "[" << bus->getMSB() << ":" << bus->getLSB() << "] ";
+          source << identifier(term->getName().getString());
+        }
+        source << "); endmodule\n";
+        auto tree = slang::syntax::SyntaxTree::fromText(
+          source.str(), driver.sourceManager, "<naja-primitive:" + name + ">");
+        tree->isLibraryUnit = true;
+        primitiveTrees_.insert(tree.get());
+        syntaxTrees_.push_back(tree);
+        compilation_->addSyntaxTree(tree);
+      }
     }
 
     void bindLiveASTLink(NLObject* object, const Symbol& symbol) {
@@ -3547,6 +3583,42 @@ endmodule
         return std::string("SNLSVConstructorImpl::") + phase + "(" + defName + ")";
       };
 #endif
+      if (primitives_) {
+        if (auto* primitive = primitives_->find(defName)) {
+          SNLHDLPrimitives::validateInterface(primitive);
+          if (!definition.parameters.empty())
+            throw NLException("primitive parameter declarations/overrides are unsupported: " + defName);
+          const auto* syntax = definition.getSyntax();
+          if (!syntax || syntax->kind != slang::syntax::SyntaxKind::ModuleDeclaration)
+            throw NLException("unsupported primitive HDL definition: " + defName);
+          for (const auto* member : syntax->as<slang::syntax::ModuleDeclarationSyntax>().members) {
+            if (member->kind != slang::syntax::SyntaxKind::PortDeclaration &&
+                member->kind != slang::syntax::SyntaxKind::EmptyMember)
+              throw NLException("behavioral HDL definition conflicts with primitive: " + defName);
+          }
+          size_t portCount = 0;
+          for (const auto* symbol : body.getPortList()) {
+            if (symbol->kind != SymbolKind::Port)
+              throw NLException("unsupported primitive port: " + defName);
+            const auto& port = symbol->as<slang::ast::PortSymbol>();
+            auto* term = primitive->getTerm(NLName(std::string(port.name)));
+            const auto direction = toSNLDirection(port.direction);
+            if (!term || !direction || term->getDirection() != *direction ||
+                port.getType().getBitWidth() != term->getWidth())
+              throw NLException("primitive HDL port mismatch: " + defName + "." + std::string(port.name));
+            const auto range = getRangeFromType(port.getType());
+            const auto* bus = dynamic_cast<SNLBusTerm*>(term);
+            if ((bus && (!range || range->left != bus->getMSB() || range->right != bus->getLSB())) ||
+                (!bus && !port.getType().isScalar()))
+              throw NLException("primitive HDL port bounds mismatch: " + defName + "." + std::string(port.name));
+            ++portCount;
+          }
+          if (portCount != primitive->getTerms().size())
+            throw NLException("primitive HDL interface mismatch: " + defName);
+          bodyToDesign_[&body] = primitive;
+          return primitive;
+        }
+      }
       auto existingIt = bodyToDesign_.find(&body);
       if (existingIt != bodyToDesign_.end()) {
 #ifdef NAJA_ENABLE_SV_CONSTRUCTOR_PERF_REPORT
@@ -37033,6 +37105,16 @@ endmodule
 #endif
       const auto* canonicalBody = instance.getCanonicalBody();
       auto modelDesign = buildDesign(canonicalBody ? *canonicalBody : instance.body);
+      if (modelDesign->isPrimitive() && primitiveTrees_.contains(instance.getDefinition().syntaxTree)) {
+        if (const auto* syntax = instance.getSyntax(); syntax &&
+            syntax->kind == slang::syntax::SyntaxKind::HierarchicalInstance) {
+          for (const auto* connection : syntax->as<slang::syntax::HierarchicalInstanceSyntax>().connections)
+            if (connection->kind == slang::syntax::SyntaxKind::OrderedPortConnection ||
+                connection->kind == slang::syntax::SyntaxKind::EmptyPortConnection)
+              throw NLException("positional primitive connections require an explicit HDL declaration: " +
+                  modelDesign->getName().getString());
+        }
+      }
       auto inst = SNLInstance::create(
         design,
         modelDesign,
@@ -37695,6 +37777,8 @@ endmodule
       gateOutputCache_ {};
     std::unordered_map<SNLBitNet*, EqualitySelectorInfo> equalitySelectorsByNet_ {};
     std::vector<SNLInstance*> anonymousAssignAliasCandidates_ {};
+    std::unique_ptr<SNLHDLPrimitives> primitives_;
+    std::set<const slang::syntax::SyntaxTree*> primitiveTrees_;
     std::unique_ptr<slang::driver::Driver> driver_;
     std::unique_ptr<slang::ast::Compilation> compilation_;
     std::vector<std::shared_ptr<slang::syntax::SyntaxTree>> syntaxTrees_;

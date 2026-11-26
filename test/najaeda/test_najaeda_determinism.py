@@ -265,7 +265,15 @@ def worker(kind, source, output, run):
     universe = naja.NLUniverse.create()
     db = naja.NLDB.create(universe)
     universe.setTopDB(db)
-    if kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top", "sv_formal"):
+    if kind in ("sv_liberty", "vhd_liberty"):
+        db.loadLibertyPrimitives([str(Path(source).with_name("cells.lib"))])
+        if kind == "sv_liberty":
+            db.loadSystemVerilog([source], diagnostics_report_path=None)
+        else:
+            db.loadVHDL(source, top="top", diagnostics_report_path=None)
+        top = universe.getTopDesign()
+        assert top.getInstance("u").getModel() == db.getLibrary("CELL_LIB").getSNLDesign("CELL_A")
+    elif kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top", "sv_formal"):
         options = None
         if kind == "sv_top":
             options = {"slang": ["-GWIDTH=5"]}
@@ -304,6 +312,10 @@ def worker(kind, source, output, run):
     output = Path(output)
     dump_state(output / "original", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets", graphs=kind == "v_graph")
     universe.destroy()
+    if kind in ("sv_liberty", "vhd_liberty"):
+        universe = naja.NLUniverse.create()
+        db = naja.NLDB.create(universe)
+        db.loadLibertyPrimitives([str(Path(source).with_name("cells.lib"))])
     naja.NLDB.loadNajaIF(str(output / "original" / "snapshot"))
     dump_state(output / "reloaded", timing=kind in ("sv_timing", "sv_resets"), resets=kind == "sv_resets", graphs=kind == "v_graph")
     assert allocations  # Retain heap perturbation until both dumps are complete.
@@ -391,6 +403,14 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 else:
                     with self.subTest(language=kind, run=run, phase="fresh process"):
                         self.assert_artifacts_equal(baseline, original)
+
+    def test_liberty_systemverilog(self):
+        from test_najaeda_hdl_primitives import LIBERTY, SV
+        self.check_determinism("sv_liberty", SV, {"cells.lib": LIBERTY})
+
+    def test_liberty_vhdl(self):
+        from test_najaeda_hdl_primitives import LIBERTY, VHDL_COMPONENT
+        self.check_determinism("vhd_liberty", VHDL_COMPONENT, {"cells.lib": LIBERTY})
 
     def test_canonical_db0_families(self):
         binary = os.environ.get("NAJA_DB0_AUDIT_BINARY")
@@ -1561,6 +1581,9 @@ if __name__ == "__main__":
         worker(*sys.argv[2:])
     elif len(sys.argv) > 1 and sys.argv[1] == "--load-worker":
         from najaeda import naja
+        if len(sys.argv) > 4 and sys.argv[4] in ("sv_liberty", "vhd_liberty"):
+            db = naja.NLDB.create(naja.NLUniverse.create())
+            db.loadLibertyPrimitives([str(Path(sys.argv[2]).parents[2] / "cells.lib")])
         naja.NLDB.loadNajaIF(sys.argv[2])
         assert not naja.intentAvailable(), "cold snapshots must not expose retained intent"
         dump_state(Path(sys.argv[3]), timing=len(sys.argv) > 4 and sys.argv[4] in ("sv_timing", "sv_resets"),

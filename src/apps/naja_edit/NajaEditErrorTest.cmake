@@ -59,7 +59,7 @@ endif()
 if(TEST_CASE STREQUAL "invalid-input-format")
   set(TEST_ARGS --from_format json)
   set(EXPECTED
-    "Invalid value 'json' for --from_format \\(-f\\).*Expected one of: gate-level-verilog \\(or verilog\\), systemverilog \\(or sv\\), snl")
+    "Invalid value 'json' for --from_format \\(-f\\).*Expected one of: gate-level-verilog \\(or verilog\\), systemverilog \\(or sv\\), vhdl, snl")
 elseif(TEST_CASE STREQUAL "missing-required-input")
   set(TEST_ARGS --from_format snl)
   set(EXPECTED "--input \\(-i\\) is required with --from_format 'snl'")

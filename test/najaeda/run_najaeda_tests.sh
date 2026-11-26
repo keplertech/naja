@@ -45,5 +45,9 @@ if [[ -n "${NAJA_DB0_AUDIT_BINARY:-}" ]]; then
   export NAJA_DB0_AUDIT_BINARY="$(abspath "${NAJA_DB0_AUDIT_BINARY}")"
 fi
 
+if [[ -n "${NAJA_EDIT_BINARY:-}" ]]; then
+  export NAJA_EDIT_BINARY="$(abspath "${NAJA_EDIT_BINARY}")"
+fi
+
 cd "${scratch}"
 exec "$(abspath "${python3_bin}")" -m unittest discover -v "${NAJAEDA_SOURCE_TEST_PATH}" -p "${test_pattern}"

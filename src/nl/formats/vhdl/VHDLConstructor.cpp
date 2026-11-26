@@ -293,7 +293,7 @@ SNLDesign* VHDLConstructor::constructInputs(
   }
   // LCOV_EXCL_STOP
   auto* sources = VHDLSources::get(library_);
-  if (requiresVHDLRTL(parsed.syntax) || !sources->source.empty() || !path.empty() ||
+  if (!library_->getDB()->getPrimitiveLibraries().empty() || requiresVHDLRTL(parsed.syntax) || !sources->source.empty() || !path.empty() ||
       !library_->getName().getString().empty()) {
     auto combined = sources->source;
     auto combinedInputs = sources->inputs;

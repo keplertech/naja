@@ -1469,3 +1469,75 @@ Each helper call creates a registration; remove its handle when finished.
 See :doc:`raw_api` for direct callback integration and callback lifetime details.
 
 .. autofunction:: najaeda.forward_native_logging
+
+Liberty cells in RTL designs
+----------------------------
+
+Load Liberty before elaborating SystemVerilog or VHDL. Instances bind directly
+into the loaded primitive library, retaining its logic, sequential and timing
+modeling; no cell HDL implementations are required.
+
+.. code-block:: python
+
+   netlist.load_liberty("cells.lib")
+   top = netlist.load_system_verilog("design.sv")
+
+In a fresh universe, the corresponding VHDL workflow is:
+
+.. code-block:: python
+
+   netlist.load_liberty("cells.lib")
+   top = netlist.load_vhdl("design.vhd")
+
+SystemVerilog uses exact cell and pin names. VHDL basic identifiers match cell
+and pin names ignoring ASCII case; extended identifiers match exactly. Ambiguous
+matches are errors, including names differing only in case for a VHDL basic
+reference. Search is confined to root primitive libraries in the current database.
+
+A visible VHDL component declaration binds automatically to a unique matching
+primitive. Its declared types, array bounds and port order govern association
+checking. Direct ``entity cell_library.cell_name`` references search only the
+named logical library; ``work`` retains its normal source-library meaning.
+Without an explicit entity declaration, direct primitive references use
+``std_logic`` / constrained ``std_logic_vector`` ports and named associations.
+Component declarations can use the frontend's supported bit or logic types.
+
+Named SystemVerilog connections work without HDL stubs. Positional connections
+require an explicit port-only HDL declaration. VHDL positional component maps
+use the component declaration's order. Interface mismatches, behavioral HDL
+collisions, unsupported primitive parameters/generics and unsupported bundle
+interfaces are errors. Library declarations synthesized for elaboration never
+become inferred top modules.
+
+The same workflows are available from the command line:
+
+.. code-block:: console
+
+   naja_edit -f systemverilog -p cells.lib -i design.sv --sv_top top -t snl -o snapshot
+   naja_edit -f vhdl -p cells.lib -i design.vhd --vhdl_top top -t snl -o snapshot
+
+Repeat ``-i`` to provide multiple VHDL files. ``--vhdl_diagnostics_report`` sets
+its diagnostics path; an empty value disables file output. VHDL output is not
+supported; select gate-level Verilog, SNL or DOT output explicitly.
+
+Liberty modeling and NajaIF
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+NajaIF does not yet save all Liberty modeling. Keep the Liberty sources and
+load them again before loading the snapshot:
+
+.. code-block:: python
+
+   netlist.load_liberty("cells.lib")
+   netlist.load_naja_if("snapshot")
+
+.. code-block:: console
+
+   naja_edit -f snl -p cells.lib -i snapshot -t gate-level-verilog -o result.v
+
+Use the same ordered primitive inputs and database layout as when the snapshot
+was created. Snapshot references contain numeric library, model and terminal
+IDs. Source-loaded primitive libraries are reused only when their serialized
+interfaces agree with the snapshot; incompatible interfaces are rejected.
+Loading a snapshot alone retains its stored interfaces and truth tables but
+cannot restore Liberty sequential/timing modeling that was not serialized.
