@@ -1,0 +1,28 @@
+// SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+// SPDX-License-Identifier: Apache-2.0
+
+library (wide) {
+  cell (mux16) {
+    pin (d0) { direction : input; }
+    pin (d1) { direction : input; }
+    pin (d2) { direction : input; }
+    pin (d3) { direction : input; }
+    pin (d4) { direction : input; }
+    pin (d5) { direction : input; }
+    pin (d6) { direction : input; }
+    pin (d7) { direction : input; }
+    pin (d8) { direction : input; }
+    pin (d9) { direction : input; }
+    pin (d10) { direction : input; }
+    pin (d11) { direction : input; }
+    pin (d12) { direction : input; }
+    pin (d13) { direction : input; }
+    pin (d14) { direction : input; }
+    pin (d15) { direction : input; }
+    pin (s0) { direction : input; }
+    pin (s1) { direction : input; }
+    pin (s2) { direction : input; }
+    pin (s3) { direction : input; }
+    pin (y) { direction : output; function : "((s3*((s2*((s1*((s0*d15)+(!s0*d14)))+(!s1*((s0*d13)+(!s0*d12)))))+(!s2*((s1*((s0*d11)+(!s0*d10)))+(!s1*((s0*d9)+(!s0*d8)))))))+(!s3*((s2*((s1*((s0*d7)+(!s0*d6)))+(!s1*((s0*d5)+(!s0*d4)))))+(!s2*((s1*((s0*d3)+(!s0*d2)))+(!s1*((s0*d1)+(!s0*d0))))))))"; }
+  }
+}

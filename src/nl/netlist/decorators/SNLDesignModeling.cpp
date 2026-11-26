@@ -2626,58 +2626,91 @@ void SNLDesignModeling::setFunction(SNLBitTerm* output, BooleanExpression&& func
         [term](const auto& node) { return node.operation == Op::Term && node.term == term; });
     return !referenced && std::find(dependencies.begin(), dependencies.end(), term->getOrderID()) == dependencies.end();
   }), inputs.end());
-  // Validate every row of small explicit tables at once. Bit k in each word
-  // is the node's value for input row k; negations remain in the stored tree.
-  if (!table.isGeneric() && inputs.size() <= 6) {
-    const size_t rows = size_t{1} << inputs.size();
+  // Resolve node and dependency columns once, outside either evaluation loop.
+  std::vector<size_t> nodeInputs(merged.nodes.size());
+  for (size_t i = 0; i < merged.nodes.size(); ++i) {
+    if (merged.nodes[i].operation == Op::Term)
+      nodeInputs[i] = std::find(inputs.begin(), inputs.end(), merged.nodes[i].term) - inputs.begin();
+  }
+  std::vector<size_t> columns;
+  bool direct = dependencies.size() == inputs.size();
+  for (auto dependency : dependencies) {
+    auto it = std::find_if(inputs.begin(), inputs.end(),
+        [dependency](auto* term) { return term->getOrderID() == dependency; });
+    if (it == inputs.end()) fail("truth table dependency is not an input");
+    columns.push_back(it - inputs.begin());
+    direct &= columns.back() == columns.size() - 1;
+  }
+  if (!table.isGeneric()) {
+    // Each node word evaluates up to 64 rows. Higher input columns are
+    // constant throughout a block; low columns repeat the same bit patterns.
+    const size_t rows = size_t{1} << std::min<size_t>(inputs.size(), 6);
     const uint64_t mask = rows == 64 ? std::numeric_limits<uint64_t>::max() : (uint64_t{1} << rows) - 1;
     static constexpr uint64_t inputRows[] = {
         0xaaaaaaaaaaaaaaaaULL, 0xccccccccccccccccULL, 0xf0f0f0f0f0f0f0f0ULL,
         0xff00ff00ff00ff00ULL, 0xffff0000ffff0000ULL, 0xffffffff00000000ULL};
-    std::vector<uint64_t> values(merged.nodes.size());
-    for (size_t i = 0; i < merged.nodes.size(); ++i) {
-      const auto& node = merged.nodes[i];
-      uint64_t value = node.operation == Op::And ? mask : 0;
-      switch (node.operation) {
-        case Op::Constant: value = node.constant ? mask : 0; break;
-        case Op::Term:
-          value = inputRows[std::find(inputs.begin(), inputs.end(), node.term) - inputs.begin()] & mask;
-          break;
-        case Op::Not: value = values[node.operands.front()] ^ mask; break;
-        default:
-          for (auto operand : node.operands) {
-            if (node.operation == Op::And) value &= values[operand];
-            else if (node.operation == Op::Or) value |= values[operand];
-            else value ^= values[operand];
-          }
+    std::vector<uint64_t> values(merged.nodes.size()), inputWords(inputs.size());
+    for (size_t i = 0; i < std::min<size_t>(inputs.size(), 6); ++i)
+      inputWords[i] = inputRows[i] & mask;
+    const auto chunks = direct ? table.bits().getChunks() : std::vector<uint64_t>{};
+    size_t lowRows[64] {};
+    if (!direct) {
+      for (size_t row = 0; row < rows; ++row)
+        for (size_t i = 0; i < columns.size(); ++i)
+          if (columns[i] < 6) lowRows[row] |= ((row >> columns[i]) & size_t{1}) << i;
+    }
+    // A binary block counter also handles expression-only columns without
+    // requiring their combined row count to fit in a machine integer.
+    std::vector<bool> highInputs(inputs.size() > 6 ? inputs.size() - 6 : 0, false);
+    size_t block = 0;
+    bool more = true;
+    while (more) {
+      for (size_t i = 0; i < highInputs.size(); ++i)
+        inputWords[i + 6] = highInputs[i] ? mask : 0;
+      for (size_t i = 0; i < merged.nodes.size(); ++i) {
+        const auto& node = merged.nodes[i];
+        uint64_t value = node.operation == Op::And ? mask : 0;
+        switch (node.operation) {
+          case Op::Constant: value = node.constant ? mask : 0; break;
+          case Op::Term:
+            value = inputWords[nodeInputs[i]];
+            break;
+          case Op::Not: value = values[node.operands.front()] ^ mask; break;
+          default:
+            for (auto operand : node.operands) {
+              if (node.operation == Op::And) value &= values[operand];
+              else if (node.operation == Op::Or) value |= values[operand];
+              else value ^= values[operand];
+            }
+        }
+        values[i] = value;
       }
-      values[i] = value;
-    }
-    size_t columns[6] {};
-    size_t columnCount = 0;
-    for (auto dependency : dependencies) {
-      auto it = std::find_if(inputs.begin(), inputs.end(),
-          [dependency](auto* term) { return term->getOrderID() == dependency; });
-      if (it == inputs.end()) fail("truth table dependency is not an input");
-      columns[columnCount++] = it - inputs.begin();
-    }
-    uint64_t expected = static_cast<uint64_t>(table.bits()) & mask;
-    // Expression-only inputs must also be checked. Expand a reduced table over
-    // those inputs rather than allowing an expression to introduce dependencies.
-    if (columnCount != inputs.size()) {
-      expected = 0;
-      for (size_t row = 0; row < rows; ++row) {
-        size_t tableRow = 0;
-        for (size_t i = 0; i < columnCount; ++i)
-          tableRow |= ((row >> columns[i]) & 1) << i;
-        if (table.bits().bit(tableRow)) expected |= uint64_t{1} << row;
+      uint64_t expected = 0;
+      if (direct) {
+        expected = chunks[block] & mask;
+      } else {
+        size_t highRow = 0;
+        for (size_t i = 0; i < columns.size(); ++i)
+          if (columns[i] >= 6 && highInputs[columns[i] - 6]) highRow |= size_t{1} << i;
+        // Expand reduced or reordered tables, including expression-only inputs.
+        for (size_t row = 0; row < rows; ++row)
+          if (table.bits().bit(highRow | lowRows[row])) expected |= uint64_t{1} << row;
       }
+      if (values[merged.root] != expected) fail("expression contradicts truth table");
+      more = false;
+      for (size_t i = 0; i < highInputs.size(); ++i) {
+        highInputs[i] = !highInputs[i];
+        if (highInputs[i]) { more = true; break; }
+      }
+      ++block;
     }
-    if (values[merged.root] != expected) fail("expression contradicts truth table");
   } else {
     // Pins absent from both expressions are irrelevant. Enumerating the union
     // still proves equality over every full input row, including reduced tables.
     std::vector<bool> row(inputs.size(), false), values(merged.nodes.size());
+    SNLTruthTable::ConstantInputs constants;
+    constants.reserve(columns.size());
+    for (size_t i = 0; i < columns.size(); ++i) constants.emplace_back(i, false);
     bool more = true;
     while (more) {
       for (size_t i = 0; i < merged.nodes.size(); ++i) {
@@ -2685,7 +2718,7 @@ void SNLDesignModeling::setFunction(SNLBitTerm* output, BooleanExpression&& func
         bool value = node.operation == Op::And;
         switch (node.operation) {
           case Op::Constant: value = node.constant; break;
-          case Op::Term: value = row[std::find(inputs.begin(), inputs.end(), node.term) - inputs.begin()]; break;
+          case Op::Term: value = row[nodeInputs[i]]; break;
           case Op::Not: value = !values[node.operands.front()]; break;
           default:
             for (auto operand : node.operands) {
@@ -2696,16 +2729,9 @@ void SNLDesignModeling::setFunction(SNLBitTerm* output, BooleanExpression&& func
         }
         values[i] = value;
       }
-      size_t tableRow = 0;
-      SNLTruthTable::ConstantInputs constants;
-      for (size_t i = 0; i < dependencies.size(); ++i) {
-        auto it = std::find_if(inputs.begin(), inputs.end(), [&](auto* term) { return term->getOrderID() == dependencies[i]; });
-        if (it == inputs.end()) fail("truth table dependency is not an input");
-        bool value = row[it - inputs.begin()];
-        if (value && !table.isGeneric()) tableRow |= size_t{1} << i;
-        constants.emplace_back(i, value);
-      }
-      const bool expected = table.isGeneric() ? table.getReducedWithConstants(constants).bits().bit(0) : table.bits().bit(tableRow);
+      for (size_t i = 0; i < columns.size(); ++i)
+        constants[i].second = row[columns[i]];
+      const bool expected = table.getReducedWithConstants(constants).bits().bit(0);
       if (values[merged.root] != expected) fail("expression contradicts truth table");
       more = false;
       for (size_t i = 0; i < row.size(); ++i) {

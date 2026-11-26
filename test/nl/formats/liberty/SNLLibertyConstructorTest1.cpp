@@ -1235,3 +1235,44 @@ TEST_F(SNLLibertyConstructorTest1, testScanInputInverted) {
   EXPECT_EQ(Operator::Term, input.operation);
   EXPECT_EQ(inverter->getScalarTerm(NLName("a")), input.term);
 }
+
+TEST_F(SNLLibertyConstructorTest1, WideMuxWrittenFunction) {
+  using Expression = SNLDesignModeling::BooleanExpression;
+  using Op = Expression::Operator;
+  SNLLibertyConstructor constructor(library_);
+  constructor.construct(std::filesystem::path(SNL_LIBERTY_BENCHMARKS) /
+      "benchmarks" / "tests" / "mux16.lib");
+  auto* design = library_->getSNLDesign(NLName("mux16"));
+  ASSERT_NE(nullptr, design);
+  auto function = SNLDesignModeling::getFunction(design->getScalarTerm(NLName("y")));
+  ASSERT_TRUE(function);
+  // Check every operator and pin in the written mux tree, not just its value.
+  auto check = [&](auto&& self, Expression::NodeID id, size_t depth, size_t first) -> void {
+    ASSERT_LT(id, function->nodes.size());
+    const auto& node = function->nodes[id];
+    if (depth == 0) {
+      ASSERT_EQ(Op::Term, node.operation);
+      EXPECT_EQ(design->getScalarTerm(NLName("d" + std::to_string(first))), node.term);
+      return;
+    }
+    ASSERT_EQ(Op::Or, node.operation);
+    ASSERT_EQ(2u, node.operands.size());
+    for (size_t branch = 0; branch < 2; ++branch) {
+      const auto& product = function->nodes[node.operands[branch]];
+      ASSERT_EQ(Op::And, product.operation);
+      ASSERT_EQ(2u, product.operands.size());
+      auto select = product.operands[0];
+      if (branch == 1) {
+        const auto& inverted = function->nodes[select];
+        ASSERT_EQ(Op::Not, inverted.operation);
+        ASSERT_EQ(1u, inverted.operands.size());
+        select = inverted.operands[0];
+      }
+      const auto& pin = function->nodes[select];
+      EXPECT_EQ(Op::Term, pin.operation);
+      EXPECT_EQ(design->getScalarTerm(NLName("s" + std::to_string(depth - 1))), pin.term);
+      self(self, product.operands[1], depth - 1, first + (branch == 0 ? size_t{1} << (depth - 1) : 0));
+    }
+  };
+  check(check, function->root, 4, 0);
+}
