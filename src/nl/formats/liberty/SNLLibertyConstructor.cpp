@@ -800,9 +800,10 @@ void registerScanModeling(SNLDesign* primitive, const Yosys::LibertyAst* cell) {
       auto* type = findDirectChild(pin, "signal_type");
       if (!type) continue;
       if (type->value == "test_scan_in_inverted") {
-        throw SNLLibertyConstructorException(
-            "test_scan_in_inverted requires an inverted scan-data representation; "
-            "no scan role can be assigned to pin " + pin->args[0]);
+        NAJA_LOG_WARN("Liberty cell {} test_cell pin {} inverted scan input is not represented; "
+            "the pin gets no scan role from the test cell.",
+            primitive->getName().getString(), pin->args[0]);
+        continue;
       }
       if (type->value == "test_scan_in") {
         addRole(term, Role::ScanInput, Level::NA);

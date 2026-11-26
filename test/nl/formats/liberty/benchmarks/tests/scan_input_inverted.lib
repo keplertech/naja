@@ -1,0 +1,25 @@
+/* SPDX-FileCopyrightText: 2026 The Naja authors <https://github.com/najaeda/naja/blob/main/AUTHORS>
+ * SPDX-License-Identifier: Apache-2.0
+ */
+library (scan_input_inverted) {
+  cell (scan_ff) {
+    ff (iq, iqn) { next_state : "(se*!si)+(!se*d)"; clocked_on : "ck"; }
+    pin (d)  { direction : input; nextstate_type : data; }
+    pin (si) { direction : input; nextstate_type : scan_in; }
+    pin (se) { direction : input; nextstate_type : scan_enable; }
+    pin (ck) { direction : input; clock : true; }
+    pin (q)  { direction : output; function : "iq"; }
+    test_cell () {
+      ff (iq, iqn) { next_state : "d"; clocked_on : "ck"; }
+      pin (d)  { direction : input; }
+      pin (si) { direction : input; signal_type : test_scan_in_inverted; }
+      pin (se) { direction : input; signal_type : test_scan_enable; }
+      pin (ck) { direction : input; }
+      pin (q)  { direction : output; function : "iq"; signal_type : test_scan_out; }
+    }
+  }
+  cell (inv1) {
+    pin (a) { direction : input; }
+    pin (y) { direction : output; function : "!a"; }
+  }
+}

@@ -102,6 +102,24 @@ class SNLDesignModelingTest(unittest.TestCase):
     self.assertEqual(role.Enable, pin.getRole())
     self.assertEqual(level.Low, pin.getActiveLevel())
 
+  def testScanInputInverted(self):
+    formats = Path(os.environ.get("FORMATS_PATH", Path(__file__).resolve().parents[2] / "formats"))
+    self.db.loadLibertyPrimitives([str(formats / "liberty/benchmarks/tests/scan_input_inverted.lib")])
+    library = self.db.getLibrary("scan_input_inverted")
+    self.assertIsNotNone(library)
+    self.assertEqual(2, len(list(library.getSNLDesigns())))
+    cell = library.getSNLDesign("scan_ff")
+    self.assertIsNotNone(cell)
+    self.assertEqual(naja.SNLTermRole.ScanInput, cell.getScalarTerm("si").getRole())
+    self.assertEqual(naja.SNLTermRole.ScanEnable, cell.getScalarTerm("se").getRole())
+    self.assertEqual(naja.SNLActiveLevel.NA, cell.getScalarTerm("se").getActiveLevel())
+    self.assertEqual(naja.SNLTermRole.DataInput, cell.getScalarTerm("d").getRole())
+    inverter = library.getSNLDesign("inv1")
+    self.assertIsNotNone(inverter)
+    self.assertEqual(("not", ("term", inverter.getScalarTerm("a"))),
+                     inverter.getScalarTerm("y").getFunction())
+    self.assertTrue(inverter.isInv())
+
   def testLibraries(self):
     self.assertTrue(self.designs.isStandard())
     self.assertFalse(self.designs.isPrimitives())
