@@ -262,7 +262,7 @@ nix-shell -p cmake gnumake boost python3 capnproto bison flex pkg-config tbb_202
 
 For both build systems, C++ simulation tests require Icarus Verilog (`iverilog` and
 `vvp`) on `PATH`.
-Install it with `sudo apt-get install iverilog` on Ubuntu, `brew install iverilog`
+Install it with `sudo apt-get install iverilog` on Ubuntu, `brew install icarus-verilog`
 on macOS, or add `iverilog` to the Nix shell packages. Missing tools fail these
 tests instead of skipping their simulation checks.
 

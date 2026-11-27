@@ -30,7 +30,7 @@ jobs:
         repository-cache: true
 
     - name: Install simulation test dependencies
-      run: brew install iverilog
+      run: brew install icarus-verilog
 
     - name: Build
       # --jobs=auto: Bazel already parallelizes across all local cores by

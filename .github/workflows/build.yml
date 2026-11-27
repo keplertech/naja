@@ -84,7 +84,7 @@ jobs:
       run: |
         brew uninstall --ignore-dependencies cmake || true
         brew untap homebrew/local || true
-        brew install cmake doxygen capnp tbb bison flex boost iverilog
+        brew install cmake doxygen capnp tbb bison flex boost icarus-verilog
 
     - name: Set Homebrew paths
       run: |

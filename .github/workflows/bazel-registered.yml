@@ -36,7 +36,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -yq iverilog
           else
-            brew install iverilog
+            brew install icarus-verilog
           fi
       - name: Build registered dependencies
         run: bazel build --config=registered //... --jobs=auto
