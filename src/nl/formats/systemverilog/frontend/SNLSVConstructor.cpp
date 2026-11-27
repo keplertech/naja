@@ -8365,7 +8365,7 @@ endmodule
         return &memory.readPorts[it->second]; // LCOV_EXCL_LINE
       }
 
-      const auto baseName = std::string(memory.stateSymbol->name);
+      const auto baseName = getInferredMemoryBaseName(*memory.stateSymbol);
       const auto portIndex = memory.readPorts.size();
       auto* addrNet = getOrCreateNamedBusNet(
         design,
@@ -9395,7 +9395,7 @@ endmodule
       const std::vector<InferredMemoryWriteAction>& writeActions,
       std::string& failureReason) {
       memory.writePorts.clear();
-      const auto baseName = std::string(memory.stateSymbol->name);
+      const auto baseName = getInferredMemoryBaseName(*memory.stateSymbol);
       auto* const1 = static_cast<SNLBitNet*>(getConstNet(design, true));
       auto* const0 = static_cast<SNLBitNet*>(getConstNet(design, false));
       for (const auto& writeAction : writeActions) {
@@ -9787,7 +9787,7 @@ endmodule
         auto* inst = SNLInstance::create(
           design,
           model,
-          NLName(joinName(std::string(memory.stateSymbol->name), "mem")));
+          NLName(joinName(getInferredMemoryBaseName(*memory.stateSymbol), "mem")));
         annotateSourceInfo(inst, memory.sourceRange);
 
         auto addInstParam = [&](const char* name, const std::string& value) {
@@ -9872,12 +9872,12 @@ endmodule
         if (memory.readPorts.empty()) {
           auto* dummyAddr = getOrCreateNamedBusNet(
             design,
-            joinName(std::string(memory.stateSymbol->name), "mem_dummy_raddr"),
+            joinName(getInferredMemoryBaseName(*memory.stateSymbol), "mem_dummy_raddr"),
             signature.abits,
             memory.sourceRange);
           auto* dummyData = getOrCreateNamedBusNet(
             design,
-            joinName(std::string(memory.stateSymbol->name), "mem_dummy_rdata"),
+            joinName(getInferredMemoryBaseName(*memory.stateSymbol), "mem_dummy_rdata"),
             signature.width,
             memory.sourceRange);
           auto dummyBits = collectBits(dummyAddr);
@@ -19366,6 +19366,12 @@ endmodule
         return sanitizeName(std::string(symbol.name)); // LCOV_EXCL_LINE
       }
       return sanitizeName(hierarchicalPath);
+    }
+
+    std::string getInferredMemoryBaseName(const Symbol& symbol) const {
+      // Preserve existing memory names outside generate scopes for downstream matching.
+      return isInsideGenerateScope(symbol) ? getLoweredSymbolName(symbol) :
+        std::string(symbol.name);
     }
 
     SNLNet* getLoweredValueSymbolNet(
