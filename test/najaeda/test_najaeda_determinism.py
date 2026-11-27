@@ -72,6 +72,19 @@ module stateful(input logic clk, rst, enable, input logic [4:0] a, b,
     end
   end
 endmodule
+module mixed_reset_storage(input logic clk, write_clk, rst, enable,
+                           input logic [2:0] address, input logic [4:0] data,
+                           output logic [4:0] q, output logic valid);
+  logic [4:0] words [8];
+  logic [2:0] position;
+  always_ff @(posedge write_clk) if (enable) words[address] <= data;
+  always_ff @(posedge clk)
+    if (rst) begin position <= 0; valid <= 0; end
+    else begin
+      valid <= enable;
+      if (enable) begin q <= words[position]; position <= position + 1; end
+    end
+endmodule
 module storage(input logic clk_a, clk_b, we_a, we_b,
                input logic [1:0] addr_a, addr_b, input logic [2:0] a, b,
                output logic [2:0] q, r);
@@ -88,8 +101,10 @@ endmodule
 module top(input logic [9:0] a, b, input logic [1:0] op,
            input logic clk_a, clk_b, rst, enable,
            output wire [9:0] y, z, output wire [1:0] flag,
-           output wire [4:0] q, r, s, output wire [2:0] mem_q, mem_r);
+           output wire [4:0] q, r, s, mixed_q, output wire mixed_valid,
+           output wire [2:0] mem_q, mem_r);
   stateful regs(clk_a, rst, enable, a[4:0], b[4:0], q, r, s);
+  mixed_reset_storage mixed(clk_a, clk_b, rst, enable, a[2:0], b[4:0], mixed_q, mixed_valid);
   storage mems(clk_a, clk_b, enable, rst, op, op,
                a[2:0], b[2:0], mem_q, mem_r);
   for (genvar g = 0; g < 2; g++) begin: lanes

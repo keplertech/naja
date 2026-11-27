@@ -29,6 +29,9 @@ jobs:
         disk-cache: ${{ github.workflow }}-${{ matrix.os }}
         repository-cache: true
 
+    - name: Install simulation test dependencies
+      run: brew install iverilog
+
     - name: Build
       # --jobs=auto: Bazel already parallelizes across all local cores by
       # default (unlike make/CMake's default serial build) -- spelled out
@@ -43,7 +46,7 @@ jobs:
 
     - name: Test
       run: >-
-        bazel test //... --test_output=errors --jobs=auto
+        bazel test //... --test_env=PATH --test_output=errors --jobs=auto
         --experimental_ui_max_stdouterr_bytes=10485760
 
     - name: Upload Bazel test logs on failure

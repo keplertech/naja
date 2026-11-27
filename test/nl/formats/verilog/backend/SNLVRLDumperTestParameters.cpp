@@ -926,7 +926,7 @@ TEST_F(SNLVRLDumperTestParameters, tableSelectPreservesIndependentColumnDependen
   }
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1"))
-    GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+    FAIL() << "Icarus Verilog is required for four-state verification";
   const auto tbPath = directory / "tb.v";
   std::ofstream tb(tbPath);
   tb << R"(module tb;

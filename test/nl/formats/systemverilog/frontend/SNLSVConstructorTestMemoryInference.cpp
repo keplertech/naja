@@ -9154,7 +9154,7 @@ endmodule
     EXPECT_EQ(std::string::npos, text.find("1'bx"));
     if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
         std::system("command -v vvp >/dev/null 2>&1") != 0) {
-      continue;
+      FAIL() << "Icarus Verilog is required for wildcard memory simulation";
     }
     auto reference = readTextFile(svPath);
     reference.replace(reference.find("module wildcard_memory"),
@@ -12137,7 +12137,7 @@ endmodule
   const auto dumped = dumpTopAndGetVerilogPath(top, "writer_census_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
       std::system("command -v vvp >/dev/null 2>&1") != 0) {
-    GTEST_SKIP() << "Icarus Verilog is required for behavioral verification";
+    FAIL() << "Icarus Verilog is required for behavioral verification";
   }
   const auto tb = dumped.parent_path() / "tb.sv";
   std::ofstream(tb) << R"(module tb;
@@ -12221,7 +12221,7 @@ endmodule
     const auto dumped = dumpTopAndGetVerilogPath(top, name);
     if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
         std::system("command -v vvp >/dev/null 2>&1") != 0) {
-      GTEST_SKIP() << "Icarus Verilog is required for behavioral verification";
+      FAIL() << "Icarus Verilog is required for behavioral verification";
     }
     const auto tb = dumped.parent_path() / "tb.sv";
     std::ofstream bench(tb);
@@ -12529,7 +12529,7 @@ endmodule
     EXPECT_EQ(std::string::npos, warnings.find("using generic sequential lowering"));
     if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
         std::system("command -v vvp >/dev/null 2>&1") != 0) {
-      GTEST_SKIP() << "Icarus Verilog is required for behavioral verification";
+      FAIL() << "Icarus Verilog is required for behavioral verification";
     }
     auto goldenRTL = rtl;
     replace(goldenRTL, "module " + name + "(", "module golden(");
@@ -12711,8 +12711,10 @@ TEST_F(SNLSVConstructorTestMemoryInference, wholeArrayMemoryReadsBehavior) {
     {"multidimensional_array", false, false, 0, false, "assign", false, false, false, true},
     {"aggregate_operand", false, true, 0, false, "aggregate"}
   };
-  const bool simulatorAvailable = std::system("command -v iverilog >/dev/null 2>&1") == 0 &&
-    std::system("command -v vvp >/dev/null 2>&1") == 0;
+  ASSERT_EQ(0, std::system("command -v iverilog >/dev/null 2>&1"))
+    << "Icarus Verilog (iverilog) is required for array read simulation";
+  ASSERT_EQ(0, std::system("command -v vvp >/dev/null 2>&1"))
+    << "Icarus Verilog runtime (vvp) is required for array read simulation";
   for (const auto& c : cases) {
     for (bool singleUnit : {false, true}) {
       const auto name = c.name + (singleUnit ? "_single" : "_files");
@@ -12811,7 +12813,6 @@ TEST_F(SNLSVConstructorTestMemoryInference, wholeArrayMemoryReadsBehavior) {
       }
       naja::DNL::destroy();
       const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
-      if (!simulatorAvailable) continue;
       const auto golden = dumped.parent_path() / "golden.sv";
       std::ofstream reference(golden);
       reference << "module golden(input clk, rst_n, input [7:0] we, input addr, input " << range
@@ -12856,5 +12857,4 @@ TEST_F(SNLSVConstructorTestMemoryInference, wholeArrayMemoryReadsBehavior) {
       ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
     }
   }
-  if (!simulatorAvailable) GTEST_SKIP() << "Connectivity checked; Icarus Verilog is required for simulation";
 }

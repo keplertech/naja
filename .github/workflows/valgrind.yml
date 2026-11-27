@@ -27,7 +27,7 @@ jobs:
       # install dependencies
       run: |
             sudo apt-get update
-            sudo apt-get -yq install libboost-dev libfl-dev capnproto libcapnp-dev valgrind libtbb-dev
+            sudo apt-get -yq install libboost-dev libfl-dev capnproto libcapnp-dev valgrind libtbb-dev iverilog
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.

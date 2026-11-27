@@ -29,6 +29,9 @@ jobs:
         disk-cache: ${{ github.workflow }}-${{ matrix.os }}
         repository-cache: true
 
+    - name: Install simulation test dependencies
+      run: sudo apt-get update && sudo apt-get install -yq iverilog
+
     - name: Build
       # --jobs=auto: Bazel already parallelizes across all local cores by
       # default (unlike make/CMake's default serial build) -- spelled out
@@ -40,4 +43,4 @@ jobs:
       run: bazel test //test/najaeda:najaeda_determinism_tests --test_output=errors
 
     - name: Test
-      run: bazel test //... --test_output=errors --jobs=auto
+      run: bazel test //... --test_env=PATH --test_output=errors --jobs=auto

@@ -20,7 +20,7 @@ jobs:
         submodules: true
 
     - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -yq libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev ninja-build clang
+      run: sudo apt-get update && sudo apt-get install -yq libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev ninja-build clang iverilog
 
     - name: Configure CMake
       run: >

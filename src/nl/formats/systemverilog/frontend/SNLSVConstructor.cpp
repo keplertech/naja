@@ -32973,6 +32973,32 @@ endmodule
         }
       }
 
+      // Multi-target resets can also leave other registers unreset. Collect
+      // those update targets before replay so they hold during reset rather
+      // than disappearing from the netlist. Preserve source order and merge
+      // overlapping selections in the common replay preparation below.
+      if (resetLHSExpressions.size() > 1 && topCond.ifFalse) {
+        std::vector<const Expression*> rawElseLHSExpressions;
+        if (!collectAssignedLHSExpressions(
+              *topCond.ifFalse,
+              rawElseLHSExpressions,
+              &failureReason,
+              false,
+              true,
+              ignoredSymbols)) {
+          failureReason = "unsupported statement kind while lowering sequential block: " +
+            failureReason;
+          return false;
+        }
+        for (const auto* lhsExpr : rawElseLHSExpressions) {
+          if (lhsExpr && !appendFlattenedConcatenationLHSExpressions(
+                *lhsExpr, conditionalLHSExpressions)) {
+            failureReason = "failed to flatten else-branch LHS expressions"; // LCOV_EXCL_LINE
+            return false; // LCOV_EXCL_LINE
+          }
+        }
+      }
+
       if (resetLHSExpressions.size() < 2 && conditionalLHSExpressions.size() == 1) {
         if (!sameLhs(conditionalLHSExpressions.front(), resetLHSExpressions.front())) {
           failureReason = "fallback currently supports only multi-LHS reset branches"; // LCOV_EXCL_LINE

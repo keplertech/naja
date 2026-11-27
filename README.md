@@ -260,6 +260,12 @@ export PATH="/opt/homebrew/opt/flex/bin:/opt/homebrew/opt/bison/bin:$PATH"
 nix-shell -p cmake gnumake boost python3 capnproto bison flex pkg-config tbb_2021_8
 ```
 
+For both build systems, C++ simulation tests require Icarus Verilog (`iverilog` and
+`vvp`) on `PATH`.
+Install it with `sudo apt-get install iverilog` on Ubuntu, `brew install iverilog`
+on macOS, or add `iverilog` to the Nix shell packages. Missing tools fail these
+tests instead of skipping their simulation checks.
+
 #### Build, test, and install
 
 ```bash
@@ -313,7 +319,7 @@ git clone https://github.com/keplertech/naja.git
 cd naja
 git submodule update --init thirdparty/naja-if thirdparty/naja-verilog
 bazel build //... --jobs=auto
-bazel test //... --test_output=errors --jobs=auto
+bazel test //... --test_env=PATH --test_output=errors --jobs=auto
 ```
 
 These are the same smoke commands used by
@@ -334,7 +340,7 @@ include the SDK root in the local toolchain's built-in directory discovery:
 
 ```bash
 NAJA_MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path)"
-bazel test //... --repo_env="BAZEL_CXXOPTS=-std=c++20:-isystem${NAJA_MACOS_SDK}" --test_output=errors
+bazel test //... --repo_env="BAZEL_CXXOPTS=-std=c++20:-isystem${NAJA_MACOS_SDK}" --test_env=PATH --test_output=errors
 ```
 
 This local configuration preserves include validation and does not add host
@@ -356,7 +362,7 @@ Validate the registry dependency set independently, without local dependency che
 
 ```bash
 bazel build --config=registered //...
-bazel test --config=registered //... --test_output=errors
+bazel test --config=registered //... --test_env=PATH --test_output=errors
 ```
 
 This clears the local dependency overrides and uses the immutable versions in
