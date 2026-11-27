@@ -38,7 +38,7 @@ RUN dnf -y update \
     && if [ "${ROCKY_VERSION}" = "8" ]; then \
         dnf -y install \
             gcc-toolset-${GCC_TOOLSET_VERSION}-gcc-c++ \
-            m4 \
+            m4 autoconf gperf \
             python39-devel \
             python39-pip && \
         python3.9 -m pip install --no-cache-dir "cmake>=3.21,<4" && \
@@ -62,6 +62,23 @@ RUN dnf -y update \
             python3-devel; \
     fi \
     && dnf clean all
+
+# Icarus is required by the native simulation tests. EPEL 8 has no package.
+RUN if [ "${ROCKY_VERSION}" = "8" ]; then \
+        curl -fSL --retry 3 --connect-timeout 20 --max-time 180 \
+            https://github.com/steveicarus/iverilog/archive/refs/tags/v13_0.tar.gz \
+            -o /tmp/iverilog-v13_0.tar.gz && \
+        tar -C /tmp -xzf /tmp/iverilog-v13_0.tar.gz && \
+        cd /tmp/iverilog-13_0 && \
+        sh autoconf.sh && \
+        ./configure --prefix=/usr/local && \
+        make -j8 && \
+        make install && \
+        cd / && \
+        rm -rf /tmp/iverilog-13_0 /tmp/iverilog-v13_0.tar.gz; \
+    else \
+        dnf -y install iverilog && dnf clean all; \
+    fi
 
 RUN curl -fsSLo /tmp/oneTBB-v2022.1.0.tar.gz https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.1.0.tar.gz \
     && tar -C /tmp -xzf /tmp/oneTBB-v2022.1.0.tar.gz \
@@ -94,7 +111,7 @@ RUN if [ "${ROCKY_VERSION}" = "8" ]; then \
     && cmake ${ROCKY8_ARGS} -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/usr/local -DCMAKE_CXX_FLAGS="-DTBB_PREVIEW_CONCURRENT_ORDERED_CONTAINERS=1" -DCMAKE_INSTALL_LIBDIR=lib .. \
     && cmake --build . --parallel 8 \
     && cmake --install . --prefix /naja/install
-RUN ctest -j8 --output-on-failure
+RUN command -v iverilog && command -v vvp && ctest -j8 --output-on-failure
 
 RUN mkdir -p /naja/runtime-lib \
     && shopt -s nullglob \
