@@ -30,7 +30,15 @@ jobs:
           repository-cache: true
       - name: Check registered configuration
         run: python3 ci/check_submodule_bazel_sync.py --registered
+      - name: Install simulation test dependencies
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update
+            sudo apt-get install -yq iverilog
+          else
+            brew install icarus-verilog
+          fi
       - name: Build registered dependencies
         run: bazel build --config=registered //... --jobs=auto
       - name: Test registered dependencies
-        run: bazel test --config=registered //... --test_output=errors --jobs=auto
+        run: bazel test --config=registered //... --test_env=PATH --test_output=errors --jobs=auto

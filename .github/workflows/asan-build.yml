@@ -25,7 +25,7 @@ jobs:
         submodules: true
     # install dependencies
     - name: Install boost & capnproto
-      run: sudo apt-get update && sudo apt-get install -yq libboost-dev libfl-dev capnproto libcapnp-dev ninja-build clang libtbb-dev
+      run: sudo apt-get update && sudo apt-get install -yq libboost-dev libfl-dev capnproto libcapnp-dev ninja-build clang libtbb-dev iverilog
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.

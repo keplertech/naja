@@ -27,7 +27,7 @@ jobs:
           libboost-dev libfl-dev \
           capnproto libcapnp-dev \
           libtbb-dev \
-          lcov
+          lcov iverilog
 
     - name: Set up llvm-cov gcov wrapper
       run: |

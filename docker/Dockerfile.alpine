@@ -11,7 +11,7 @@ RUN apk --no-cache add ca-certificates
 RUN apk update && apk upgrade
 RUN apk add --no-cache curl git cmake make g++ \
         python3-dev capnproto capnproto-dev \
-        bison flex-dev boost-dev
+        bison flex-dev boost-dev iverilog
 
 RUN curl -fsSLo /tmp/oneTBB-v2022.1.0.tar.gz https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.1.0.tar.gz \
     && tar -C /tmp -xzf /tmp/oneTBB-v2022.1.0.tar.gz \
@@ -39,7 +39,7 @@ WORKDIR /naja/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/usr/local .. && \
     cmake --build . --parallel 8 && \
     cmake --install . --prefix /naja/install    
-RUN ctest -j8 --output-on-failure
+RUN command -v iverilog && command -v vvp && ctest -j8 --output-on-failure
 
 FROM alpine:${ALPINE_VERSION} AS release
 RUN apk --no-cache add ca-certificates

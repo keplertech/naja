@@ -19,7 +19,7 @@ jobs:
         fetch-depth: 0
         submodules: true
     - name: Install build dependencies
-      run: sudo apt-get update && sudo apt-get install -yq ccache libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev
+      run: sudo apt-get update && sudo apt-get install -yq ccache libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev iverilog
     - name: Set up canonical Linux Release toolchain
       uses: ./.github/actions/setup-linux-release
       with:

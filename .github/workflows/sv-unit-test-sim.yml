@@ -22,7 +22,7 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -yq ccache libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev
+        sudo apt-get install -yq ccache libboost-dev libfl-dev capnproto libcapnp-dev libtbb-dev iverilog
 
     - name: Set up canonical Linux Release toolchain
       uses: ./.github/actions/setup-linux-release
@@ -32,8 +32,30 @@ jobs:
     - name: Configure canonical Release build
       run: bash .github/scripts/configure-linux-release.sh
 
-    - name: Build najaeda Python extension
-      run: cmake --build ${{ github.workspace }}/build --target naja --config Release --parallel $(nproc)
+    - name: Build najaeda Python extension and HDL simulation tests
+      run: cmake --build ${{ github.workspace }}/build --target naja snlSVConstructorTests snlVRLDumperTests --config Release --parallel $(nproc)
+
+    - name: Run HDL tests with required Icarus simulation
+      run: |
+        command -v iverilog
+        command -v vvp
+        build/test/nl/formats/systemverilog/frontend/snlSVConstructorTests \
+          --gtest_output=xml:build/sv-frontend-tests.xml
+        build/test/nl/formats/verilog/backend/snlVRLDumperTests \
+          --gtest_output=xml:build/verilog-dumper-tests.xml
+        python3 - <<'PYTHON'
+        import xml.etree.ElementTree as ET
+
+        for path in ("build/sv-frontend-tests.xml", "build/verilog-dumper-tests.xml"):
+            report = ET.parse(path).getroot()
+            skipped = report.findall(".//testcase[skipped]")
+            if skipped:
+                names = [f"{case.get('classname')}.{case.get('name')}" for case in skipped]
+                raise SystemExit(f"{path}: tests must not skip: " + ", ".join(names))
+            if int(report.get("tests", "0")) == 0:
+                raise SystemExit(f"{path}: no tests ran")
+            print(f"{path}: all {report.get('tests')} tests ran without skips")
+        PYTHON
 
     - name: Prepare najaeda Python package for script execution
       run: |

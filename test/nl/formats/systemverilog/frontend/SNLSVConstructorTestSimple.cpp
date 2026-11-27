@@ -8927,7 +8927,7 @@ TEST_F(SNLSVConstructorTestSimple, functionImplicitReturnIncompleteBitsSupported
       const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
       if (std::system("command -v iverilog >/dev/null 2>&1") ||
           std::system("command -v vvp >/dev/null 2>&1")) {
-        GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+        FAIL() << "Icarus Verilog is required for four-state verification";
       }
       const auto tbPath = dumped.parent_path() / "tb.sv";
       std::ofstream tb(tbPath);
@@ -11914,8 +11914,11 @@ TEST_F(SNLSVConstructorTestSimple, parseInstanceOutputIndexedSlicesConnectStorag
       }
     }
     const auto dumped = dumpTopAndGetVerilogPath(top, topName + "_dump");
-    if (std::system("command -v iverilog >/dev/null 2>&1") == 0 &&
-        std::system("command -v vvp >/dev/null 2>&1") == 0) {
+    ASSERT_EQ(0, std::system("command -v iverilog >/dev/null 2>&1"))
+      << "Icarus Verilog (iverilog) is required for simulation";
+    ASSERT_EQ(0, std::system("command -v vvp >/dev/null 2>&1"))
+      << "Icarus Verilog runtime (vvp) is required for simulation";
+    {
       const auto testbench = directory / "tb.sv";
       std::ofstream tb(testbench);
       tb << "module tb; reg [11:0] a; wire " << shape << " y;\n"
@@ -12327,7 +12330,7 @@ endmodule
   const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
       std::system("command -v vvp >/dev/null 2>&1") != 0) {
-    GTEST_SKIP() << "Icarus Verilog is required for the interface behavior check";
+    FAIL() << "Icarus Verilog is required for the interface behavior check";
   }
   const auto tbPath = path.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -21859,7 +21862,7 @@ endmodule
   const auto dumped = dumpTopAndGetVerilogPath(top, "shared_inversions_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1")) {
-    GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+    FAIL() << "Icarus Verilog is required for four-state verification";
   }
   const auto tbPath = dumped.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -27248,7 +27251,7 @@ endmodule
   }
   if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
       std::system("command -v vvp >/dev/null 2>&1") != 0) {
-    GTEST_SKIP() << "Icarus Verilog is required for four-state wildcard simulation";
+    FAIL() << "Icarus Verilog is required for four-state wildcard simulation";
   }
   auto reference = source;
   reference.replace(reference.find("module wildcard_patterns"),
@@ -27491,7 +27494,7 @@ TEST_F(SNLSVConstructorTestSimple, repeatedMuxSelectionsPreserveFourStateValues)
   const auto dumped = dumpTopAndGetVerilogPath(top, "repeated_mux_four_state_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1")) {
-    GTEST_SKIP() << "Icarus Verilog required for four-state verification";
+    FAIL() << "Icarus Verilog required for four-state verification";
   }
   const auto tbPath = dumped.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -27664,7 +27667,7 @@ TEST_F(SNLSVConstructorTestSimple, caseReplayScalarAccumulatorAvoidsIntermediate
   }
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1")) {
-    GTEST_SKIP() << "Icarus Verilog required for four-state data verification";
+    FAIL() << "Icarus Verilog required for four-state data verification";
   }
   const auto tbPath = dumped.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -27947,7 +27950,7 @@ TEST_F(SNLSVConstructorTestSimple, caseReplayPackedAccumulatorPreservesBoundarie
   }
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1")) {
-    GTEST_SKIP() << "Icarus Verilog required for four-state data verification";
+    FAIL() << "Icarus Verilog required for four-state data verification";
   }
   const auto dumped = dumpTopAndGetVerilogPath(top, "case_replay_packed_fourstate");
   std::ifstream original(path);
@@ -28456,7 +28459,7 @@ endmodule
   }
   if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
       std::system("command -v vvp >/dev/null 2>&1") != 0) {
-    GTEST_SKIP() << "Icarus Verilog is required for the four-state comparison";
+    FAIL() << "Icarus Verilog is required for the four-state comparison";
   }
   const auto tbPath = dumpedPath.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -28556,7 +28559,7 @@ endmodule
       const auto dumpedPath = dumpTopAndGetVerilogPath(top, name + "_dump");
       if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
           std::system("command -v vvp >/dev/null 2>&1") != 0) {
-        GTEST_SKIP() << "Icarus Verilog is required for the four-state comparison";
+        FAIL() << "Icarus Verilog is required for the four-state comparison";
       }
       auto reference = readTextFile(svPath);
       reference.replace(reference.find(name), name.size(), "reference");
@@ -28658,7 +28661,7 @@ TEST_F(SNLSVConstructorTestSimple, divModDumpFourStateSimulation) {
       }
       if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
           std::system("command -v vvp >/dev/null 2>&1") != 0) {
-        GTEST_SKIP() << "Icarus Verilog is required for the four-state comparison";
+        FAIL() << "Icarus Verilog is required for the four-state comparison";
       }
       auto reference = source.str();
       reference.replace(reference.find(name), name.size(), "reference");
@@ -37761,7 +37764,7 @@ endmodule
   const auto dumped = dumpTopAndGetVerilogPath(top, "wide_signed_index_reads_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") ||
       std::system("command -v vvp >/dev/null 2>&1")) {
-    GTEST_SKIP() << "Icarus Verilog is required for the four-state comparison";
+    FAIL() << "Icarus Verilog is required for the four-state comparison";
   }
   const auto tbPath = dumped.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -37864,7 +37867,7 @@ TEST_P(SNLSVTableSelectTest, packedIndexFourStateSimulation) {
 
   if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
       std::system("command -v vvp >/dev/null 2>&1") != 0) {
-    GTEST_SKIP() << "Icarus Verilog is required for the four-state comparison";
+    FAIL() << "Icarus Verilog is required for the four-state comparison";
   }
 
   // Simulate the original SV indexing alongside the lowered, dumped netlist.
@@ -37957,7 +37960,7 @@ TEST_P(SNLSVTableSelectTest, constantPackedIndexFourStateSimulation) {
   EXPECT_EQ(2u, rom->getModel()->getTerms().size());
   const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") || std::system("command -v vvp >/dev/null 2>&1"))
-    GTEST_SKIP() << "Icarus Verilog is required for the ROM comparison";
+    FAIL() << "Icarus Verilog is required for the ROM comparison";
   auto reference = source.str();
   reference.replace(reference.find(name), name.size(), "reference_lookup");
   // Icarus does not accept multidimensional packed localparams; a constant
@@ -38109,6 +38112,109 @@ endmodule
   const auto dumpedText = readTextFile(dumpedVerilog);
   EXPECT_EQ(std::string::npos, dumpedText.find("assign q_o[5] = 1'b0"));
   EXPECT_EQ(std::string::npos, dumpedText.find("assign q_o[6] = 1'b0"));
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseSequentialMixedResetTargetsPreserveAllRegisters) {
+  for (const auto& kind : {"direct", "memory", "dual_clock_memory"}) {
+    for (const auto& shape : {"whole", "concat", "overlap"}) {
+      const bool memory = std::string(kind) != "direct";
+      const bool dualClock = std::string(kind) == "dual_clock_memory";
+      const auto name = std::string("mixed_reset_targets_") + kind + "_" + shape;
+      SCOPED_TRACE(name);
+      const std::string rhs = memory ? "words[position]" : "data";
+      std::string update = "q <= " + rhs + ";";
+      if (std::string(shape) == "concat") {
+        update = "{q[4:2], q[1:0]} <= " + rhs + ";";
+      } else if (std::string(shape) == "overlap") {
+        update += " q[2:1] <= ~data[2:1];";
+      }
+      const auto source = "module " + name + R"((
+  input logic clk, write_clk, rst, enable, write_enable,
+  input logic [2:0] address, input logic [4:0] data,
+  output logic [4:0] q, output logic valid);
+  logic [2:0] position;
+)" + (memory ? std::string("  logic [4:0] words [8];\n  always_ff @(posedge ") +
+        (dualClock ? "write_clk" : "clk") + ") if (write_enable) words[address] <= data;\n" : "") +
+        "  always_ff @(posedge clk)\n"
+        "    if (rst) begin position <= 0; valid <= 0; end\n"
+        "    else begin\n"
+        "      valid <= enable;\n"
+        "      if (enable) begin " + update + " position <= position + 1; end\n"
+        "    end\nendmodule\n";
+      SNLSVConstructor(library_).construct(writeSVTestFile(name, source));
+      auto* top = library_->getSNLDesign(NLName(name));
+      ASSERT_NE(nullptr, top);
+      auto* q = top->getBusNet(NLName("q"));
+      ASSERT_NE(nullptr, q);
+      for (auto* bit : q->getBusBits()) {
+        size_t drivers = 0;
+        for (auto* term : bit->getInstTerms()) {
+          if (term->getDirection() == SNLTerm::Direction::Output) {
+            ++drivers;
+            EXPECT_TRUE(isSequentialDFFPrimitive(term->getInstance()->getModel()));
+          }
+        }
+        EXPECT_EQ(1u, drivers) << "q[" << bit->getBit() << "]";
+      }
+      const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+      if (memory) {
+        EXPECT_EQ(std::string::npos, readTextFile(dumped).find("dummy_raddr"));
+      }
+      if (std::system("command -v iverilog >/dev/null 2>&1") ||
+          std::system("command -v vvp >/dev/null 2>&1")) {
+        FAIL() << "Icarus Verilog is required for sequential comparison";
+      }
+      auto reference = source;
+      reference.replace(reference.find(name), name.size(), "reference_registers");
+      const auto tbPath = dumped.parent_path() / "tb.sv";
+      std::ofstream tb(tbPath);
+      ASSERT_TRUE(tb.good());
+      tb << reference << R"(module tb;
+  reg clk=0, write_clk=0, rst=1, enable=0, write_enable=0;
+  reg [2:0] address=0; reg [4:0] data=0;
+  wire [4:0] actual, expected; wire actual_valid, expected_valid;
+  always #5 clk=~clk;
+)" << (dualClock ? "  always #3 write_clk=~write_clk;\n" : "  always @* write_clk=clk;\n")
+         << name << R"( dut(.clk(clk),.write_clk(write_clk),.rst(rst),.enable(enable),
+    .write_enable(write_enable),.address(address),.data(data),.q(actual),.valid(actual_valid));
+  reference_registers ref_model(.clk(clk),.write_clk(write_clk),.rst(rst),.enable(enable),
+    .write_enable(write_enable),.address(address),.data(data),.q(expected),.valid(expected_valid));
+  always @(posedge clk) begin
+    #1;
+    if ({actual_valid,actual} !== {expected_valid,expected})
+      $fatal(1,"sequential mismatch: actual=%b/%b expected=%b/%b",
+        actual_valid,actual,expected_valid,expected);
+  end
+  integer i;
+  initial begin
+    // Initialize every location before reading and avoid write/read collisions.
+    for (i=0; i<8; i=i+1) begin
+      @(negedge write_clk); write_enable=1; address=i; data=3*i+2;
+    end
+    @(negedge write_clk); write_enable=0;
+    for (i=0; i<36; i=i+1) begin
+      @(negedge clk);
+      rst=(i==0 || i==13 || i==14 || i==29);
+      enable=(i%4 != 2); data=7*i+5;
+    end
+    @(negedge clk); $finish;
+  end
+endmodule
+)";
+      tb.close();
+      const auto quote = [](const std::filesystem::path& path) {
+        std::string result = "'";
+        for (char c : path.string()) result += c == '\'' ? "'\\''" : std::string(1, c);
+        return result + "'";
+      };
+      const auto executable = dumped.parent_path() / "simulation.vvp";
+      const auto compile = "iverilog -g2012 -s tb -o " + quote(executable) + " " +
+        quote(tbPath) + " " + quote(dumped) + " " +
+        quote(dumped.parent_path() / "naja_primitives.v");
+      ASSERT_EQ(0, std::system(compile.c_str()));
+      ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+    }
+  }
 }
 
 TEST_F(
@@ -42145,7 +42251,7 @@ TEST_P(SNLSVProceduralConcatTest, matchesPerElementRewrite) {
   const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
   if (std::system("command -v iverilog >/dev/null 2>&1") != 0 ||
       std::system("command -v vvp >/dev/null 2>&1") != 0) {
-    GTEST_SKIP() << "Icarus Verilog required for per-element behavioral comparison";
+    FAIL() << "Icarus Verilog required for per-element behavioral comparison";
   }
   const auto tbPath = path.parent_path() / "tb.sv";
   std::ofstream tb(tbPath);
@@ -42589,7 +42695,7 @@ TEST_F(SNLSVConstructorTestSimple, VectorUpdatesPreserveFourStateWritesAndClippi
     const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
     if (std::system("command -v iverilog >/dev/null 2>&1") ||
         std::system("command -v vvp >/dev/null 2>&1")) {
-      GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+      FAIL() << "Icarus Verilog is required for four-state verification";
     }
     auto reference = source;
     reference.replace(reference.find(name), name.size(), "reference_update");
@@ -42691,7 +42797,7 @@ TEST_F(SNLSVConstructorTestSimple, VectorSelectsPreserveFourStateReadsAndClippin
     const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
     if (std::system("command -v iverilog >/dev/null 2>&1") ||
         std::system("command -v vvp >/dev/null 2>&1")) {
-      GTEST_SKIP() << "Icarus Verilog is required for four-state verification";
+      FAIL() << "Icarus Verilog is required for four-state verification";
     }
     auto reference = source;
     reference.replace(reference.find(name), name.size(), "reference_select");
@@ -42795,7 +42901,7 @@ TEST_F(SNLSVConstructorTestSimple, nestedPackedMemberWritesPreserveOtherFields) 
     const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
     if (std::system("command -v iverilog >/dev/null 2>&1") ||
         std::system("command -v vvp >/dev/null 2>&1"))
-      GTEST_SKIP() << "Icarus Verilog required for four-state simulation";
+      FAIL() << "Icarus Verilog required for four-state simulation";
     const auto tbPath = dumped.parent_path() / "tb.sv";
     std::ofstream tb(tbPath);
     // Use a flat reference with explicit bounds: Icarus does not reliably
@@ -42877,7 +42983,7 @@ TEST_F(SNLSVConstructorTestSimple, NestedPackedWritesPreserveStorageAndPriority)
     const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
     if (std::system("command -v iverilog >/dev/null 2>&1") ||
         std::system("command -v vvp >/dev/null 2>&1"))
-      GTEST_SKIP() << "Icarus Verilog required for four-state simulation";
+      FAIL() << "Icarus Verilog required for four-state simulation";
     const auto tbPath = dumped.parent_path() / "tb.sv";
     std::ofstream tb(tbPath);
     tb << "module tb; reg clk=0,rst_n=1,enable=0,priority_write=0;\n"
@@ -43044,7 +43150,7 @@ TEST_F(SNLSVConstructorTestSimple, UnpackedIndexedWritesPreserveUnknownAddresses
       const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
       if (std::system("command -v iverilog >/dev/null 2>&1") ||
           std::system("command -v vvp >/dev/null 2>&1")) {
-        GTEST_SKIP() << "Icarus Verilog required for four-state write verification";
+        FAIL() << "Icarus Verilog required for four-state write verification";
       }
       auto reference = source;
       reference.replace(reference.find(name), name.size(), "reference_array");
@@ -43102,8 +43208,10 @@ endmodule
 }
 
 TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
-  const bool simulate = !std::system("command -v iverilog >/dev/null 2>&1") &&
-    !std::system("command -v vvp >/dev/null 2>&1");
+  ASSERT_EQ(0, std::system("command -v iverilog >/dev/null 2>&1"))
+    << "Icarus Verilog (iverilog) is required for stopped-clock simulation";
+  ASSERT_EQ(0, std::system("command -v vvp >/dev/null 2>&1"))
+    << "Icarus Verilog runtime (vvp) is required for stopped-clock simulation";
   for (const auto& value : {std::string("101"), std::string("000"), std::string("111")}) {
     for (bool activeLow : {false, true}) {
       for (bool negativeClock : {false, true}) {
@@ -43142,7 +43250,6 @@ TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
           EXPECT_EQ(mode == "partial_reset" && !negativeClock ? 1u : 0u, countDFFBits(top));
           EXPECT_EQ(mode == "partial_reset" && negativeClock ? 1u : 0u, countDFFNBits(top));
           const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
-          if (!simulate) continue;
           const auto tbPath = dumped.parent_path() / "tb.sv";
           std::ofstream tb(tbPath);
           tb << "module tb; reg clk=" << negativeClock << ",rst=" << activeLow
@@ -43184,7 +43291,6 @@ TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
       }
     }
   }
-  if (!simulate) GTEST_SKIP() << "Icarus Verilog required for stopped-clock simulation";
 }
 
 TEST_F(SNLSVConstructorTestSimple, sequentialAsyncVariableResetRejected) {
