@@ -2970,8 +2970,9 @@ SNLTruthTable SNLDesignModeling::getTruthTable(const SNLDesign* design) {
       throw NLException(reason.str());
     }
 
-    // multi‐chunk (>64‐bit) table?
-    if (property->getValues().size() > 3) {
+    // Dependency masks may span multiple chunks even for a small table.
+    // Only the number of inputs determines the truth-table row storage.
+    if (declaredInputs > 6) {
       uint32_t numInputs = static_cast<uint32_t>(declaredInputs);
       uint32_t nBits = 1u << numInputs;
       // LCOV_EXCL_START
@@ -3381,8 +3382,155 @@ bool SNLDesignModeling::isBuf(const SNLDesign* design) {
   });
 }
 
+namespace {
+using Gate = SNLTruthTable::GenericType;
+using GatePolarity = SNLDesignModeling::GatePolarity;
+const std::string InvertedInputGatePropertyName = "SNLInvertedInputGate";
+
+// Row bit indices enumerate the set dependency bits, in flat-term order,
+// just as getCombinatorialInputDepsFromTruthTable does.
+bool getGateInputs(const SNLDesign* design, SNLTruthTable& table,
+                   std::vector<SNLBitTerm*>& inputs) {
+  if (!design || SNLDesignModeling::isSequential(design)) return false;
+  size_t outputs = 0;
+  for (auto* term : design->getBitTerms()) {
+    if (term->getDirection() == SNLTerm::Direction::Output) {
+      ++outputs;
+      if (SNLDesignModeling::hasTruthTableFromParameter(design, term->getOrderID()))
+        return false;
+    } else if (term->getDirection() != SNLTerm::Direction::Input) {
+      return false;
+    }
+  }
+  if (outputs != 1 || SNLDesignModeling::getTruthTableCount(design) != 1)
+    return false;
+  table = SNLDesignModeling::getTruthTable(design);
+  if (!table.isInitialized() || table.isGeneric() || table.size() < 2 || table.size() > 6)
+    return false;
+  const auto positions = NLBitDependencies::decodeBits(table.getDependencies());
+  std::vector<SNLBitTerm*> flatTerms;
+  for (auto* term : design->getBitTerms()) flatTerms.push_back(term);
+  if (positions.size() != table.size()) return false;
+  for (auto position : positions) {
+    if (position >= flatTerms.size() ||
+        flatTerms[position]->getDirection() != SNLTerm::Direction::Input)
+      return false;
+    inputs.push_back(flatTerms[position]);
+  }
+  return true;
+}
+
+bool gateMatches(const GatePolarity& gate, const SNLTruthTable& table,
+                 const std::vector<SNLBitTerm*>& inputs) {
+  if (gate.type != Gate::AND && gate.type != Gate::NAND &&
+      gate.type != Gate::OR && gate.type != Gate::NOR) return false;
+  std::vector<bool> inverted(inputs.size(), false);
+  for (auto* term : gate.invertedInputs) {
+    auto it = std::find(inputs.begin(), inputs.end(), term);
+    if (it == inputs.end() || inverted[it - inputs.begin()]) return false;
+    inverted[it - inputs.begin()] = true;
+  }
+  const bool conjunction = gate.type == Gate::AND || gate.type == Gate::NAND;
+  const bool negate = gate.type == Gate::NAND || gate.type == Gate::NOR;
+  for (size_t row = 0; row < table.bits().size(); ++row) {
+    bool value = conjunction;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      const bool literal = bool((row >> i) & 1) != inverted[i];
+      if (conjunction) value &= literal;
+      else value |= literal;
+    }
+    if ((value != negate) != table.bits().bit(row)) return false;
+  }
+  return true;
+}
+
+std::optional<GatePolarity> getRecordedGate(
+    const SNLDesign* design, const SNLTruthTable& table,
+    const std::vector<SNLBitTerm*>& inputs) {
+  auto* property = dynamic_cast<naja::NajaDumpableProperty*>(
+      design->getProperty(InvertedInputGatePropertyName));
+  if (!property) return std::nullopt;
+  const auto values = property->getValues();
+  // Version, stable gate code (AND/NAND/OR/NOR), then inverted flat-term IDs.
+  if (values.size() < 2) return std::nullopt;
+  for (const auto& value : values)
+    if (value.index() != naja::NajaDumpableProperty::UInt64) return std::nullopt;
+  if (property->getUInt64Value(0) != 1 || property->getUInt64Value(1) > 3)
+    return std::nullopt;
+  const Gate types[] = {Gate::AND, Gate::NAND, Gate::OR, Gate::NOR};
+  GatePolarity result{types[property->getUInt64Value(1)], {}};
+  for (size_t i = 2; i < values.size(); ++i) {
+    auto it = std::find_if(inputs.begin(), inputs.end(), [&](auto* term) {
+      return term->getOrderID() == property->getUInt64Value(i);
+    });
+    if (it == inputs.end()) return std::nullopt;
+    result.invertedInputs.push_back(*it);
+  }
+  if (!gateMatches(result, table, inputs)) return std::nullopt;
+  std::sort(result.invertedInputs.begin(), result.invertedInputs.end(),
+      [](auto* a, auto* b) { return a->getOrderID() < b->getOrderID(); });
+  return result;
+}
+} // namespace
+
+bool SNLDesignModeling::setInvertedInputGate(SNLDesign* design, const GatePolarity& gate) {
+  SNLTruthTable table;
+  std::vector<SNLBitTerm*> inputs;
+  if (!getGateInputs(design, table, inputs) || !gateMatches(gate, table, inputs))
+    return false;
+  auto* property = dynamic_cast<naja::NajaDumpableProperty*>(
+      design->getProperty(InvertedInputGatePropertyName));
+  if (property) property->destroy();
+  property = naja::NajaDumpableProperty::create(design, InvertedInputGatePropertyName);
+  property->addUInt64Value(1);
+  uint64_t type = gate.type == Gate::AND ? 0 : gate.type == Gate::NAND ? 1 :
+      gate.type == Gate::OR ? 2 : 3;
+  property->addUInt64Value(type);
+  for (auto* input : inputs) {
+    if (std::find(gate.invertedInputs.begin(), gate.invertedInputs.end(), input) !=
+        gate.invertedInputs.end()) property->addUInt64Value(input->getOrderID());
+  }
+  return true;
+}
+
+std::optional<SNLDesignModeling::GatePolarity>
+SNLDesignModeling::getInvertedInputGate(const SNLDesign* design) {
+  SNLTruthTable table;
+  std::vector<SNLBitTerm*> inputs;
+  if (!getGateInputs(design, table, inputs)) return std::nullopt;
+  if (auto recorded = getRecordedGate(design, table, inputs)) return recorded;
+  size_t ones = 0, oneRow = 0, zeroRow = 0;
+  for (size_t row = 0; row < table.bits().size(); ++row) {
+    if (table.bits().bit(row)) { ++ones; oneRow = row; }
+    else zeroRow = row;
+  }
+  const auto zeros = table.bits().size() - ones;
+  if (ones != 1 && zeros != 1) return std::nullopt;
+  const auto row = ones == 1 ? oneRow : zeroRow;
+  const size_t setBits = std::popcount(row);
+  const bool useClearBits = inputs.size() - setBits <= setBits;
+  GatePolarity result{
+      ones == 1 ? (useClearBits ? Gate::AND : Gate::NOR)
+                : (useClearBits ? Gate::NAND : Gate::OR), {}};
+  for (size_t i = 0; i < inputs.size(); ++i)
+    if (bool((row >> i) & 1) != useClearBits) result.invertedInputs.push_back(inputs[i]);
+  return result;
+}
+
+bool SNLDesignModeling::isInvertedInput(const SNLBitTerm* term) {
+  if (!term || term->getDirection() != SNLTerm::Direction::Input) return false;
+  auto gate = getInvertedInputGate(term->getDesign());
+  return gate && std::find(gate->invertedInputs.begin(), gate->invertedInputs.end(), term) !=
+      gate->invertedInputs.end();
+}
+
+bool SNLDesignModeling::isInvertedInput(const SNLInstTerm* term) {
+  return term && isInvertedInput(term->getBitTerm());
+}
+
 std::optional<SNLDesignModeling::GatePolarity>
 SNLDesignModeling::getGatePolarity(const SNLDesign* design) {
+  if (auto gate = getInvertedInputGate(design)) return gate;
   using Gate = SNLTruthTable::GenericType;
   if (isSequential(design)) {
     return std::nullopt;

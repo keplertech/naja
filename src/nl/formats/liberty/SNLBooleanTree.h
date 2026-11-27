@@ -134,6 +134,8 @@ class SNLBooleanTree {
     using Terms = std::vector<SNLBitTerm*>;
     SNLTruthTable getTruthTable(const Terms& terms);
     SNLDesignModeling::BooleanExpression getBooleanExpression() const;
+    /// Literal AND/OR shape, with optional output and input negations.
+    std::optional<SNLDesignModeling::GatePolarity> getInvertedInputGate() const;
   private:
     std::string                 function_   {};
     Inputs                      inputs_     {};

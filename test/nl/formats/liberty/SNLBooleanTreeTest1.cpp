@@ -154,3 +154,27 @@ TEST_F(SNLBooleanTreeTest1, testBooleanExpressionErrors) {
     EXPECT_THROW(tree.getBooleanExpression(), SNLLibertyConstructorException);
   }
 }
+
+TEST_F(SNLBooleanTreeTest1, LiteralGateShapes) {
+  auto* cell = SNLDesign::create(library_, SNLDesign::Type::Primitive);
+  for (auto name : {"P", "Q", "R"})
+    SNLScalarTerm::create(cell, SNLTerm::Direction::Input, NLName(name));
+  SNLScalarTerm::create(cell, SNLTerm::Direction::Output, NLName("Y"));
+  using Gate = SNLTruthTable::GenericType;
+  for (const auto& [text, type] : std::vector<std::pair<std::string, Gate>>{
+      {"P*!Q*R", Gate::AND}, {"(P&Q'&R)'", Gate::NAND},
+      {"P|Q'|R", Gate::OR}, {"!(P+Q'+R)", Gate::NOR}}) {
+    SNLBooleanTree tree;
+    tree.parse(cell, text);
+    auto gate = tree.getInvertedInputGate();
+    ASSERT_TRUE(gate) << text;
+    EXPECT_EQ(type, gate->type);
+    EXPECT_EQ((std::vector<SNLBitTerm*>{cell->getScalarTerm(NLName("Q"))}), gate->invertedInputs);
+  }
+  for (auto text : {"P*P*!Q*R", "P*(Q+R)", "!(P^Q^R)",
+                    "P*!(Q*R)", "P*Q", "P*Q*R*1", "P*!!Q*R"}) {
+    SNLBooleanTree tree;
+    tree.parse(cell, text);
+    EXPECT_FALSE(tree.getInvertedInputGate()) << text;
+  }
+}

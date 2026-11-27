@@ -25,4 +25,45 @@ library (gate_polarity) {
     pin (R) { direction : input; }
     pin (P) { direction : input; }
   }
+  cell (cell4) {
+    pin (P) { direction : input; }
+    pin (Y) { direction : output; function : "!(P+!Q)"; }
+    pin (Q) { direction : input; }
+  }
+  cell (cell5) {
+    pin (P) { direction : input; }
+    pin (Y) { direction : output; function : "P'*Q"; }
+    pin (Q) { direction : input; }
+  }
+  cell (cell6) {
+    pin (P) { direction : input; }
+    pin (Y) { direction : output; function : "!(!P&!Q)"; }
+    pin (Q) { direction : input; }
+  }
+  cell (cell7) {
+    pin (P) { direction : input; }
+    pin (Y) { direction : output; function : "!(!P|!Q)"; }
+    pin (Q) { direction : input; }
+  }
+  cell (cell8) {
+    pin (P) { direction : input; }
+    pin (Q) { direction : input; }
+    pin (R) { direction : input; }
+    pin (Y) { direction : output; function : "(P*Q)+R"; }
+  }
+  cell (cell9) {
+    pin (P) { direction : input; }
+    pin (Q) { direction : input; }
+    pin (Y) { direction : output; function : "P*P*!Q"; }
+  }
+  cell (cell10) {
+    pin (P) { direction : input; }
+    pin (Q) { direction : input; }
+    pin (Y) { direction : output; function : "!(P^Q)"; }
+  }
+  cell (cell11) {
+    pin (P) { direction : input; }
+    pin (Q) { direction : input; }
+    pin (Y) { direction : output; function : "!(!P*Q+P*Q)"; }
+  }
 }

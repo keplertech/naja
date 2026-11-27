@@ -1413,6 +1413,9 @@ void parseTerms(
       std::reverse(terms.begin(), terms.end());
       auto truthTable = tree->getTruthTable(terms);
       naja::NL::SNLDesignModeling::setTruthTable(primitive, truthTable);
+      if (auto gate = tree->getInvertedInputGate()) {
+        SNLDesignModeling::setInvertedInputGate(primitive, *gate);
+      }
       SNLDesignModeling::setFunction(outputTerm, tree->getBooleanExpression());
     } catch (const SNLLibertyConstructorException& e) {
       auto reason = buildFunctionParseErrorReason(

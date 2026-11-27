@@ -27,7 +27,7 @@ class SNLDesignTruthTablesTest(unittest.TestCase):
     db.loadLibertyPrimitives([str(formats / "liberty/benchmarks/tests/gate_polarity.lib")])
     library = db.getLibrary("gate_polarity")
     for name, kind, pin in (("cell0", "nand", "P"), ("cell1", "and", "P"),
-                            ("cell2", "nor", "R"), ("cell3", "or", "P")):
+                            ("cell2", "nor", "R"), ("cell5", "and", "P")):
       with self.subTest(cell=name):
         cell = library.getSNLDesign(name)
         self.assertEqual((kind, [cell.getScalarTerm(pin)]), cell.getGatePolarity())
@@ -40,6 +40,57 @@ class SNLDesignTruthTablesTest(unittest.TestCase):
     self.assertIsNone(prim.getGatePolarity())
     prim.setTruthTable(0b1011)  # !(!P*Q): row bit 0 is P.
     self.assertEqual(("nand", [first]), prim.getGatePolarity())
+
+  def testInvertedInputGates(self):
+    formats = Path(os.environ.get("FORMATS_PATH", Path(__file__).resolve().parents[2] / "formats"))
+    db = self.primitives.getDB()
+    db.loadLibertyPrimitives([str(formats / "liberty/benchmarks/tests/gate_polarity.lib")])
+    library = db.getLibrary("gate_polarity")
+    expected = [(0, "nand", ["P"]), (1, "and", ["P"]), (2, "nor", ["R"]),
+                (3, "nand", ["Q", "R"]), (4, "nor", ["Q"]), (5, "and", ["P"]),
+                (6, "nand", ["P", "Q"]), (7, "nor", ["P", "Q"]),
+                (9, "and", ["Q"])]
+    top = naja.SNLDesign.create(self.designs, "top")
+    for index, kind, names in expected:
+      cell = library.getSNLDesign("cell" + str(index))
+      inverted = [cell.getScalarTerm(name) for name in names]
+      self.assertEqual((kind, inverted), cell.getInvertedInputGate())
+      self.assertEqual(cell.getInvertedInputGate(), cell.getGatePolarity())
+      instance = naja.SNLInstance.create(top, cell, "u" + str(index))
+      for term in cell.getBitTerms():
+        self.assertEqual(term in inverted, term.isInvertedInput())
+        self.assertEqual(term.isInvertedInput(), instance.getInstTerm(term).isInvertedInput())
+    for index in (8, 10, 11):
+      self.assertIsNone(library.getSNLDesign("cell" + str(index)).getInvertedInputGate())
+    # These exact gate predicates still inspect the truth table.
+    self.assertTrue(library.getSNLDesign("cell6").isOr())
+    self.assertTrue(library.getSNLDesign("cell7").isAnd())
+
+  def testInvertedInputGateFallback(self):
+    for width in (2, 3):
+      for row in range(1 << width):
+        for single_one in (False, True):
+          cell = naja.SNLDesign.createPrimitive(self.primitives)
+          inputs = [naja.SNLScalarTerm.create(cell, naja.SNLTerm.Direction.Input)
+                    for _ in range(width)]
+          naja.SNLScalarTerm.create(cell, naja.SNLTerm.Direction.Output)
+          mask = 1 << row
+          if not single_one:
+            mask ^= (1 << (1 << width)) - 1
+          cell.setTruthTable(mask)
+          clear = [pin for i, pin in enumerate(inputs) if not (row >> i) & 1]
+          set_bits = [pin for i, pin in enumerate(inputs) if (row >> i) & 1]
+          use_clear = len(clear) <= len(set_bits)
+          kind = (("and" if use_clear else "nor") if single_one else
+                  ("nand" if use_clear else "or"))
+          self.assertEqual((kind, clear if use_clear else set_bits), cell.getInvertedInputGate())
+    for width, mask in ((2, 6), (3, 0xf8), (3, 0xca)):
+      cell = naja.SNLDesign.createPrimitive(self.primitives)
+      for _ in range(width):
+        naja.SNLScalarTerm.create(cell, naja.SNLTerm.Direction.Input)
+      naja.SNLScalarTerm.create(cell, naja.SNLTerm.Direction.Output)
+      cell.setTruthTable(mask)
+      self.assertIsNone(cell.getInvertedInputGate())
 
   def testGatePolarityFromParameter(self):
     prim = naja.SNLDesign.createPrimitive(self.primitives, "parameter_gate")

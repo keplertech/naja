@@ -154,9 +154,13 @@ def dump_state(output, timing=False, resets=False, graphs=False):
 
     def visit(library):
         for design in library.getSNLDesigns():
+            gate = design.getInvertedInputGate()
+            gate_state = None if gate is None else [gate[0], [term.getNLID().toTuple() for term in gate[1]]]
             state.append([
                 design.getNLID().toTuple(), design.getName(), attributes(design),
                 design.getContentHash(),
+                gate_state,
+                [[term.getNLID().toTuple(), term.isInvertedInput()] for term in design.getBitTerms()],
                 [[p.getName(), p.getValue()] for p in design.getParameters()],
                 [[i.getNLID().toTuple(), i.getName(), attributes(i),
                   i.getModel().getNLID().toTuple(),
@@ -273,6 +277,15 @@ def worker(kind, source, output, run):
             db.loadVHDL(source, top="top", diagnostics_report_path=None)
         top = universe.getTopDesign()
         assert top.getInstance("u").getModel() == db.getLibrary("CELL_LIB").getSNLDesign("CELL_A")
+    elif kind == "liberty_gates":
+        db.loadLibertyPrimitives([source])
+        library = naja.NLLibrary.create(db, "designs")
+        top = naja.SNLDesign.create(library, "top")
+        universe.setTopDesign(top)
+        for cell in db.getLibrary("gate_polarity").getSNLDesigns():
+            naja.SNLInstance.create(top, cell, cell.getName())
+        gate = db.getLibrary("gate_polarity").getSNLDesign("cell6").getInvertedInputGate()
+        assert gate[0] == "nand" and [t.getName() for t in gate[1]] == ["P", "Q"]
     elif kind in ("sv", "sv_timing", "sv_resets", "sv_top", "sv_recursive_top", "sv_formal"):
         options = None
         if kind == "sv_top":
@@ -403,6 +416,12 @@ class NajaEDADeterminismTest(unittest.TestCase):
                 else:
                     with self.subTest(language=kind, run=run, phase="fresh process"):
                         self.assert_artifacts_equal(baseline, original)
+
+    def test_liberty_gate_intent(self):
+        benchmarks = Path(os.environ.get(
+            "LIBERTY_BENCHMARKS_PATH", Path(__file__).resolve().parents[1] / "nl/formats/liberty/benchmarks"))
+        source = (benchmarks / "tests/gate_polarity.lib").read_text()
+        self.check_determinism("liberty_gates", source)
 
     def test_liberty_systemverilog(self):
         from test_najaeda_hdl_primitives import LIBERTY, SV
