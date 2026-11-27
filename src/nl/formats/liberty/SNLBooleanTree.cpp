@@ -543,4 +543,50 @@ SNLBooleanTree::~SNLBooleanTree() {
   delete constant1_;
 }
 
+std::optional<SNLDesignModeling::GatePolarity> SNLBooleanTree::getInvertedInputGate() const {
+  using Type = SNLBooleanTreeFunctionNode::Type;
+  using Gate = SNLTruthTable::GenericType;
+  const auto* operation = root_;
+  bool negate = false;
+  if (operation && operation->getType() == Type::NOT && operation->getInputs().size() == 1) {
+    negate = true;
+    operation = dynamic_cast<const SNLBooleanTreeFunctionNode*>(operation->getInputs()[0]);
+  }
+  if (!operation || (operation->getType() != Type::AND && operation->getType() != Type::OR))
+    return std::nullopt;
+  const auto type = operation->getType();
+  SNLDesignModeling::GatePolarity result{
+      type == Type::AND ? (negate ? Gate::NAND : Gate::AND) :
+                          (negate ? Gate::NOR : Gate::OR), {}};
+  std::vector<const SNLBitTerm*> seen;
+  // The parser represents associative chains as binary trees. Flatten only
+  // the same operator, leaving mixed or negated subexpressions unrecognized.
+  const auto collect = [&](const auto& self, const SNLBooleanTreeNode* node) -> bool {
+    auto* function = dynamic_cast<const SNLBooleanTreeFunctionNode*>(node);
+    if (function && function->getType() == type) {
+      if (function->getInputs().size() < 2) return false;
+      for (auto* child : function->getInputs()) if (!self(self, child)) return false;
+      return true;
+    }
+    bool inverted = false;
+    if (function && function->getType() == Type::NOT && function->getInputs().size() == 1) {
+      inverted = true;
+      node = function->getInputs()[0];
+    }
+    auto* input = dynamic_cast<const SNLBooleanTreeInputNode*>(node);
+    if (!input || input->getType() != SNLBooleanTreeInputNode::Type::INPUT) return false;
+    auto* term = input->getTerm();
+    if (!term || term->getDirection() != SNLTerm::Direction::Input ||
+        std::find(seen.begin(), seen.end(), term) != seen.end()) return false;
+    seen.push_back(term);
+    if (inverted) result.invertedInputs.push_back(const_cast<SNLBitTerm*>(term));
+    return true;
+  };
+  if (!collect(collect, operation) || seen.size() < 2) return std::nullopt;
+  size_t inputCount = 0;
+  for (auto* term : seen.front()->getDesign()->getBitTerms())
+    if (term->getDirection() == SNLTerm::Direction::Input) ++inputCount;
+  if (seen.size() != inputCount) return std::nullopt;
+  return result;
+}
 } // namespace naja::NL

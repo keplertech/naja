@@ -1577,8 +1577,8 @@ TEST_F(SNLDesignModelingTest0, GatePolarityFunctions) {
   using Gate = SNLTruthTable::GenericType;
   struct Expected { Gate type; std::vector<size_t> inverted; };
   const std::vector<Expected> twoInput = {
-    {Gate::NONE, {}}, {Gate::NOR, {}}, {Gate::NOR, {0}}, {Gate::NONE, {}},
-    {Gate::NOR, {1}}, {Gate::NONE, {}}, {Gate::XOR, {}}, {Gate::NAND, {}},
+    {Gate::NONE, {}}, {Gate::NOR, {}}, {Gate::AND, {1}}, {Gate::NONE, {}},
+    {Gate::AND, {0}}, {Gate::NONE, {}}, {Gate::XOR, {}}, {Gate::NAND, {}},
     {Gate::AND, {}}, {Gate::XNOR, {}}, {Gate::NONE, {}}, {Gate::NAND, {0}},
     {Gate::NONE, {}}, {Gate::NAND, {1}}, {Gate::OR, {}}, {Gate::NONE, {}}
   };
@@ -1616,6 +1616,17 @@ TEST_F(SNLDesignModelingTest0, GatePolarityFunctions) {
         for (auto index : expected.inverted) inverted.push_back(inputs[index]);
         EXPECT_EQ(inverted, polarity->invertedInputs);
       }
+      auto gate = SNLDesignModeling::getInvertedInputGate(cell);
+      const bool basic = expected.type != Gate::NONE && expected.type != Gate::XOR && expected.type != Gate::XNOR;
+      ASSERT_EQ(basic, gate.has_value());
+      if (gate) {
+        EXPECT_EQ(expected.type, gate->type);
+        EXPECT_EQ(polarity->invertedInputs, gate->invertedInputs);
+        for (auto* input : inputs) {
+          const bool inverted = std::find(gate->invertedInputs.begin(), gate->invertedInputs.end(), input) != gate->invertedInputs.end();
+          EXPECT_EQ(inverted, SNLDesignModeling::isInvertedInput(input));
+        }
+      }
     }
   }
 }
@@ -1632,6 +1643,7 @@ TEST_F(SNLDesignModelingTest0, GatePolarityGenericAndExclusions) {
     ASSERT_TRUE(SNLDesignModeling::getTruthTable(cell).isGeneric());
     auto polarity = SNLDesignModeling::getGatePolarity(cell);
     ASSERT_TRUE(polarity);
+    EXPECT_FALSE(SNLDesignModeling::getInvertedInputGate(cell));
     EXPECT_EQ(type, polarity->type);
     EXPECT_TRUE(polarity->invertedInputs.empty());
   }
@@ -1693,6 +1705,7 @@ TEST_F(SNLDesignModelingTest0, GatePolarityBusAndMultichunkOrder) {
   ASSERT_TRUE(widePolarity);
   EXPECT_EQ(Gate::AND, widePolarity->type);
   EXPECT_EQ(std::vector<SNLBitTerm*>{wideBus->getBit(5)}, widePolarity->invertedInputs);
+  EXPECT_FALSE(SNLDesignModeling::getInvertedInputGate(wide));
 }
 
 TEST_F(SNLDesignModelingTest0, MergeAssociativeOperators) {
@@ -2063,4 +2076,52 @@ TEST_F(SNLDesignModelingTest0, FunctionRejectsGenericTableWithNonLocalDependenci
     }
     EXPECT_FALSE(SNLDesignModeling::getFunction(output));
   }
+}
+
+TEST_F(SNLDesignModelingTest0, RecordedGateValidation) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* library = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* cell = SNLDesign::create(library, SNLDesign::Type::Primitive);
+  auto* a = SNLScalarTerm::create(cell, SNLTerm::Direction::Input);
+  auto* y = SNLScalarTerm::create(cell, SNLTerm::Direction::Output);
+  auto* b = SNLScalarTerm::create(cell, SNLTerm::Direction::Input);
+  using Gate = SNLTruthTable::GenericType;
+  SNLDesignModeling::setTruthTable(cell, SNLTruthTable(2, 14, {5}));
+  EXPECT_EQ(Gate::OR, SNLDesignModeling::getInvertedInputGate(cell)->type);
+  EXPECT_FALSE(SNLDesignModeling::setInvertedInputGate(cell, {Gate::AND, {a}}));
+  EXPECT_FALSE(SNLDesignModeling::setInvertedInputGate(cell, {Gate::NAND, {a,a}}));
+  EXPECT_FALSE(SNLDesignModeling::setInvertedInputGate(cell, {Gate::NAND, {a,y}}));
+  EXPECT_FALSE(SNLDesignModeling::setInvertedInputGate(cell, {Gate::XOR, {}}));
+  EXPECT_TRUE(SNLDesignModeling::setInvertedInputGate(cell, {Gate::NAND, {b,a}}));
+  auto gate = SNLDesignModeling::getInvertedInputGate(cell);
+  ASSERT_TRUE(gate);
+  EXPECT_EQ(Gate::NAND, gate->type);
+  EXPECT_EQ((std::vector<SNLBitTerm*>{a,b}), gate->invertedInputs);
+  EXPECT_FALSE(SNLDesignModeling::isInvertedInput(y));
+  EXPECT_FALSE(SNLDesignModeling::isInvertedInput(static_cast<const SNLBitTerm*>(nullptr)));
+  EXPECT_FALSE(SNLDesignModeling::isInvertedInput(static_cast<const SNLInstTerm*>(nullptr)));
+  EXPECT_TRUE(SNLDesignModeling::setInvertedInputGate(cell, {Gate::OR, {}}));
+  EXPECT_TRUE(SNLDesignModeling::getInvertedInputGate(cell)->invertedInputs.empty());
+}
+
+TEST_F(SNLDesignModelingTest0, InvertedGateSparseDependencyOrder) {
+  NLUniverse::create();
+  auto* db = NLDB::create(NLUniverse::get());
+  auto* library = NLLibrary::create(db, NLLibrary::Type::Primitives);
+  auto* cell = SNLDesign::create(library, SNLDesign::Type::Primitive);
+  auto* bus = SNLBusTerm::create(cell, SNLTerm::Direction::Input, 68, 0);
+  auto* output = SNLScalarTerm::create(cell, SNLTerm::Direction::Output);
+  auto* last = SNLScalarTerm::create(cell, SNLTerm::Direction::Input);
+  // Only bus bit 66 (flat position 2) and the final scalar (position 70)
+  // participate. Row bit zero is the first SET dependency bit, not term 0.
+  SNLDesignModeling::setTruthTable(cell, SNLTruthTable(2, 11, {4, 64}));
+  auto gate = SNLDesignModeling::getInvertedInputGate(cell);
+  ASSERT_TRUE(gate);
+  EXPECT_EQ(SNLTruthTable::GenericType::NAND, gate->type);
+  EXPECT_EQ((std::vector<SNLBitTerm*>{bus->getBit(66)}), gate->invertedInputs);
+  EXPECT_TRUE(SNLDesignModeling::isInvertedInput(bus->getBit(66)));
+  EXPECT_FALSE(SNLDesignModeling::isInvertedInput(bus->getBit(68)));
+  EXPECT_FALSE(SNLDesignModeling::isInvertedInput(last));
+  EXPECT_FALSE(SNLDesignModeling::isInvertedInput(output));
 }

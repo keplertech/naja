@@ -1068,7 +1068,8 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`isBuf <najaeda.naja.SNLDesign.isBuf>`,
       :meth:`isInv <najaeda.naja.SNLDesign.isInv>`.
 
-    * :meth:`getGatePolarity <najaeda.naja.SNLDesign.getGatePolarity>`,
+    * :meth:`getInvertedInputGate <najaeda.naja.SNLDesign.getInvertedInputGate>`,
+      :meth:`getGatePolarity <najaeda.naja.SNLDesign.getGatePolarity>`,
       :meth:`isAnd <najaeda.naja.SNLDesign.isAnd>`,
       :meth:`isNand <najaeda.naja.SNLDesign.isNand>`,
       :meth:`isOr <najaeda.naja.SNLDesign.isOr>`,
@@ -1138,7 +1139,8 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`getActiveLevel <najaeda.naja.SNLBitTerm.getActiveLevel>`,
       :meth:`getResetActiveLevel <najaeda.naja.SNLBitTerm.getResetActiveLevel>`.
 
-    * :meth:`isClock <najaeda.naja.SNLBitTerm.isClock>`,
+    * :meth:`isInvertedInput <najaeda.naja.SNLBitTerm.isInvertedInput>`,
+      :meth:`isClock <najaeda.naja.SNLBitTerm.isClock>`,
       :meth:`isAsyncReset <najaeda.naja.SNLBitTerm.isAsyncReset>`,
       :meth:`isAsyncSet <najaeda.naja.SNLBitTerm.isAsyncSet>`,
       :meth:`isSyncReset <najaeda.naja.SNLBitTerm.isSyncReset>`,
@@ -1183,6 +1185,7 @@ The C++ SNL API remains the semantic source of truth.
     * :meth:`getRole <najaeda.naja.SNLInstTerm.getRole>`,
       :meth:`getActiveLevel <najaeda.naja.SNLInstTerm.getActiveLevel>`,
       :meth:`getResetActiveLevel <najaeda.naja.SNLInstTerm.getResetActiveLevel>`,
+      :meth:`isInvertedInput <najaeda.naja.SNLInstTerm.isInvertedInput>`,
       :meth:`isClock <najaeda.naja.SNLInstTerm.isClock>`,
       :meth:`isAsyncReset <najaeda.naja.SNLInstTerm.isAsyncReset>`,
       :meth:`isAsyncSet <najaeda.naja.SNLInstTerm.isAsyncSet>`.
@@ -2669,18 +2672,40 @@ of :class:`SNLBitTerm <najaeda.naja.SNLBitTerm>` objects in design input-term or
 :meth:`isAnd() <najaeda.naja.SNLDesign.isAnd>` / :meth:`isNand() <najaeda.naja.SNLDesign.isNand>` / :meth:`isOr() <najaeda.naja.SNLDesign.isOr>` / :meth:`isNor() <najaeda.naja.SNLDesign.isNor>` / :meth:`isXor() <najaeda.naja.SNLDesign.isXor>` / :meth:`isXnor() <najaeda.naja.SNLDesign.isXnor>`
 predicates remain strict and do not recognize inverted-input variants.
 
-The chosen form minimizes the number of inverted inputs; ties prefer NAND
-or NOR (an inverted output). For example, ``!(!P*Q)`` returns
-``("nand", [P])``, while ``P*!Q`` returns ``("nor", [P])``. Parity functions
-return XOR or XNOR with an empty list. Generic gate tables also return an
-empty list. Row bit zero corresponds to the first input term, including for
-tables supplied through :meth:`setTruthTable() <najaeda.naja.SNLDesign.setTruthTable>`.
+For AND/NAND/OR/NOR with two through six inputs, this query uses
+:meth:`getInvertedInputGate() <najaeda.naja.SNLDesign.getInvertedInputGate>` as described below. Other supported
+forms retain the minimum-bubble choice, preferring an inverted output on ties.
+Parity functions return XOR or XNOR with an empty list. Generic gate tables also
+return an empty list. The query returns ``None`` for missing or multiple truth
+tables, sequential cells, parameter-dependent tables, fewer than two inputs, and
+functions outside these six families (unused inputs are ignored for bounded
+AND/NAND/OR/NOR tables).
 
-The query returns ``None`` for missing or multiple truth tables, sequential
-cells, parameter-dependent tables, fewer than two inputs, unused input pins,
-and functions outside these six families. Experts can use this raw API to
-select schematic gate symbols and input bubbles. There is currently no
-high-level :mod:`najaeda.netlist <najaeda.netlist>` wrapper.
+:meth:`SNLDesign.getInvertedInputGate() <najaeda.naja.SNLDesign.getInvertedInputGate>` returns ``None`` or
+``(type_name, inverted_inputs)``, restricted to ``"and"``, ``"nand"``, ``"or"``
+and ``"nor"``. It uses the same C++ modeling query as native clients. The Liberty
+loader records literal AND/OR chains (including input negations and an optional
+output negation), after checking the result against the truth table. For example,
+``!(!P*Q)`` is NAND with ``[P]``, ``!(P+!Q)`` is NOR with ``[Q]``, and
+``!(!P*!Q)`` remains NAND with ``[P, Q]``. Input names have no role in detection.
+The recorded form survives NajaIF save/load, including in a fresh process.
+
+Without recorded intent, a truth table with a single one gives AND with bubbles
+on the zero bits of that row, or NOR with bubbles on its one bits. A single zero
+gives NAND with bubbles on the zero bits, or OR with bubbles on its one bits.
+The form with fewer bubbles wins; ties choose AND/NAND. Thus a directly constructed
+``P*!Q`` returns ``("and", [Q])``. Row bits enumerate the set dependency-mask
+positions in flat-term order; the returned terms follow that order. Plain gates
+return an empty inverted-input list, and the existing exact-gate predicates are
+unchanged. Missing/multiple tables or outputs, sequential cells,
+parameter-dependent tables, non-input dependencies, generic tables, tables
+outside two through six inputs, XOR, AO/OA and mux functions return ``None``.
+
+:meth:`SNLBitTerm.isInvertedInput() <najaeda.naja.SNLBitTerm.isInvertedInput>` and
+:meth:`SNLInstTerm.isInvertedInput() <najaeda.naja.SNLInstTerm.isInvertedInput>` test membership in this query's
+inverted-input list. Output pins return ``False``. Experts should use these raw
+queries to select schematic symbols and bubbles; there is currently no high-level
+:mod:`najaeda.netlist <najaeda.netlist>` wrapper.
 
 
 Language-neutral source references

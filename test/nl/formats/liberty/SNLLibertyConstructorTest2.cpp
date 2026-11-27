@@ -646,7 +646,7 @@ TEST_F(SNLLibertyConstructorTest2, GatePolarityInputOrder) {
       Expected{"cell0", Gate::NAND, "P"},
       Expected{"cell1", Gate::AND, "P"},
       Expected{"cell2", Gate::NOR, "R"},
-      Expected{"cell3", Gate::OR, "P"}}) {
+      Expected{"cell5", Gate::AND, "P"}}) {
     SCOPED_TRACE(expected.cell);
     auto* cell = library_->getSNLDesign(NLName(expected.cell));
     ASSERT_NE(nullptr, cell);
@@ -709,4 +709,30 @@ TEST_F(SNLLibertyConstructorTest2, WrittenCombinationalFunctions) {
     EXPECT_EQ(SNLDesignModeling::getTruthTable(design, output->getOrderID()).size(),
         SNLDesignModeling::getCombinatorialInputs(output).size()) << item.cell;
   }
+}
+
+TEST_F(SNLLibertyConstructorTest2, LiteralGateIntent) {
+  SNLLibertyConstructor constructor(library_);
+  constructor.construct(std::filesystem::path(SNL_LIBERTY_BENCHMARKS) /
+      "benchmarks/tests/gate_polarity.lib");
+  using Gate = SNLTruthTable::GenericType;
+  struct Expected { const char* cell; Gate type; std::vector<const char*> inverted; };
+  for (const auto& expected : {
+      Expected{"cell0", Gate::NAND, {"P"}}, Expected{"cell1", Gate::AND, {"P"}},
+      Expected{"cell2", Gate::NOR, {"R"}}, Expected{"cell3", Gate::NAND, {"Q", "R"}},
+      Expected{"cell4", Gate::NOR, {"Q"}}, Expected{"cell5", Gate::AND, {"P"}},
+      Expected{"cell6", Gate::NAND, {"P", "Q"}}, Expected{"cell7", Gate::NOR, {"P", "Q"}},
+      Expected{"cell9", Gate::AND, {"Q"}}}) {
+    SCOPED_TRACE(expected.cell);
+    auto* cell = library_->getSNLDesign(NLName(expected.cell));
+    auto gate = SNLDesignModeling::getInvertedInputGate(cell);
+    ASSERT_TRUE(gate);
+    EXPECT_EQ(expected.type, gate->type);
+    std::vector<SNLBitTerm*> inverted;
+    for (auto name : expected.inverted) inverted.push_back(cell->getScalarTerm(NLName(name)));
+    EXPECT_EQ(inverted, gate->invertedInputs);
+    EXPECT_EQ(gate->type, SNLDesignModeling::getGatePolarity(cell)->type);
+  }
+  for (auto name : {"cell8", "cell10", "cell11"})
+    EXPECT_FALSE(SNLDesignModeling::getInvertedInputGate(library_->getSNLDesign(NLName(name))));
 }

@@ -132,6 +132,7 @@ static PyObject* PySNLBitTerm_setRole(PySNLBitTerm* self, PyObject* args) {
     Py_RETURN_FALSE;                                                 \
   }
 
+TERM_ROLE_PREDICATE(isInvertedInput, isInvertedInput)
 TERM_ROLE_PREDICATE(isClock, isClock)
 TERM_ROLE_PREDICATE(isAsyncReset, isAsyncReset)
 TERM_ROLE_PREDICATE(isAsyncSet, isAsyncSet)
@@ -180,6 +181,7 @@ PyMethodDef PySNLBitTerm_Methods[] = {
     "set the primitive term role and optional active level."},
   {"getActiveLevel", (PyCFunction)PySNLBitTerm_getActiveLevel, METH_NOARGS, "get active level for any role."},
   {"getResetActiveLevel", (PyCFunction)PySNLBitTerm_getResetActiveLevel, METH_NOARGS, "get reset/set active level."},
+  {"isInvertedInput", (PyCFunction)PySNLBitTerm_isInvertedInput, METH_NOARGS, "whether this input has a gate bubble."},
   {"isClock", (PyCFunction)PySNLBitTerm_isClock, METH_NOARGS, "whether this term is a clock."},
   {"isAsyncReset", (PyCFunction)PySNLBitTerm_isAsyncReset, METH_NOARGS, "whether this term is an asynchronous reset."},
   {"isAsyncSet", (PyCFunction)PySNLBitTerm_isAsyncSet, METH_NOARGS, "whether this term is an asynchronous set."},

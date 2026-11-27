@@ -294,9 +294,19 @@ class SNLDesignModeling {
       SNLTruthTable::GenericType type;
       std::vector<SNLBitTerm*> invertedInputs;
     };
-    /// Recognize a basic gate, minimizing input inversions and preferring
-    /// NAND/NOR on ties. Inverted inputs follow design input-term order.
+    /// Recognize a basic gate, using getInvertedInputGate for bounded
+    /// AND/NAND/OR/NOR tables. Other forms minimize input inversions,
+    /// preferring inverted outputs on ties. Terms follow flat-term order.
     static std::optional<GatePolarity> getGatePolarity(const SNLDesign* design);
+    /// AND/NAND/OR/NOR with literal Liberty intent preferred over the
+    /// truth-table form with fewest bubbles (AND/NAND wins ties).
+    /// Non-generic tables of two through six inputs are supported.
+    static std::optional<GatePolarity> getInvertedInputGate(const SNLDesign* design);
+    /// Record a literal form only if it agrees with the current truth table.
+    /// Returns false without changing the design for invalid forms.
+    static bool setInvertedInputGate(SNLDesign* design, const GatePolarity& gate);
+    static bool isInvertedInput(const SNLBitTerm* term);
+    static bool isInvertedInput(const SNLInstTerm* term);
     static bool isAnd(const SNLDesign* design);
     static bool isNand(const SNLDesign* design);
     static bool isOr(const SNLDesign* design);

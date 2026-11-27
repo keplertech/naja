@@ -737,9 +737,8 @@ GetBoolAttributeWithFunction(SNLDesign, isConst1, SNLDesignModeling::isConst1)
 GetBoolAttributeWithFunction(SNLDesign, isConst, SNLDesignModeling::isConst)
 GetBoolAttributeWithFunction(SNLDesign, isBuf, SNLDesignModeling::isBuf)
 GetBoolAttributeWithFunction(SNLDesign, isInv, SNLDesignModeling::isInv)
-static PyObject* PySNLDesign_getGatePolarity(PySNLDesign* self) {
-  METHOD_HEAD("SNLDesign.getGatePolarity()")
-  auto polarity = SNLDesignModeling::getGatePolarity(selfObject);
+static PyObject* linkGatePolarity(
+    const std::optional<SNLDesignModeling::GatePolarity>& polarity) {
   if (!polarity) {
     Py_RETURN_NONE;
   }
@@ -765,6 +764,20 @@ static PyObject* PySNLDesign_getGatePolarity(PySNLDesign* self) {
     PyList_SET_ITEM(inputs, i, term);
   }
   return Py_BuildValue("sN", name, inputs);
+}
+
+static PyObject* PySNLDesign_getGatePolarity(PySNLDesign* self) {
+  METHOD_HEAD("SNLDesign.getGatePolarity()")
+  TRY
+  return linkGatePolarity(SNLDesignModeling::getGatePolarity(selfObject));
+  NLCATCH
+}
+
+static PyObject* PySNLDesign_getInvertedInputGate(PySNLDesign* self) {
+  METHOD_HEAD("SNLDesign.getInvertedInputGate()")
+  TRY
+  return linkGatePolarity(SNLDesignModeling::getInvertedInputGate(selfObject));
+  NLCATCH
 }
 
 GetBoolAttributeWithFunction(SNLDesign, isAnd, SNLDesignModeling::isAnd)
@@ -1043,6 +1056,8 @@ PyMethodDef PySNLDesign_Methods[] = {
     "Returns True if this design is a buffer primitive"},
   { "isInv", (PyCFunction)PySNLDesign_isInv, METH_NOARGS,
     "Returns True if this design is an inverter primitive"},
+  { "getInvertedInputGate", (PyCFunction)PySNLDesign_getInvertedInputGate, METH_NOARGS,
+    "Return (base gate, inverted bit terms), or None." },
   { "getGatePolarity", (PyCFunction)PySNLDesign_getGatePolarity, METH_NOARGS,
     "Return None or (gate type name, inverted input terms in design order)."},
   { "isAnd", (PyCFunction)PySNLDesign_isAnd, METH_NOARGS,

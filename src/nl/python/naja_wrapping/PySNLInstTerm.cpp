@@ -57,6 +57,7 @@ static PyObject* PySNLInstTerm_getResetActiveLevel(PySNLInstTerm* self) {
     NLCATCH                                                             \
   }
 
+INST_TERM_ROLE_PREDICATE(isInvertedInput, isInvertedInput)
 INST_TERM_ROLE_PREDICATE(isClock, isClock)
 INST_TERM_ROLE_PREDICATE(isAsyncReset, isAsyncReset)
 INST_TERM_ROLE_PREDICATE(isAsyncSet, isAsyncSet)
@@ -107,6 +108,7 @@ PyMethodDef PySNLInstTerm_Methods[] = {
   {"getRole", (PyCFunction)PySNLInstTerm_getRole, METH_NOARGS, "get the primitive term role."},
   {"getActiveLevel", (PyCFunction)PySNLInstTerm_getActiveLevel, METH_NOARGS, "get active level for any role."},
   {"getResetActiveLevel", (PyCFunction)PySNLInstTerm_getResetActiveLevel, METH_NOARGS, "get reset/set active level."},
+  {"isInvertedInput", (PyCFunction)PySNLInstTerm_isInvertedInput, METH_NOARGS, "whether this input has a gate bubble."},
   {"isClock", (PyCFunction)PySNLInstTerm_isClock, METH_NOARGS, "whether this term is a clock."},
   {"isAsyncReset", (PyCFunction)PySNLInstTerm_isAsyncReset, METH_NOARGS, "whether this term is an asynchronous reset."},
   {"isAsyncSet", (PyCFunction)PySNLInstTerm_isAsyncSet, METH_NOARGS, "whether this term is an asynchronous set."},
