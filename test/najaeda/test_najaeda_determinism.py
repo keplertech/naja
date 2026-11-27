@@ -543,6 +543,20 @@ end;
     def test_systemverilog(self):
         self.check_determinism("sv", SYSTEMVERILOG)
 
+    def test_systemverilog_generate_memories(self):
+        self.check_determinism("sv", """
+module top(input logic clk, we, input logic [1:0] addr,
+           input logic [4:0] din [4], output logic [4:0] dout [4]);
+  for (genvar i = 0; i < 2; i++) begin : outer_bank
+    for (genvar j = 0; j < 2; j++) begin : inner_bank
+      logic [4:0] mem [4];
+      always_ff @(posedge clk) if (we) mem[addr] <= din[2*i+j];
+      assign dout[2*i+j] = mem[addr];
+    end
+  end
+endmodule
+""")
+
     def test_systemverilog_output_indexed_port_slices(self):
         self.check_determinism("sv", """
 module source(input [5:0] a, output [5:0] y);

@@ -15,6 +15,7 @@ cc_test(
     srcs = [
         "SNLSVConstructorTestSimple.cpp",
         "SNLSVConstructorTestMemoryInference.cpp",
+        "SNLSVConstructorTestGenerateMemory.cpp",
         "SNLSVConstructorTestAlwaysComb.cpp",
         "SNLSVConstructorTestSequentialOverlap.cpp",
         "SNLSVConstructorTestElab.cpp",
