@@ -167,10 +167,23 @@ u.destroy()
             self.compare_rtl(directory, source_text, testbench)
 
     def compare_rtl(self, directory, source_text, testbench):
-        # Use the same unmodified function bodies in the simulator reference.
+        # Keep the Naja source intact while adapting the simulator reference.
         reference = source_text.replace("package values;", "package ref_values;")
         reference = reference.replace("import values::*;", "import ref_values::*;")
         reference = reference.replace("module top(", "module reference_rtl(")
+        # Icarus 11 rejects signing casts. $signed preserves the operand's
+        # width and gives the same signed value; keep signed'(v) in the Naja
+        # input so this test still covers native signing-cast lowering.
+        reference = reference.replace("return signed'(v);", "return $signed(v);")
+        # Icarus 11 also misindexes ascending packed-member slices. Whole-field
+        # masks express the same updates without changing the Naja input.
+        for member in ("v.mark", "v.mark.bits"):
+            reference = reference.replace(
+                f"{member} = {{1'b0, {member}[1:2]}};",
+                f"{member} = {member} & 3'b011;")
+            reference = reference.replace(
+                f"{member} = {{1'b1, {member}[1:2]}};",
+                f"{member} = ({member} & 3'b011) | 3'b100;")
         tb = directory / "tb.sv"
         tb.write_text(reference + testbench)
         executable = directory / "simulation"
