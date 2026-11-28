@@ -211,7 +211,7 @@ bool isZeroVerilogIntegerLiteral(const std::string& value) {
 
 bool isNajaSequentialModel(const naja::NL::SNLDesign* model) {
   using namespace naja::NL;
-  return NLDB0::isDFF(model) || NLDB0::isDLatch(model) || NLDB0::isDFFN(model) ||
+  return NLDB0::isALDFF(model) || NLDB0::isDFF(model) || NLDB0::isDLatch(model) || NLDB0::isDFFN(model) ||
       NLDB0::isDFFRN(model) || NLDB0::isDFFR(model) || NLDB0::isDFFS(model) ||
       NLDB0::isDFFE(model) || NLDB0::isDFFRE(model) ||
       NLDB0::isDFFSE(model) ||
@@ -2665,6 +2665,23 @@ void SNLVRLDumper::dumpNajaTableSelectModel(std::ostream& o) {
   o << "endmodule //naja_table_select\n";
 }
 
+void SNLVRLDumper::dumpNajaALDFFModel(std::ostream& o) {
+  o << "module naja_aldff #(\n";
+  o << "  parameter WIDTH = 1,\n";
+  o << "  parameter INIT = {WIDTH{1'bx}}\n";
+  o << ") (\n";
+  o << "  input C, L,\n";
+  o << "  input [WIDTH-1:0] D, AD,\n";
+  o << "  output reg [WIDTH-1:0] Q\n";
+  o << ");\n";
+  o << "  initial Q = INIT;\n";
+  o << "  always @(posedge C or posedge L) begin\n";
+  o << "    if (L) Q <= AD;\n";
+  o << "    else Q <= D;\n";
+  o << "  end\n";
+  o << "endmodule //naja_aldff\n";
+}
+
 void SNLVRLDumper::dumpNajaDFFModel(std::ostream& o) {
   o << "module naja_dff #(\n";
   o << "  parameter WIDTH = 1,\n";
@@ -3136,6 +3153,8 @@ void SNLVRLDumper::dumpNajaPrimitiveFile(const std::filesystem::path& path) {
   dumpNajaVectorSelectModel(outFile);
   outFile << '\n';
   dumpNajaTableSelectModel(outFile);
+  outFile << '\n';
+  dumpNajaALDFFModel(outFile);
   outFile << '\n';
   dumpNajaDFFModel(outFile);
   outFile << '\n';

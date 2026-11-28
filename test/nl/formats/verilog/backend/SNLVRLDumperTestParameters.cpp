@@ -810,7 +810,7 @@ TEST_F(SNLVRLDumperTestParameters, testMemoryAndTableSelectModelDefaults) {
 
 TEST_F(SNLVRLDumperTestParameters, testSequentialModelDefaultsAndInitOverrides) {
   for (auto factory: {
-      NLDB0::getOrCreateDFF, NLDB0::getOrCreateDFFN,
+      NLDB0::getOrCreateALDFF, NLDB0::getOrCreateDFF, NLDB0::getOrCreateDFFN,
       NLDB0::getOrCreateDFFRN, NLDB0::getOrCreateDFFR,
       NLDB0::getOrCreateDFFS, NLDB0::getOrCreateDFFE,
       NLDB0::getOrCreateDFFRE, NLDB0::getOrCreateDFFSE,
@@ -1158,4 +1158,64 @@ TEST_F(SNLVRLDumperTestParameters, testVerilatorSplitPackedSignalsScope) {
   std::ostringstream reused;
   dumper.dumpDesign(model_, reused);
   EXPECT_EQ(std::string::npos, reused.str().substr(0, reused.str().find(");")).find("split_var"));
+}
+
+TEST_F(SNLVRLDumperTestParameters, sampledAsynchronousLoadSimulation) {
+  auto* model = NLDB0::getOrCreateALDFF(3);
+  auto* instance = SNLInstance::create(top_, model, NLName("storage"));
+  for (auto* term : model->getTerms()) {
+    const auto name = term->getName();
+    if (auto* scalar = dynamic_cast<SNLScalarTerm*>(term)) {
+      auto* port = SNLScalarTerm::create(top_, term->getDirection(), name);
+      auto* net = SNLScalarNet::create(top_, name);
+      port->setNet(net);
+      instance->setTermNet(scalar, net);
+    } else {
+      auto* port = SNLBusTerm::create(top_, term->getDirection(), 2, 0, name);
+      auto* net = SNLBusNet::create(top_, 2, 0, name);
+      port->setNet(net);
+      instance->setTermNet(term, net);
+    }
+  }
+  SNLInstParameter::create(instance, model->getParameter(NLName("INIT")), "3'b101");
+  const auto directory = std::filesystem::path(SNL_VRL_DUMPER_TEST_PATH) / "sampled_async_load";
+  std::filesystem::create_directories(directory);
+  SNLVRLDumper dumper;
+  dumper.dumpDesign(top_, directory);
+  const auto models = directory / "naja_primitives.v";
+  ASSERT_NE(std::string::npos, readTextFile(models).find("always @(posedge C or posedge L)"));
+  if (std::system("command -v iverilog >/dev/null 2>&1") ||
+      std::system("command -v vvp >/dev/null 2>&1")) GTEST_SKIP() << "Icarus Verilog unavailable";
+  const auto quote = [](const auto& path) { return "\"" + path.string() + "\""; };
+  const auto tbPath = directory / "tb.v";
+  std::ofstream tb(tbPath);
+  tb << R"(module tb;
+reg C=0,L=0; reg [2:0] D=3'b010, AD=3'b001;
+wire [2:0] Q; reg [2:0] reference=3'b101;
+top dut(.C(C),.L(L),.D(D),.AD(AD),.Q(Q));
+always @(posedge C or posedge L) if (L) reference <= AD; else reference <= D;
+task check(input [2:0] expected);
+ begin #1; if (Q !== expected || Q !== reference) $fatal(1,"sampled load mismatch: %b %b %b",Q,reference,expected); end
+endtask
+initial begin
+ check(3'b101);
+ L=1; check(3'b001);              // Load with stopped clock.
+ AD=3'b110; check(3'b001);        // Data change alone must not update Q.
+ C=1; check(3'b110);              // Clock during load samples AD again.
+ C=0; AD=3'b011; check(3'b110);
+ L=0; check(3'b110);              // Deassertion must not sample AD.
+ C=1; check(3'b010);              // Normal data path resumes.
+ C=0; AD=3'bx1z; L=1; check(3'bx1z);
+ AD=3'b000; check(3'bx1z);        // Preserve sampled four-state input.
+ L=0; check(3'bx1z);
+ $finish;
+end
+endmodule
+)";
+  tb.close();
+  const auto simulation = directory / "sim.vvp";
+  const auto command = "iverilog -g2012 -s tb -o " + quote(simulation) + " " + quote(tbPath) +
+    " " + quote(directory / "top.v") + " " + quote(models);
+  ASSERT_EQ(0, std::system(command.c_str()));
+  ASSERT_EQ(0, std::system(("vvp " + quote(simulation)).c_str()));
 }

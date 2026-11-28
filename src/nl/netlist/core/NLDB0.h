@@ -38,7 +38,7 @@ class NLDB0 {
   friend class NLUniverse;
   public:
     // Snapshot compatibility version for canonical primitive library identities.
-    static constexpr unsigned LibraryIDVersion = 7;
+    static constexpr unsigned LibraryIDVersion = 8;
 
     /// Opaque verification-source capture. This primitive does not interpret
     /// source text or define a Boolean / temporal execution model. Bindings
@@ -382,6 +382,13 @@ class NLDB0 {
     static SNLScalarTerm* getDLatchEnable();
     static SNLScalarTerm* getDLatchData();
     static SNLScalarTerm* getDLatchOutput();
+    /// Rising-edge D flop with an active-high, event-sampled asynchronous load.
+    /// Pins: C, D[WIDTH-1:0], L, AD[WIDTH-1:0], Q[WIDTH-1:0].
+    /// On rising L or C, capture L ? AD : D. AD changes alone never update Q.
+    /// WIDTH is structural; INIT is an instance-overridable binary literal.
+    static SNLDesign* getOrCreateALDFF(size_t width);
+    static bool isALDFF(const SNLDesign* design);
+
     /// \brief Plain negative-edge-triggered D flip-flop.
     /// Pins: C (clock), D (data), Q (output).
     static SNLDesign* getDFFN();
