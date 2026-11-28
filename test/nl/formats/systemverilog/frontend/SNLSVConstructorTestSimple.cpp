@@ -43482,3 +43482,154 @@ endmodule
     EXPECT_EQ(top->getScalarNet(NLName("b")), instance->getInstTerm(term->getBit(0))->getNet());
   }
 }
+
+// Check observable values through the primitive network, including every member bit.
+static void checkContinuousUnpackedAssignment(
+    NLLibrary* library, const std::string& name, const std::string& body,
+    const std::vector<unsigned>& expected) {
+  const auto path = writeSVTestFile(name,
+    "module " + name + "(input logic [7:0] a, output logic [11:0] y);\n" +
+    body + "\nendmodule\n");
+  SNLSVConstructor constructor(library);
+  ASSERT_NO_THROW(constructor.construct(path));
+  auto* top = library->getSNLDesign(NLName(name));
+  ASSERT_NE(nullptr, top);
+  auto* output = top->getBusTerm(NLName("y"));
+  ASSERT_NE(nullptr, output);
+  for (unsigned input = 0; input < 256; ++input) {
+    std::unordered_map<SNLBitNet*, std::optional<bool>> memo;
+    for (unsigned bit = 0; bit < 12; ++bit) {
+      EXPECT_EQ(bool((expected[input] >> bit) & 1u),
+        evaluateFunctionResultBit(top, output->getBit(bit)->getNet(), input, 0, &memo))
+        << name << " input=" << input << " bit=" << bit;
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedLogicSliceConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input) {
+    auto low = input & 15u, high = input >> 4;
+    expected.push_back((low ^ high) | (high << 4) | (low << 8));
+  }
+  checkContinuousUnpackedAssignment(library_, "continuous_logic_slice", R"(
+  logic [3:0] u [2:0];
+  logic [3:0] v [0:2];
+  assign u[0] = a[3:0]; assign u[1] = a[7:4]; assign u[2] = a[3:0] ^ a[7:4];
+  assign v[0:1] = u[2:1]; assign v[2] = u[0];
+  assign y = {v[2], v[1], v[0]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedStructSliceConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input)
+    expected.push_back((((input & 7u) + 2u) & 7u) | ((input >> 7) << 3) |
+      ((((input & 7u) + 1u) & 7u) << 4) | ((input >> 7) << 7) |
+      ((input & 7u) << 8) | ((input >> 7) << 11));
+  checkContinuousUnpackedAssignment(library_, "continuous_struct_slice", R"(
+  typedef struct packed { logic flag; logic [2:0] value; } item_t;
+  item_t src [3:0], dst [3:0];
+  for (genvar i = 0; i < 4; ++i) begin : g
+    assign src[i] = '{flag: a[7], value: a[2:0] + 3'(i)};
+  end
+  assign dst[0] = src[3]; assign dst[3:1] = src[2:0];
+  assign y = {dst[1], dst[2], dst[3]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedReplicationConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input)
+    expected.push_back((input & 15u) * 0x111u);
+  checkContinuousUnpackedAssignment(library_, "continuous_replication", R"(
+  logic [3:0] v [3];
+  assign v = '{3{a[3:0]}};
+  assign y = {v[2], v[1], v[0]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedSubarrayPatternsConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input)
+    expected.push_back((input & 15u) * 0x111u);
+  checkContinuousUnpackedAssignment(library_, "continuous_subarray_patterns", R"(
+  typedef struct packed { logic [2:0] value; logic flag; } item_t;
+  item_t item;
+  item_t arr [2][2];
+  assign item = '{value: a[3:1], flag: a[0]};
+  assign arr[0] = '{2{item}};
+  assign arr[1] = '{item, item};
+  assign y = {arr[0][0], arr[0][1], arr[1][1]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedOppositeRangesConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input)
+    expected.push_back(input & 15u);
+  checkContinuousUnpackedAssignment(library_, "continuous_opposite_ranges", R"(
+  logic src [3:0];
+  logic dst [0:3];
+  assign src = '{a[3], a[2], a[1], a[0]};
+  assign dst = src[3:0];
+  assign y = {8'b0, dst[0], dst[1], dst[2], dst[3]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedSubarraySimplePatternConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input)
+    expected.push_back((input & 15u) | ((input >> 4) << 4) | ((input & 15u) << 8));
+  checkContinuousUnpackedAssignment(library_, "continuous_subarray_simple_pattern", R"(
+  typedef struct packed { logic [2:0] value; logic flag; } item_t;
+  item_t arr [2][2];
+  assign arr[0] = '{item_t'(a[7:4]), item_t'(a[3:0])};
+  assign arr[1] = '{item_t'(a[3:0]), item_t'(a[7:4])};
+  assign y = {arr[1][0], arr[0][0], arr[0][1]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedReplicationGroupOrderConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input) {
+    auto first = input & 7u, second = (input >> 3) & 7u;
+    expected.push_back(second | (first << 3) | (second << 6) | (first << 9));
+  }
+  checkContinuousUnpackedAssignment(library_, "continuous_replication_group_order", R"(
+  logic [2:0] v [0:3];
+  assign v = '{2{a[2:0], a[5:3]}};
+  assign y = {v[0], v[1], v[2], v[3]};
+)", expected);
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedReversedSliceReportsUnsupported) {
+  const auto path = writeSVTestFile("continuous_reversed_unpacked_slice", R"(
+module continuous_reversed_unpacked_slice(input logic [3:0] a [3],
+                                           output logic [3:0] y [3]);
+  assign y[1:0] = a[2:1];
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  try {
+    constructor.construct(path);
+    FAIL() << "Expected an unsupported diagnostic for reversed unpacked selections";
+  } catch (const SNLSVUnsupportedConstructError& error) {
+    EXPECT_NE(std::string::npos, std::string(error.what()).find(
+      "Unsupported invalid continuous assignment"));
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, parseContinuousUnpackedDescendingSlicesConnectivity) {
+  std::vector<unsigned> expected;
+  for (unsigned input = 0; input < 256; ++input) {
+    auto low = input & 15u, high = input >> 4;
+    expected.push_back(high | ((low ^ high) << 4) | (low << 8));
+  }
+  checkContinuousUnpackedAssignment(library_, "continuous_descending_slices", R"(
+  logic [3:0] u [2:0], v [2:0];
+  assign u[0] = a[3:0]; assign u[1] = a[7:4]; assign u[2] = a[3:0] ^ a[7:4];
+  assign v[1:0] = u[2:1]; assign v[2] = u[0];
+  assign y = {v[2], v[1], v[0]};
+)", expected);
+}
