@@ -11528,13 +11528,34 @@ endmodule
         return true;
       }
 
-      if (stripped.kind == slang::ast::ExpressionKind::SimpleAssignmentPattern) {
-        const auto& pattern =
-          stripped.as<slang::ast::SimpleAssignmentPatternExpression>();
+      if (stripped.kind == slang::ast::ExpressionKind::SimpleAssignmentPattern ||
+          stripped.kind == slang::ast::ExpressionKind::ReplicatedAssignmentPattern) {
+        const auto& pattern = stripped.kind == slang::ast::ExpressionKind::SimpleAssignmentPattern
+          ? static_cast<const slang::ast::AssignmentPatternExpressionBase&>(
+              stripped.as<slang::ast::SimpleAssignmentPatternExpression>())
+          : static_cast<const slang::ast::AssignmentPatternExpressionBase&>(
+              stripped.as<slang::ast::ReplicatedAssignmentPatternExpression>());
+        auto elements = pattern.elements();
+        std::vector<const Expression*> replicatedElements;
+        if (stripped.kind == slang::ast::ExpressionKind::ReplicatedAssignmentPattern) {
+          const auto& replicated =
+            stripped.as<slang::ast::ReplicatedAssignmentPatternExpression>();
+          int32_t count = 0;
+          if (!getConstantInt32(replicated.count(), count) || count <= 0 ||
+              elements.empty() || static_cast<size_t>(count) > targetWidth / elements.size()) {
+            return false;
+          }
+          // Slang retains one group; expand in declaration order before using
+          // the same element-to-bit layout as a simple assignment pattern.
+          for (int32_t repeat = 0; repeat < count; ++repeat) {
+            replicatedElements.insert(replicatedElements.end(), elements.begin(), elements.end());
+          }
+          elements = replicatedElements;
+        }
         const auto& canonical = pattern.type->getCanonicalType();
         if (allowUnpackedArrayPatterns &&
             canonical.isUnpackedArray() && canonical.hasFixedRange()) {
-          if (pattern.elements().empty()) {
+          if (elements.empty()) {
             return std::nullopt; // LCOV_EXCL_LINE
           }
           const auto* elementType = canonical.getArrayElementType();
@@ -11563,7 +11584,7 @@ endmodule
 
           const auto arrayRange = canonical.getFixedRange();
           const auto arrayWidth = static_cast<size_t>(arrayRange.width());
-          if (arrayWidth != pattern.elements().size() ||
+          if (arrayWidth != elements.size() ||
               arrayWidth * *elementWidthBits != targetWidth) {
             return std::nullopt; // LCOV_EXCL_LINE: slang type checking rejects this shape.
           }
@@ -11577,7 +11598,7 @@ endmodule
             std::vector<SNLBitNet*> elementBits;
             if (!resolveExpressionBits(
                   design,
-                  *pattern.elements()[patternIndex],
+                  *elements[patternIndex],
                   *elementWidthBits,
                   elementBits) ||
                 elementBits.size() != *elementWidthBits) {
@@ -11607,7 +11628,7 @@ endmodule
           // Element bit layout mirrors the unpacked case above: pattern element
           // k corresponds to declared array index (arrayRange.left + k*step), and
           // its bits land at translateIndex(index) * elementWidth.
-          if (pattern.elements().empty()) {
+          if (elements.empty()) {
             return std::nullopt; // LCOV_EXCL_LINE
           }
           const auto* elementType = canonical.getArrayElementType();
@@ -11626,7 +11647,7 @@ endmodule
 
           const auto arrayRange = canonical.getFixedRange();
           const auto arrayWidth = static_cast<size_t>(arrayRange.width());
-          if (arrayWidth != pattern.elements().size() ||
+          if (arrayWidth != elements.size() ||
               arrayWidth * elementWidthBits != targetWidth) {
             return std::nullopt; // LCOV_EXCL_LINE: slang type checking rejects this shape.
           }
@@ -11640,7 +11661,7 @@ endmodule
             std::vector<SNLBitNet*> elementBits;
             if (!resolveExpressionBits(
                   design,
-                  *pattern.elements()[patternIndex],
+                  *elements[patternIndex],
                   elementWidthBits,
                   elementBits) ||
                 elementBits.size() != elementWidthBits) {
@@ -11684,7 +11705,7 @@ endmodule
               return lhs->fieldIndex < rhs->fieldIndex;
             });
 
-          if (pattern.elements().size() != fields.size()) {
+          if (elements.size() != fields.size()) {
             return std::nullopt; // LCOV_EXCL_LINE
           }
 
@@ -11706,7 +11727,7 @@ endmodule
             std::vector<SNLBitNet*> memberBits;
             if (!resolveExpressionBits(
                   design,
-                  *pattern.elements()[i],
+                  *elements[i],
                   memberWidth,
                   memberBits) ||
                 memberBits.size() != memberWidth) {
@@ -36349,6 +36370,12 @@ endmodule
             const auto& continuousAssign =
               sym.as<slang::ast::ContinuousAssignSymbol>();
             const auto& assignment = continuousAssign.getAssignment();
+            if (assignment.kind != slang::ast::ExpressionKind::Assignment) {
+              reportUnsupportedError(
+                "Unsupported invalid continuous assignment (check slang diagnostics)",
+                getSourceRange(assignment));
+              continue;
+            }
             const auto& assignExpr =
               assignment.as<slang::ast::AssignmentExpression>();
             lhsExpression = &assignExpr.left();
@@ -36974,8 +37001,10 @@ endmodule
           if (!rhsIsFixedStreaming && !lhsResolvedAsPackedMemberSlice &&
               !lhsResolvedAsPackedArrayElement &&
               !rhsIsResizableLiteral) {
-            auto rhsWidth = getIntegralExpressionBitWidth(*rhs);
-            if (!rhsWidth || !*rhsWidth) {
+            auto rhsWidth = getRepresentableExpressionBitWidth(*rhs);
+            if (!rhsWidth || !*rhsWidth ||
+                (rhs->type->getCanonicalType().isUnpackedArray() &&
+                 *rhsWidth != lhsBits.size())) {
               reportUnsupportedError( // LCOV_EXCL_LINE
                 "Unsupported net compatibility in continuous assign", // LCOV_EXCL_LINE
                 assignSourceRange); // LCOV_EXCL_LINE

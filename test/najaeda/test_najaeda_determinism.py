@@ -979,6 +979,19 @@ module top(input logic [3:0] a, output wire [23:0] y, z,
 endmodule
 """)
 
+    def test_systemverilog_continuous_unpacked_assignments(self):
+        self.check_determinism("sv", """
+module top(input logic [2:0] a, b, output logic [11:0] y);
+  typedef struct packed { logic flag; logic [2:0] value; } item_t;
+  item_t src [3:0], dst [0:2], lanes [2][2];
+  assign src = '{2{'{flag: a[0], value: a}, '{flag: b[0], value: b}}};
+  assign dst[0:2] = src[3:1];
+  assign lanes[0] = '{2{dst[1]}};
+  assign lanes[1] = '{dst[0], dst[2]};
+  assign y = {lanes[0][0], lanes[1][0], lanes[1][1]};
+endmodule
+""")
+
     def test_systemverilog_indexed_vector_updates(self):
         self.check_determinism("sv", """
 module top(input logic [3:0] index, input logic [3:0] data,
