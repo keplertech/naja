@@ -244,7 +244,9 @@ end;
                             "assert false; y <= '1'; end;", encoding="utf-8")
             top = netlist.load_vhdl(path, diagnostics_report_path=report)
             self.assertEqual(top.get_model_name(), "e")
-            self.assertEqual(report.read_text().count("[ignored-assertion]"), 2)
+            report_bytes = report.read_bytes()
+            self.assertEqual(report_bytes.count(b"[ignored-assertion]"), 2,
+                             f"Unexpected VHDL diagnostics report: {report_bytes!r}")
             netlist.reset()
             netlist.load_vhdl(path, diagnostics_report_path=None)
             with self.assertRaises(TypeError):
