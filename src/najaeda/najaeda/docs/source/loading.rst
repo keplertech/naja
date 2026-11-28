@@ -443,11 +443,18 @@ Bits that are not assigned in the reset branch retain their value; partial
 assignments preserve their original bit positions. Only those held bits may
 use a clocked data mux to suppress updates during reset.
 
+Nonconstant asynchronous reset values use the canonical ``naja_aldff__wN``
+primitive. It samples the reset data on reset assertion and on each clock edge
+while reset is active. Changes to reset data alone do not update the output.
+Both clock edges, both reset polarities, enables, partial writes, and mixed
+constant/dynamic reset vectors are supported; constant bits retain reset/set
+cells and held bits retain ordinary flops. Initialization is retained in ``INIT``.
+This represents event-sampled RTL behavior, without assuming that reset data is
+stable or converting it to level-sensitive asynchronous set/reset logic.
+
 Asynchronous writes without a faithful mapping are rejected with an
-``unable to preserve asynchronous reset`` diagnostic. Examples include
-nonconstant or X/Z reset values, reset writes conditional on another signal,
-and reset conditions that do not match the asynchronous event polarity. They
-are not silently converted to synchronous reset behavior.
+``unable to preserve asynchronous reset`` diagnostic, including X/Z reset values
+and reset conditions that do not match the asynchronous event polarity.
 
 Functions whose bodies consist of returns, conditionals, and case statements
 support nested early returns. The first executed return takes priority over

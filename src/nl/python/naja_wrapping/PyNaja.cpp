@@ -72,6 +72,8 @@
 
 #include "NajaVersion.h"
 #include "NLObject.h"
+#include "NLDB0.h"
+#include "NLUniverse.h"
 #include "SNLSVConstructor.h"
 #include "SNLSVIntent.h"
 #include "VHDLIntent.h"
@@ -935,7 +937,28 @@ static PyObject* getContentHashPropertyNames(PyObject*, PyObject*) {
   return contentHashNames(naja::NL::getContentHashPropertyNames());
 }
 
+static PyObject* getOrCreateALDFF(PyObject*, PyObject* args) {
+  Py_ssize_t width = 0;
+  if (!PyArg_ParseTuple(args, "n:getOrCreateALDFF", &width)) return nullptr;
+  if (width <= 0) {
+    PyErr_SetString(PyExc_ValueError, "getOrCreateALDFF: width must be positive");
+    return nullptr;
+  }
+  try {
+    if (!naja::NL::NLUniverse::get()) {
+      PyErr_SetString(PyExc_RuntimeError, "getOrCreateALDFF: create an NLUniverse first");
+      return nullptr;
+    }
+    return PySNLDesign_Link(naja::NL::NLDB0::getOrCreateALDFF(size_t(width)));
+  } catch (const naja::NL::NLException& error) {
+    PyErr_SetString(PyExc_RuntimeError, error.what());
+    return nullptr;
+  }
+}
+
 static PyMethodDef NajaMethods[] = {
+  { "getOrCreateALDFF", getOrCreateALDFF, METH_VARARGS,
+    "Return the canonical sampled asynchronous-load D flip-flop of the given width."},
   { "getContentHashVersion", getContentHashVersion, METH_NOARGS, "Return the content hash format version." },
   { "getContentHashAttributeNames", getContentHashAttributeNames, METH_NOARGS, "Return the fixed content attribute registry." },
   { "getContentHashPropertyNames", getContentHashPropertyNames, METH_NOARGS, "Return the fixed content property registry." },

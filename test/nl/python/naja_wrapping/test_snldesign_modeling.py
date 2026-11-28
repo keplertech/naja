@@ -22,6 +22,111 @@ class SNLDesignModelingTest(unittest.TestCase):
     if naja.NLUniverse.get():
       naja.NLUniverse.get().destroy()
 
+  def testSampledAsynchronousLoad(self):
+    for width in (1, 5, 65):
+      reg = naja.getOrCreateALDFF(width)
+      self.assertEqual(reg, naja.getOrCreateALDFF(width))
+      load = reg.getScalarTerm("L")
+      clock = reg.getScalarTerm("C")
+      self.assertEqual(naja.SNLTermRole.AsyncLoad, load.getRole())
+      self.assertEqual(naja.SNLActiveLevel.High, load.getActiveLevel())
+      self.assertFalse(load.isReset())
+      model = reg.getSequentialModel()
+      self.assertEqual(("term", clock), model["clocked_on"])
+      self.assertEqual(width, len(model["states"]))
+      for state in model["states"]:
+        self.assertEqual(("term", load), state["async_load"])
+        ad = state["async_load_data"][1]
+        self.assertEqual(naja.SNLTermRole.AsyncLoadData, ad.getRole())
+        self.assertTrue(ad.isDataInput())
+        self.assertIsNone(state["clear"])
+        self.assertIsNone(state["preset"])
+    with self.assertRaises(ValueError):
+      naja.getOrCreateALDFF(0)
+    with self.assertRaises(ValueError):
+      naja.getOrCreateALDFF(-1)
+
+    reg = naja.SNLDesign.createPrimitive(self.primitives, "sampled")
+    pins = {name: naja.SNLScalarTerm.create(reg,
+      naja.SNLTerm.Direction.Output if name == "Q" else naja.SNLTerm.Direction.Input,
+      name) for name in ("C", "D", "L", "AD", "Q")}
+    state = dict(name="S", next_state="D", async_load="!L", async_load_data="AD")
+    reg.setSequentialModel(clocked_on="C", states=[state], outputs=[(pins["Q"], "S")])
+    actual = reg.getSequentialModel()["states"][0]
+    self.assertEqual(("not", ("term", pins["L"])), actual["async_load"])
+    self.assertEqual(("term", pins["AD"]), actual["async_load_data"])
+    for invalid in (dict(state, async_load_data=None), dict(state, clear="L")):
+      with self.assertRaisesRegex(RuntimeError, "sampled asynchronous load"):
+        reg.setSequentialModel(clocked_on="C", states=[invalid], outputs=[(pins["Q"], "S")])
+    naja.SNLParameter.createBinary(reg, "MODE", 1, 0)
+    entry = dict(values=[0], clocked_on="C", states=[state], outputs=[(pins["Q"], "S")])
+    reg.setSequentialModelFromParameters(["MODE"], [entry])
+    top = naja.SNLDesign.create(self.designs, "sampled_top")
+    instance = naja.SNLInstance.create(top, reg, "storage")
+    self.assertEqual(actual, instance.getSequentialModel()["states"][0])
+    with self.assertRaisesRegex(RuntimeError, "must be paired"):
+      reg.setSequentialModelFromParameters(["MODE"], [dict(entry,
+        states=[dict(state, async_load_data=None)])])
+
+  def testALDFFFormalConsumerContract(self):
+    from itertools import product
+
+    reg = naja.getOrCreateALDFF(3)
+    top = naja.SNLDesign.create(self.designs, "formal_top")
+    instance = naja.SNLInstance.create(top, reg, "storage")
+    model = instance.getSequentialModel()
+    clock = reg.getScalarTerm("C")
+    load = reg.getScalarTerm("L")
+    data = reg.getBusTerm("D")
+    alternate = reg.getBusTerm("AD")
+
+    def evaluate(expression, terms, states):
+      if isinstance(expression, bool):
+        return expression
+      operation, *operands = expression
+      if operation == "term":
+        return terms[operands[0]]
+      if operation == "state":
+        return states[operands[0]]
+      if operation == "not":
+        return not evaluate(operands[0], terms, states)
+      values = [evaluate(item, terms, states) for item in operands]
+      if operation == "and":
+        return all(values)
+      if operation == "or":
+        return any(values)
+      self.assertEqual("xor", operation)
+      return bool(sum(values) % 2)
+
+    # Interpret the public expression trees, including their explicit output
+    # mapping. Compare all two-state control transitions and three-bit values.
+    # This also covers rising C while L is already high, and the converse:
+    # taking a rising edge of C|L would miss those two classes of updates.
+    output_by_state = {expression[1]: term for term, expression in model["outputs"]}
+    for old_clock, old_load, new_clock, new_load in product((False, True), repeat=4):
+      old_terms = {clock: old_clock, load: old_load}
+      for d, ad, q in product(range(8), repeat=3):
+        terms = {clock: new_clock, load: new_load}
+        for bit in range(3):
+          terms[data.getBusTermBit(bit)] = bool(d & (1 << bit))
+          terms[alternate.getBusTermBit(bit)] = bool(ad & (1 << bit))
+        states = [bool(q & (1 << output_by_state[i].getBit()))
+                  for i in range(len(model["states"]))]
+        updates = []
+        for i, state in enumerate(model["states"]):
+          event = any(not evaluate(expression, old_terms, states) and
+                      evaluate(expression, terms, states)
+                      for expression in (model["clocked_on"], state["async_load"]))
+          expression = state["async_load_data"] if evaluate(
+            state["async_load"], terms, states) else state["next_state"]
+          updates.append(evaluate(expression, terms, states) if event else states[i])
+        actual = sum(int(evaluate(expression, terms, updates)) << term.getBit()
+                     for term, expression in model["outputs"])
+        expected = (ad if new_load else d) if (
+          (new_clock and not old_clock) or (new_load and not old_load)) else q
+        self.assertEqual(expected, actual,
+          (old_clock, old_load, new_clock, new_load, d, ad, q))
+
   def testDeprecatedRoleAliases(self):
     model = naja.SNLDesign.createPrimitive(self.primitives, "alias_model")
     term = naja.SNLScalarTerm.create(model, naja.SNLTerm.Direction.Input, "CLK")

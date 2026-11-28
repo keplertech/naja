@@ -182,6 +182,16 @@ bool parseSequentialModel(const SNLDesign* selfObject, const char* clockedOn,
     }
     if (fieldPath) *fieldPath = "states[" + std::to_string(i) + "].clear_preset_value";
     if (not parseClearPresetValue(stateObject, state)) return false;
+    for (const auto* field : {"async_load", "async_load_data"}) {
+      if (fieldPath) *fieldPath = "states[" + std::to_string(i) + "]." + field;
+      const char* expression = getStringField(stateObject, field, false);
+      if (PyErr_Occurred()) return false;
+      if (expression) {
+        auto parsed = parseExpression(selfObject, expression, stateIdentifiers);
+        if (std::string(field) == "async_load") state.asyncLoad = std::move(parsed);
+        else state.asyncLoadData = std::move(parsed);
+      }
+    }
     model.states.push_back(std::move(state));
   }
 
@@ -396,6 +406,16 @@ PyObject* modelToPython(const SNLDesignModeling::SequentialModel& model) {
         "clear", optionalExpressionToPython(state.clear),
         "preset", optionalExpressionToPython(state.preset),
         "clear_preset_value", values[static_cast<size_t>(state.clearPresetValue)]);
+    if (entry && state.asyncLoad) {
+      auto* load = optionalExpressionToPython(state.asyncLoad);
+      auto* data = optionalExpressionToPython(state.asyncLoadData);
+      if (!load || !data || PyDict_SetItemString(entry, "async_load", load) < 0 ||
+          PyDict_SetItemString(entry, "async_load_data", data) < 0) {
+        Py_XDECREF(load); Py_XDECREF(data); Py_DECREF(entry);
+        Py_DECREF(states); Py_DECREF(outputs); return nullptr;
+      }
+      Py_DECREF(load); Py_DECREF(data);
+    }
     if (!entry || PyList_Append(states, entry) < 0) {
       // LCOV_EXCL_START: Python allocation failure cleanup.
       Py_XDECREF(entry); Py_DECREF(states); Py_DECREF(outputs); return nullptr;

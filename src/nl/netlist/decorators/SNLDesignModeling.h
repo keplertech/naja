@@ -35,7 +35,7 @@ class SNLDesignModeling {
     enum class SNLTermRole {
       Clock, DataInput, DataOutput, AsyncReset, AsyncSet, SyncReset, SyncSet, Enable,
       MemoryReadAddress, MemoryReadData, MemoryWriteAddress,
-      MemoryWriteData, MemoryWriteEnable, Other, ScanInput, ScanEnable
+      MemoryWriteData, MemoryWriteEnable, Other, ScanInput, ScanEnable, AsyncLoad, AsyncLoadData
     };
     enum class SNLActiveLevel { High, Low, NA };
     struct TermRole {
@@ -150,6 +150,12 @@ class SNLDesignModeling {
       std::optional<BooleanExpression> clear {};
       std::optional<BooleanExpression> preset {};
       ClearPresetValue clearPresetValue {ClearPresetValue::Unknown};
+      // A rising edge of asyncLoad also samples this state. On either that
+      // event or the clock event, active asyncLoad selects asyncLoadData over
+      // nextState. Data changes alone do not trigger an update. Both fields
+      // must be present together; clear/preset cannot be combined with them.
+      std::optional<BooleanExpression> asyncLoad {};
+      std::optional<BooleanExpression> asyncLoadData {};
     };
     struct SequentialOutput {
       SNLBitTerm* term {nullptr};
@@ -158,6 +164,10 @@ class SNLDesignModeling {
     struct SequentialModel {
       enum class Kind { FlipFlop, Latch };
       Kind kind {Kind::FlipFlop};
+      // For a flip-flop, rising(clockedOn) samples every state. Each state's
+      // optional asyncLoad supplies a separate rising-edge sampling event;
+      // do not replace the two events with rising(clockedOn | asyncLoad).
+      // Consumers must implement every event or report the model unsupported.
       BooleanExpression clockedOn {};
       std::vector<SequentialState> states {};
       std::vector<SequentialOutput> outputs {};

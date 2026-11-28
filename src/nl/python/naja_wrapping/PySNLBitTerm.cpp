@@ -80,6 +80,8 @@ static bool parseTermRole(
     case static_cast<long>(Role::MemoryWriteEnable): role = Role::MemoryWriteEnable; return true;
     case static_cast<long>(Role::Other): role = Role::Other; return true;
     case static_cast<long>(Role::ScanInput): role = Role::ScanInput; return true;
+    case static_cast<long>(Role::AsyncLoad): role = Role::AsyncLoad; return true;
+    case static_cast<long>(Role::AsyncLoadData): role = Role::AsyncLoadData; return true;
     case static_cast<long>(Role::ScanEnable): role = Role::ScanEnable; return true;
     default: return false;
   }

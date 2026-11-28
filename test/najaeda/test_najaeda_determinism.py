@@ -98,11 +98,19 @@ module storage(input logic clk_a, clk_b, we_a, we_b,
     r <= second[addr_b];
   end
 endmodule
+module sampled_load(input logic clk, load, enable, input logic [4:0] a,b,
+                    output logic [4:0] q);
+  initial q = 5'b10101;
+  always_ff @(negedge clk or negedge load)
+    if (!load) q <= {1'b0, a[3], 1'b1, a[1], q[0]};
+    else if (enable) q <= b;
+endmodule
 module top(input logic [9:0] a, b, input logic [1:0] op,
            input logic clk_a, clk_b, rst, enable,
            output wire [9:0] y, z, output wire [1:0] flag,
-           output wire [4:0] q, r, s, mixed_q, output wire mixed_valid,
+           output wire [4:0] q, r, s, mixed_q, load_q, output wire mixed_valid,
            output wire [2:0] mem_q, mem_r);
+  sampled_load sampled(clk_a, rst, enable, a[4:0], b[4:0], load_q);
   stateful regs(clk_a, rst, enable, a[4:0], b[4:0], q, r, s);
   mixed_reset_storage mixed(clk_a, clk_b, rst, enable, a[2:0], b[4:0], mixed_q, mixed_valid);
   storage mems(clk_a, clk_b, enable, rst, op, op,

@@ -914,7 +914,7 @@ static PyObject* PySNLDesign_setRolesFromParameters(
         if (PyErr_Occurred()) return nullptr;
         const auto levelNumber = PyLong_AsLong(levelValue);
         if (PyErr_Occurred()) return nullptr;
-        if (roleNumber < 0 || roleNumber > static_cast<long>(SNLDesignModeling::SNLTermRole::ScanEnable) ||
+        if (roleNumber < 0 || roleNumber > static_cast<long>(SNLDesignModeling::SNLTermRole::AsyncLoadData) ||
             levelNumber < 0 || levelNumber > static_cast<long>(SNLDesignModeling::SNLActiveLevel::NA)) {
           return fail(field + "invalid SNLTermRole or SNLActiveLevel");
         }
