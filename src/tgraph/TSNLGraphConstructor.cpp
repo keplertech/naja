@@ -452,6 +452,10 @@ void buildLeaf(LeafArcsBuilder& graph, const LeafNodes& nodes, const SNLPath& pa
       fail(occurrence, "sequential cell has no explicit flip-flop/latch model");
     }
     const auto& seq = Model::getSequentialModel(instance);
+    if (std::any_of(seq.states.begin(), seq.states.end(),
+          [](const auto& state) { return bool(state.asyncLoad); })) {
+      fail(occurrence, "sampled asynchronous-load timing analysis is unsupported");
+    }
     if (seq.kind == Model::SequentialModel::Kind::Latch) {
       if (NLDB0::isDLatch(model) && instance->getInstTerms().size() == 3) {
         try {

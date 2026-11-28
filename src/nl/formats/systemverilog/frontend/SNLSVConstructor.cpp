@@ -18473,8 +18473,8 @@ endmodule
       if (!net) {
         return bits; // LCOV_EXCL_LINE
       }
-      if (auto scalar = dynamic_cast<SNLScalarNet*>(net)) {
-        bits.push_back(scalar);
+      if (auto* bit = dynamic_cast<SNLBitNet*>(net)) {
+        bits.push_back(bit);
         return bits;
       }
       auto bus = dynamic_cast<SNLBusNet*>(net);
@@ -31431,6 +31431,10 @@ endmodule
             bit = static_cast<SNLBitNet*>(getConstNet(design, source->isConstant1()));
             break;
           }
+          if (source->isConstantX() || source->isConstantZ()) {
+            bit = source;
+            break;
+          }
           bool externalDriver = false;
           for (auto* term : source->getBitTerms()) {
             externalDriver |= term->getDirection() != SNLTerm::Direction::Output;
@@ -31475,9 +31479,16 @@ endmodule
         return false; // LCOV_EXCL_LINE: Caller validates nonempty, equally sized assignment/reset vectors.
       }
 
-      if (asyncResetEventExpr) canonicalizeSequentialResetBits(design, resetBits);
+      if (asyncResetEventExpr) {
+        canonicalizeSequentialResetBits(design, resetBits);
+        for (auto* bit : resetBits) if (bit->isConstantX() || bit->isConstantZ()) {
+          failureReason = formatQuotedDescriptionFailure(
+            "unable to preserve asynchronous reset for ", describeLHSForDiagnostics(lhsExpr));
+          return false;
+        }
+      }
 
-      // Partition reset, set and unreset bits without changing their bit order.
+      // Partition reset, set, hold and sampled-load bits in stable bit order.
       // Only a hold on the reset event can safely use a data-input mux.
       if (asyncResetEventExpr && asyncResetEventEdge && lhsBits.size() > 1) {
         auto* constZero = static_cast<SNLBitNet*>(getConstNet(design, false));
@@ -31485,21 +31496,24 @@ endmodule
         bool hasZero = false;
         bool hasOne = false;
         bool hasHold = false;
-        bool supported = true;
+        bool hasLoad = false;
         for (size_t bit = 0; bit < lhsBits.size(); ++bit) {
           if (resetBits[bit] == constZero) hasZero = true;
           else if (resetBits[bit] == constOne) hasOne = true;
           else if (resetBits[bit] == lhsBits[bit]) hasHold = true;
-          else supported = false;
+          else hasLoad = true;
         }
-        if (supported && (unsigned(hasZero) + unsigned(hasOne) + unsigned(hasHold) > 1)) {
-          for (unsigned kind = 0; kind < 3; ++kind) {
+        if (unsigned(hasZero) + unsigned(hasOne) + unsigned(hasHold) + unsigned(hasLoad) > 1) {
+          for (unsigned kind = 0; kind < 4; ++kind) {
             std::vector<SNLBitNet*> selectedLhs;
             std::vector<SNLBitNet*> selectedData;
             std::vector<SNLBitNet*> selectedReset;
             for (size_t bit = 0; bit < lhsBits.size(); ++bit) {
               const bool selected = kind == 0 ? resetBits[bit] == constZero :
-                kind == 1 ? resetBits[bit] == constOne : resetBits[bit] == lhsBits[bit];
+                kind == 1 ? resetBits[bit] == constOne :
+                kind == 2 ? resetBits[bit] == lhsBits[bit] :
+                resetBits[bit] != constZero && resetBits[bit] != constOne &&
+                  resetBits[bit] != lhsBits[bit];
               if (selected) {
                 selectedLhs.push_back(lhsBits[bit]);
                 selectedData.push_back(dataBits[bit]);
@@ -31597,6 +31611,29 @@ endmodule
            (*asyncResetEventEdge == slang::ast::EdgeKind::PosEdge &&
             isActiveHighResetConditionForSignal(resetConditionExpr, *asyncResetEventExpr)));
         if (asyncResetEventExpr && !holdsOnAsyncEvent) {
+          const bool activeLowLoad = asyncResetEventEdge &&
+            *asyncResetEventEdge == slang::ast::EdgeKind::NegEdge &&
+            isActiveLowResetConditionForSignal(resetConditionExpr, *asyncResetEventExpr);
+          const bool activeHighLoad = asyncResetEventEdge &&
+            *asyncResetEventEdge == slang::ast::EdgeKind::PosEdge &&
+            isActiveHighResetConditionForSignal(resetConditionExpr, *asyncResetEventExpr);
+          auto* load = getSingleBitNet(resolveExpressionNet(design, *asyncResetEventExpr));
+          if (load && (activeLowLoad || activeHighLoad)) {
+            if (activeLowLoad) load = createNotBitGate(design, load, resetSourceRange);
+            if (clockEdge == slang::ast::EdgeKind::NegEdge)
+              clkNet = createNotBitGate(design, clkNet, blockSourceRange);
+            auto* model = NLDB0::getOrCreateALDFF(lhsBits.size());
+            auto* instance = SNLInstance::create(design, model);
+            annotateSourceInfo(instance, blockSourceRange);
+            if (activeSequentialASTSymbol_) bindLiveASTLink(instance, *activeSequentialASTSymbol_);
+            instance->setTermNet(model->getScalarTerm(NLName("C")), clkNet);
+            instance->setTermNet(model->getScalarTerm(NLName("L")), load);
+            connectInstanceTermBits(instance, model->getBusTerm(NLName("D")), dataBits);
+            connectInstanceTermBits(instance, model->getBusTerm(NLName("AD")), resetBits);
+            connectInstanceTermBits(instance, model->getBusTerm(NLName("Q")), lhsBits);
+            attachDFFInitParameter(instance, lhsBits);
+            return true;
+          }
           failureReason = formatQuotedDescriptionFailure(
             "unable to preserve asynchronous reset for ", describeLHSForDiagnostics(lhsExpr));
           return false;

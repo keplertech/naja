@@ -584,6 +584,83 @@ combinational dependencies through :meth:`SNLDesign.getCombinatorialInputs <naja
 these models through the raw API when working on primitive-level analysis;
 normal loading and exporting use the high-level API.
 
+Sampled asynchronous loads
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``naja.getOrCreateALDFF(width)`` returns a canonical NLDB0 primitive after an
+``NLUniverse`` has been created. Use it directly when constructing or inspecting
+storage with an asynchronous runtime load value; ordinary high-level design
+loading creates it automatically, so a high-level construction wrapper is not
+required. Width must be positive and is structural. Pins are scalar ``C`` and
+``L``, and descending ``D``, ``AD``, ``Q`` buses of that width (including width
+one). ``INIT`` is an instance-overridable binary literal, initially all X.
+
+On a rising edge of ``C`` or ``L``, the primitive samples ``AD`` if ``L`` is high,
+otherwise ``D``. Changes to ``AD`` alone and falling edges of ``L`` do not update
+state. This is sampled-load semantics, not a transparent asynchronous load.
+SystemVerilog lowering normalizes negative clock edges and active-low load
+controls with inverters. NajaIF reconstructs the canonical model, roles, timing
+arcs and sequential expressions in a fresh process.
+
+The load control has role ``SNLTermRole.AsyncLoad`` with active level ``High``;
+``AD`` bits have role ``SNLTermRole.AsyncLoadData`` and satisfy ``isDataInput()``.
+Data setup dependencies are retained relative to both the load and clock events.
+No combinational path from ``AD`` to ``Q`` is implied. The timing graph analyzer
+currently reports sampled asynchronous loads as unsupported in its coverage
+report and leaves them opaque rather than treating them as ordinary single-clock
+flops.
+
+Sequential-state dictionaries accept paired optional ``async_load`` and
+``async_load_data`` Boolean expression strings in ``setSequentialModel`` and
+``setSequentialModelFromParameters``. The former defines an additional rising-edge
+sampling event and selects the latter over ``next_state`` on either sampling
+event while active. Both fields require a flip-flop without clear/preset.
+``getSequentialModel()`` exposes these fields as expression trees for states
+with a sampled load. Existing state dictionaries without a load retain their
+shape. Custom modeling decorations have the serialization limits described
+below; the canonical DB0 ALDFF model is reconstructed on snapshot load.
+
+Formal-consumer contract
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Read the instance-selected ``SequentialModel`` rather than inferring behavior
+from the primitive name or timing arcs. For state bit ``i``, let ``C`` be
+``clockedOn``, ``L`` be ``states[i].asyncLoad``, ``A`` be
+``states[i].asyncLoadData``, and ``D`` be ``states[i].nextState``. The corresponding
+Python keys are ``clocked_on``, ``async_load``, ``async_load_data``, and
+``next_state``. In a two-state event model, the exact transition relation is::
+
+   event = rising(C) or rising(L)
+   state_i' = event ? (L ? A : D) : state_i
+
+Evaluate all expressions against the same pre-update state and commit state
+updates simultaneously. A simultaneous clock and load assertion performs one
+update with load priority. Falling load edges and changes to ``A`` alone do not
+update state. Do not form an event by taking a rising edge of ``C | L``: that
+would hide clock edges while load is high, and load edges while clock is high.
+
+An encoder must include the terminal and state dependencies of all four
+expressions, resolve instance parameter overrides before consuming the model,
+and apply the model's ``SequentialOutput.function`` expressions to stored state.
+``INIT`` is an initial-state constraint, not the asynchronous load value;
+unknown INIT bits must not be assumed zero. For canonical ALDFF, state ordering
+is given by the output expressions, not an assumed correspondence between state
+index and numeric bus index.
+
+An encoder with only one sampling event per state must explicitly report this
+model as unsupported until it can represent both events. Neither ignoring the
+load fields nor replacing them with asynchronous set/reset or a level-sensitive
+load is equivalent for arbitrary input traces. Any stable-during-load assumption
+must be explicit in the proof environment.
+
+Consumer conformance checks should cover load assertion with a stopped clock,
+clock edges during load, load-data changes between sampling events, deassertion
+without a clock edge, simultaneous assertions, both clock and load polarities,
+feedback/enable paths, vector bit ordering, and fresh-process NajaIF reloads.
+
+Defining sequential primitives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Sequential primitives should declare both their timing arcs and the role of
 each bit term:
 
@@ -1289,6 +1366,7 @@ The C++ SNL API remains the semantic source of truth.
       :meth:`getNodeCount <najaeda.naja.LogicCone.getNodeCount>`.
 
 Module functions
+    * Canonical sampled storage: ``getOrCreateALDFF(width)``.
     * Build and snapshots: :func:`najaeda.naja.getVersion`,
       :func:`najaeda.naja.getGitHash`,
       :func:`najaeda.naja.snapshotManifest`,
@@ -2514,6 +2592,7 @@ Module functions
 
 .. autosummary::
 
+   getOrCreateALDFF
    getVersion
    getGitHash
    getContentHashVersion
@@ -2545,6 +2624,8 @@ Module functions
 .. autofunction:: najaeda.naja.getContentHashAttributeNames
 
 .. autofunction:: najaeda.naja.getContentHashPropertyNames
+
+.. autofunction:: najaeda.naja.getOrCreateALDFF
 
 .. autofunction:: najaeda.naja.getVersion
 .. autofunction:: najaeda.naja.getGitHash

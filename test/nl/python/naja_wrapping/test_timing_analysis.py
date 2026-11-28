@@ -50,6 +50,18 @@ class TimingAnalysisTests(unittest.TestCase):
         self.primary(top, "second", "b")
         return top
 
+    def test_sampled_asynchronous_load_requires_timing_support(self):
+        top = self.load("""module sample(input clk, load, data, alternate, output reg q);
+            always @(posedge clk or posedge load)
+                if (load) q <= alternate; else q <= data;
+        endmodule""")
+        self.primary(top, "main", "clk")
+        self.analyze()
+        report = top.getTimingCoverageReport()
+        self.assertEqual(1, len(report))
+        self.assertEqual("opaque", report[0]["treatment"])
+        self.assertIn("sampled asynchronous-load timing analysis", report[0]["detail"])
+
     def test_top_clock_and_crossing_endpoints(self):
         top = self.crossing()
         self.analyze()

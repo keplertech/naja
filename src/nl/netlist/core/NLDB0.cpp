@@ -72,6 +72,7 @@ namespace {
     VectorSelectLibraryID,
 
     FormalPropertyLibraryID,
+    ALDFFLibraryID,
 
     // One ID per GateType; designID carries fan-in or fan-out.
     // Add fixed families above this final enumerator.
@@ -100,6 +101,8 @@ namespace {
   constexpr const char* Mux2Name = "naja_mux2";
   constexpr const char* Mux2ScalarName = "naja_mux2__w1";
   constexpr const char* Mux2Prefix = "naja_mux2__w";
+  constexpr const char* ALDFFName = "naja_aldff";
+  constexpr const char* ALDFFPrefix = "naja_aldff__w";
   constexpr const char* DFFName = "naja_dff";
   constexpr const char* DFFPrefix = "naja_dff__w";
   constexpr const char* DLatchName = "naja_dlatch";
@@ -2741,6 +2744,62 @@ SNLBusTerm* NLDB0::getMux2Output() {
   return getMux2Output(getMux2());
 }
 
+SNLDesign* NLDB0::getOrCreateALDFF(size_t width) {
+  if (!width || width > size_t(std::numeric_limits<NLID::Bit>::max())) {
+    throw NLException("NLDB0::getOrCreateALDFF: invalid width");
+  }
+  auto* library = getOrCreatePrimitiveLibrary(ALDFFLibraryID, ALDFFName);
+  if (!library) return nullptr;
+  if (auto* model = library->getSNLDesign(NLID::DesignID(width))) return model;
+  auto* model = SNLDesign::create(library, NLID::DesignID(width),
+      SNLDesign::Type::Primitive, NLName(getWidthInternalName(ALDFFPrefix, width)));
+  SNLParameter::create(model, NLName("WIDTH"), SNLParameter::Type::Decimal, std::to_string(width));
+  addDFFInitParameter(model, width);
+  auto* clock = SNLScalarTerm::create(model, Term0ID, SNLTerm::Direction::Input, NLName("C"));
+  auto* data = SNLBusTerm::create(model, Term1ID, SNLTerm::Direction::Input, width - 1, 0, NLName("D"));
+  auto* load = SNLScalarTerm::create(model, Term2ID, SNLTerm::Direction::Input, NLName("L"));
+  auto* asyncData = SNLBusTerm::create(model, Term3ID, SNLTerm::Direction::Input, width - 1, 0, NLName("AD"));
+  auto* output = SNLBusTerm::create(model, Term4ID, SNLTerm::Direction::Output, width - 1, 0, NLName("Q"));
+  using Modeling = SNLDesignModeling;
+  using Role = Modeling::SNLTermRole;
+  Modeling::setTermRole(clock, Role::Clock, Modeling::SNLActiveLevel::High);
+  Modeling::setTermRole(load, Role::AsyncLoad, Modeling::SNLActiveLevel::High);
+  auto dataBits = collectBitTerms(*data);
+  auto asyncBits = collectBitTerms(*asyncData);
+  auto outputBits = collectBitTerms(*output);
+  for (auto* bit : dataBits) Modeling::setTermRole(bit, Role::DataInput);
+  for (auto* bit : asyncBits) Modeling::setTermRole(bit, Role::AsyncLoadData);
+  for (auto* bit : outputBits) Modeling::setTermRole(bit, Role::DataOutput);
+  auto clockInputs = dataBits;
+  clockInputs.insert(clockInputs.end(), asyncBits.begin(), asyncBits.end());
+  clockInputs.push_back(load);
+  Modeling::addInputsToClockArcs(clockInputs, clock);
+  Modeling::addClockToOutputsArcs(clock, outputBits);
+  Modeling::addInputsToClockArcs(asyncBits, load);
+  Modeling::addClockToOutputsArcs(load, outputBits);
+  Modeling::SequentialModel sequence;
+  sequence.clockedOn = makeTermExpression(clock);
+  auto d = dataBits.begin();
+  auto ad = asyncBits.begin();
+  for (auto* q : outputBits) {
+    Modeling::SequentialState state;
+    state.nextState = makeTermExpression(*d++);
+    state.asyncLoad = makeTermExpression(load);
+    state.asyncLoadData = makeTermExpression(*ad++);
+    Modeling::SequentialOutput out;
+    out.term = q;
+    out.function.root = out.function.addState(sequence.states.size());
+    sequence.states.push_back(std::move(state));
+    sequence.outputs.push_back(std::move(out));
+  }
+  Modeling::setSequentialModel(model, sequence);
+  return model;
+}
+
+bool NLDB0::isALDFF(const SNLDesign* design) {
+  return isWidthPrimitive(design, ALDFFLibraryID, ALDFFName, ALDFFPrefix);
+}
+
 SNLDesign* NLDB0::getDFF() {
   auto* dffLibrary = getPrimitiveLibrary(DFFLibraryID);
   if (dffLibrary) {
@@ -3635,6 +3694,8 @@ SNLDesign* NLDB0::getOrCreatePrimitive(
     const PrimitiveParameters& parameters) {
   // Width-based families use designID; compound signatures use parameters.
   switch (libraryID) {
+    case ALDFFLibraryID:
+      return getOrCreateALDFF(designID);
     case FormalPropertyLibraryID:
       return getOrCreateFormalProperty(designID);
     case RootLibraryID:

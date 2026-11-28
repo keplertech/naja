@@ -2519,7 +2519,8 @@ TEST_F(NLDB0Test, CanonicalLibraryGroupsEndWithGateFamilies) {
     NLDB0::getOrCreateDFFSSNE(4),
     NLDB0::getOrCreateVectorUpdate({4, 2, 3, true}),
     NLDB0::getOrCreateVectorSelect({4, 2, 3, true}),
-    NLDB0::getOrCreateFormalProperty(4)
+    NLDB0::getOrCreateFormalProperty(4),
+    NLDB0::getOrCreateALDFF(4)
   };
   for (size_t id = 0; id < fixedFamilies.size(); ++id) {
     if (auto* model = fixedFamilies[id]) {
@@ -2790,4 +2791,44 @@ TEST_F(NLDB0Test, VectorSelectCanonicalIdentityAndBinaryModel) {
   EXPECT_EQ(std::optional<bool>(false), signedTable.evaluateVectorSelect(inputs));
   inputs[8] = false; // A huge positive offset must not alias the low bits.
   EXPECT_EQ(std::nullopt, signedTable.evaluateVectorSelect(inputs));
+}
+
+TEST_F(NLDB0Test, SampledAsynchronousLoadPrimitive) {
+  NLUniverse::create();
+  using M = SNLDesignModeling;
+  EXPECT_THROW(NLDB0::getOrCreateALDFF(0), NLException);
+  EXPECT_THROW(NLDB0::getOrCreateALDFF(std::numeric_limits<size_t>::max()), NLException);
+  EXPECT_FALSE(NLDB0::isALDFF(nullptr));
+  for (size_t width : {1u, 5u, 65u}) {
+    auto* model = NLDB0::getOrCreateALDFF(width);
+    ASSERT_TRUE(NLDB0::isALDFF(model));
+    EXPECT_EQ(model, NLDB0::getOrCreateALDFF(width));
+    EXPECT_EQ(model, NLDB0::getOrCreatePrimitive(model->getLibrary()->getID(), model->getID()));
+    auto* c = model->getScalarTerm(NLName("C"));
+    auto* l = model->getScalarTerm(NLName("L"));
+    EXPECT_EQ(M::SNLTermRole::AsyncLoad, M::getTermRole(l));
+    EXPECT_EQ(M::SNLActiveLevel::High, M::getActiveLevel(l));
+    EXPECT_FALSE(M::isReset(l));
+    const auto& sequence = M::getSequentialModel(model);
+    ASSERT_EQ(width, sequence.states.size());
+    EXPECT_EQ(c, sequence.clockedOn.nodes.at(sequence.clockedOn.root).term);
+    auto data = model->getBusTerm(NLName("D"))->getBits().begin();
+    auto asyncData = model->getBusTerm(NLName("AD"))->getBits().begin();
+    for (size_t i = 0; i < width; ++i) {
+      const auto& state = sequence.states[i];
+      ASSERT_TRUE(state.asyncLoad);
+      ASSERT_TRUE(state.asyncLoadData);
+      EXPECT_FALSE(state.clear);
+      EXPECT_FALSE(state.preset);
+      EXPECT_EQ(l, state.asyncLoad->nodes.at(state.asyncLoad->root).term);
+      EXPECT_EQ(*data, state.nextState.nodes.at(state.nextState.root).term);
+      ++data;
+      auto* ad = *asyncData;
+      ++asyncData;
+      EXPECT_EQ(ad, state.asyncLoadData->nodes.at(state.asyncLoadData->root).term);
+      EXPECT_EQ(M::SNLTermRole::AsyncLoadData, M::getTermRole(ad));
+      EXPECT_EQ(2u, M::getInputRelatedClocks(ad).size());
+    }
+    EXPECT_EQ(NLDB0::getUndefinedDFFInitValue(width), model->getParameter(NLName("INIT"))->getValue());
+  }
 }

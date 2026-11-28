@@ -65,7 +65,7 @@ std::vector<PrimitiveCase> primitiveCases(bool wide = true) {
     {"formal_property", [] { return NLDB0::getOrCreateFormalProperty(5); }}};
   const std::vector<std::pair<std::string, SNLDesign*(*)(size_t)>> sized{
     {"mux", NLDB0::getOrCreateMux2}, {"latch", NLDB0::getOrCreateDLatch},
-    {"dff", NLDB0::getOrCreateDFF}, {"dffn", NLDB0::getOrCreateDFFN},
+    {"aldff", NLDB0::getOrCreateALDFF}, {"dff", NLDB0::getOrCreateDFF}, {"dffn", NLDB0::getOrCreateDFFN},
     {"dffrn", NLDB0::getOrCreateDFFRN}, {"dffr", NLDB0::getOrCreateDFFR},
     {"dffs", NLDB0::getOrCreateDFFS}, {"dffe", NLDB0::getOrCreateDFFE},
     {"dffre", NLDB0::getOrCreateDFFRE}, {"dffse", NLDB0::getOrCreateDFFSE},
@@ -209,6 +209,9 @@ std::string state(SNLDesign* top) {
       expression(out, sequential.clockedOn);
       for (const auto& item : sequential.states) {
         expression(out, item.nextState);
+        out << bool(item.asyncLoad) << ' ' << bool(item.asyncLoadData) << '\n';
+        if (item.asyncLoad) expression(out, *item.asyncLoad);
+        if (item.asyncLoadData) expression(out, *item.asyncLoadData);
         out << bool(item.clear) << ' ' << bool(item.preset) << ' ' << int(item.clearPresetValue) << '\n';
         if (item.clear) expression(out, *item.clear);
         if (item.preset) expression(out, *item.preset);

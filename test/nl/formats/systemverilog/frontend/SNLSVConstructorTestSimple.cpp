@@ -26301,7 +26301,7 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialResetBranchNestedConditionalRejected) {
+  parseSequentialResetBranchNestedConditionalSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "sequential_reset_branch_nested_conditional_supported";
@@ -26339,9 +26339,10 @@ endmodule
 )";
   svFile.close();
 
-  // The reset event can write a nonconstant value or has no matching
-  // unconditional reset control; a mux+DFF would lose that event.
-  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
+  constructor.construct(svPath);
+  auto* top = library_->getSNLDesign(NLName("sequential_reset_branch_nested_conditional_supported"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_GT(countPrimitiveInstances(top, NLDB0::isALDFF), 0u);
 }
 
 TEST_F(SNLSVConstructorTestSimple, parseSequentialCaseSupported) {
@@ -30739,7 +30740,7 @@ endmodule
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialMultiAssignmentResetDynamicElementSelectRejected) {
+  parseSequentialMultiAssignmentResetDynamicElementSelectSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath = outPath / "seq_multi_assignment_reset_dynamic_element_select_supported";
@@ -30785,14 +30786,15 @@ endmodule
 )";
   svFile.close();
 
-  // The reset event can write a nonconstant value or has no matching
-  // unconditional reset control; a mux+DFF would lose that event.
-  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
+  constructor.construct(svPath);
+  auto* top = library_->getSNLDesign(NLName("seq_multi_assignment_reset_dynamic_element_select_supported"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_GT(countPrimitiveInstances(top, NLDB0::isALDFF), 0u);
 }
 
 TEST_F(
   SNLSVConstructorTestSimple,
-  parseSequentialMultiAssignmentResetDynamicElementSelectPartialConstantSelectorRejected) {
+  parseSequentialMultiAssignmentResetDynamicElementSelectPartialConstantSelectorSupported) {
   SNLSVConstructor constructor(library_);
   std::filesystem::path outPath(SNL_SV_DUMPER_TEST_PATH);
   outPath =
@@ -30849,9 +30851,10 @@ endmodule
 )";
   svFile.close();
 
-  // The reset event can write a nonconstant value or has no matching
-  // unconditional reset control; a mux+DFF would lose that event.
-  expectUnsupportedConstruct(constructor, svPath, {"unable to preserve asynchronous reset"});
+  constructor.construct(svPath);
+  auto* top = library_->getSNLDesign(NLName("seq_multi_assignment_reset_dynamic_element_select_partial_constant_selector_supported"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_GT(countPrimitiveInstances(top, NLDB0::isALDFF), 0u);
 }
 
 TEST_F(
@@ -43293,7 +43296,7 @@ TEST_F(SNLSVConstructorTestSimple, sequentialAsyncConstantResetMatrix) {
   }
 }
 
-TEST_F(SNLSVConstructorTestSimple, sequentialAsyncVariableResetRejected) {
+TEST_F(SNLSVConstructorTestSimple, sequentialAsyncVariableResetSupported) {
   const auto path = writeSVTestFile("async_variable_reset", R"(
 module top(input logic clk,rst,enable, input logic [2:0] data, reset_data,
            output logic [2:0] q);
@@ -43302,10 +43305,13 @@ module top(input logic clk,rst,enable, input logic [2:0] data, reset_data,
 endmodule
 )");
   SNLSVConstructor constructor(library_);
-  expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+  constructor.construct(path);
+  auto* top = library_->getSNLDesign(NLName("top"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_EQ(1u, countPrimitiveInstances(top, NLDB0::isALDFF));
 }
 
-TEST_F(SNLSVConstructorTestSimple, sequentialAsyncUnprovenResetAliasesRejected) {
+TEST_F(SNLSVConstructorTestSimple, sequentialAsyncResetAliasesPreserved) {
   size_t index = 0;
   for (const auto& declarations : {
          "wire [2:0] reset_value; assign reset_value=incoming;",
@@ -43325,7 +43331,14 @@ TEST_F(SNLSVConstructorTestSimple, sequentialAsyncUnprovenResetAliasesRejected) 
 endmodule
 )");
     SNLSVConstructor constructor(library_);
-    expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+    if (index == 4 || index == 5) {
+      expectUnsupportedConstruct(constructor, path, {"unable to preserve asynchronous reset"});
+    } else {
+      constructor.construct(path);
+      auto* top = library_->getSNLDesign(NLName(name));
+      ASSERT_NE(nullptr, top);
+      EXPECT_EQ(1u, countPrimitiveInstances(top, NLDB0::isALDFF));
+    }
   }
 }
 
@@ -43372,5 +43385,100 @@ TEST(LoaderProgressTests, SNLSVConstructor) {
       return !(event.stage == "construct" && event.current > 0);
     });
     EXPECT_THROW(constructor.construct(path), naja::NajaCancelled);
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialSampledAsyncLoadPolarities) {
+  for (bool fallingClock : {false, true}) for (bool activeLow : {false, true}) {
+    const auto name = "sampled_load_" + std::to_string(fallingClock) + std::to_string(activeLow);
+    const auto path = writeSVTestFile(name, "module " + name + R"(
+(input logic clk,load,enable, input logic [4:0] data, alternate,
+ output logic [4:0] q);
+ initial q = 5'b10101;
+ always_ff @()" + std::string(fallingClock ? "negedge" : "posedge") + " clk or " +
+      (activeLow ? "negedge" : "posedge") + " load)\n if (" + (activeLow ? "!load" : "load") + R"()
+   q <= alternate;
+ else if (enable) q <= data;
+endmodule
+)");
+    SNLSVConstructor constructor(library_);
+    constructor.construct(path);
+    auto* top = library_->getSNLDesign(NLName(name));
+    ASSERT_NE(nullptr, top);
+    ASSERT_EQ(1u, countPrimitiveInstances(top, NLDB0::isALDFF));
+    EXPECT_EQ(0u, countPrimitiveInstances(top, NLDB0::isDFF));
+    for (auto* instance : top->getInstances()) {
+      auto* model = instance->getModel();
+      if (!NLDB0::isALDFF(model)) continue;
+      EXPECT_EQ(5u, model->getBusTerm(NLName("Q"))->getWidth());
+      auto* bits = top->getBusNet(NLName("alternate"));
+      auto* terms = model->getBusTerm(NLName("AD"));
+      for (int bit = 0; bit < 5; ++bit)
+        EXPECT_EQ(bits->getBit(bit), instance->getInstTerm(terms->getBit(bit))->getNet());
+      ASSERT_NE(nullptr, instance->getInstParameter(NLName("INIT")));
+      EXPECT_EQ("5'b10101", instance->getInstParameter(NLName("INIT"))->getValue());
+      EXPECT_EQ(!fallingClock, instance->getInstTerm(model->getScalarTerm(NLName("C")))->getNet() ==
+          top->getScalarNet(NLName("clk")));
+      EXPECT_EQ(!activeLow, instance->getInstTerm(model->getScalarTerm(NLName("L")))->getNet() ==
+          top->getScalarNet(NLName("load")));
+    }
+    if (!std::system("command -v iverilog >/dev/null 2>&1") &&
+        !std::system("command -v vvp >/dev/null 2>&1")) {
+      const auto dumped = dumpTopAndGetVerilogPath(top, name + "_dump");
+      const auto tbPath = dumped.parent_path() / "tb.sv";
+      std::ofstream tb(tbPath);
+      tb << "module tb; reg clk=" << fallingClock << ",load=" << activeLow
+         << ",enable=0; reg [4:0] data=5'b00101,alternate=5'b00011; wire [4:0] q;\n"
+         << name << " dut(.*);\n"
+         << "task check(input [4:0] expected); begin #1; if(q !== expected) "
+            "$fatal(1,\"sampled state %b expected %b\",q,expected); end endtask\n"
+         << "initial begin check(5'b10101); load=" << !activeLow << "; check(5'b00011);\n"
+         << "alternate=5'b11000; check(5'b00011); clk=" << !fallingClock << "; check(5'b11000);\n"
+         << "clk=" << fallingClock << "; alternate=5'b01110; check(5'b11000); load="
+         << activeLow << "; check(5'b11000); clk=" << !fallingClock << "; check(5'b11000);\n"
+         << "clk=" << fallingClock << "; enable=1; #1; clk=" << !fallingClock
+         << "; check(data); $finish; end endmodule\n";
+      tb.close();
+      const auto quote = [](const std::filesystem::path& p) { return "'" + p.string() + "'"; };
+      for (bool rtl : {true, false}) {
+        SCOPED_TRACE(rtl ? "RTL" : "netlist");
+        const auto executable = dumped.parent_path() / (rtl ? "rtl.vvp" : "netlist.vvp");
+        const auto command = "iverilog -g2012 -s tb -o " + quote(executable) + " " + quote(tbPath) +
+          " " + quote(rtl ? path : dumped) +
+          (rtl ? "" : " " + quote(dumped.parent_path() / "naja_primitives.v"));
+        ASSERT_EQ(0, std::system(command.c_str()));
+        ASSERT_EQ(0, std::system(("vvp " + quote(executable)).c_str()));
+      }
+    }
+  }
+}
+
+TEST_F(SNLSVConstructorTestSimple, sequentialMixedSampledAsyncLoadAndHold) {
+  const auto path = writeSVTestFile("mixed_sampled_load", R"(
+module mixed_sampled_load(input logic clk,load,a,b, input logic [4:0] data,
+                         output logic [4:0] q);
+ initial q = 5'b10101;
+ always_ff @(posedge clk or posedge load)
+   if (load) q <= {1'b0,a,1'b1,b,q[0]};
+   else q <= data;
+endmodule
+)");
+  SNLSVConstructor constructor(library_);
+  constructor.construct(path);
+  auto* top = library_->getSNLDesign(NLName("mixed_sampled_load"));
+  ASSERT_NE(nullptr, top);
+  EXPECT_EQ(1u, countPrimitiveInstances(top, NLDB0::isALDFF));
+  EXPECT_EQ(1u, countPrimitiveBits(top, NLDB0::isDFFR));
+  EXPECT_EQ(1u, countPrimitiveBits(top, NLDB0::isDFFS));
+  EXPECT_EQ(1u, countPrimitiveBits(top, NLDB0::isDFF));
+  for (auto* instance : top->getInstances()) {
+    auto* model = instance->getModel();
+    if (NLDB0::isALDFF(model) || NLDB0::isDFFR(model) || NLDB0::isDFFS(model) || NLDB0::isDFF(model))
+      EXPECT_NE(nullptr, instance->getInstParameter(NLName("INIT")));
+    if (!NLDB0::isALDFF(model)) continue;
+    auto* term = instance->getModel()->getBusTerm(NLName("AD"));
+    ASSERT_EQ(2u, term->getWidth());
+    EXPECT_EQ(top->getScalarNet(NLName("a")), instance->getInstTerm(term->getBit(1))->getNet());
+    EXPECT_EQ(top->getScalarNet(NLName("b")), instance->getInstTerm(term->getBit(0))->getNet());
   }
 }

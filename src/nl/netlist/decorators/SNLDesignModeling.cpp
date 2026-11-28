@@ -1883,6 +1883,14 @@ void SNLDesignModeling::setSequentialModel(
   if (!model.isValid()) {
     throw NLException("Cannot add invalid sequential model");
   }
+  for (const auto& state : model.states) {
+    if (bool(state.asyncLoad) != bool(state.asyncLoadData) ||
+        (state.asyncLoad && (model.kind != SequentialModel::Kind::FlipFlop ||
+          state.clear || state.preset || !state.asyncLoad->isValid() ||
+          !state.asyncLoadData->isValid()))) {
+      throw NLException("Invalid sampled asynchronous load: requires a flip-flop, paired async_load/async_load_data, and no clear/preset");
+    }
+  }
   auto property = getOrCreateProperty(design, NO_PARAMETER);
   std::lock_guard<std::mutex> lock(property->getModeling()->instanceSequentialModelsMutex_);
   property->getModeling()->setSequentialModel_(model);
@@ -1999,6 +2007,13 @@ void SNLDesignModeling::setSequentialModelFromParameters(
       validateExpression(state.nextState, field + ".next_state"); // LCOV_EXCL_LINE: Clang attributes the preceding diagnostic's unreachable fallthrough here; validation is tested.
       if (state.clear) validateExpression(*state.clear, field + ".clear");
       if (state.preset) validateExpression(*state.preset, field + ".preset");
+      if (bool(state.asyncLoad) != bool(state.asyncLoadData)) fail(field + ": async_load and async_load_data must be paired");
+      if (state.asyncLoad) {
+        if (model.kind != SequentialModel::Kind::FlipFlop || state.clear || state.preset)
+          fail(field + ": sampled asynchronous load requires a flip-flop without clear/preset");
+        validateExpression(*state.asyncLoad, field + ".async_load");
+        validateExpression(*state.asyncLoadData, field + ".async_load_data");
+      }
     }
     std::set<SNLBitTerm*> outputs;
     for (size_t i = 0; i < model.outputs.size(); ++i) {
@@ -2139,7 +2154,7 @@ void SNLDesignModeling::setRolesFromParameters(
     if (values.size() != parameters.size()) fail("values must match the declared parameter order and count");
     for (const auto& [term, role] : entry) {
       if (!term || term->getDesign() != design) fail("role term must belong to the destination primitive");
-      if (role.role < SNLTermRole::Clock || role.role > SNLTermRole::ScanEnable) fail("invalid SNLTermRole");
+      if (role.role < SNLTermRole::Clock || role.role > SNLTermRole::AsyncLoadData) fail("invalid SNLTermRole");
       if (role.activeLevel < SNLActiveLevel::High || role.activeLevel > SNLActiveLevel::NA) fail("invalid SNLActiveLevel");
     }
   }
@@ -2334,11 +2349,13 @@ bool SNLDesignModeling::isReset(const SNLInstTerm* term) {
 }
 bool SNLDesignModeling::isDataInput(const SNLBitTerm* term) {
   auto role = getTermRole(term);
-  return role == SNLTermRole::DataInput || role == SNLTermRole::MemoryWriteData;
+  return role == SNLTermRole::DataInput || role == SNLTermRole::MemoryWriteData ||
+      role == SNLTermRole::AsyncLoadData;
 }
 bool SNLDesignModeling::isDataInput(const SNLInstTerm* term) {
   auto role = getTermRole(term);
-  return role == SNLTermRole::DataInput || role == SNLTermRole::MemoryWriteData;
+  return role == SNLTermRole::DataInput || role == SNLTermRole::MemoryWriteData ||
+      role == SNLTermRole::AsyncLoadData;
 }
 bool SNLDesignModeling::isDataOutput(const SNLBitTerm* term) {
   auto role = getTermRole(term);
